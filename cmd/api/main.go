@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -16,6 +15,12 @@ type Goal struct {
 	CreatedAt string `json:"created_at"`
 }
 
+func enableCors(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+}
+
 func main() {
 	cfg := config.Load()
 
@@ -27,14 +32,25 @@ func main() {
 
 	log.Println("✅ Connected to PostgreSQL!")
 
+	// Health
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		enableCors(w)
+		if r.Method == http.MethodOptions {
+			return
+		}
 		w.Write([]byte("OK"))
 	})
 
+	// Goal API
 	http.HandleFunc("/goal", func(w http.ResponseWriter, r *http.Request) {
+		enableCors(w)
+		if r.Method == http.MethodOptions {
+			return
+		}
+
 		switch r.Method {
 		case http.MethodGet:
-			getGoal(database, w)
+			getGoal(database, w, r)
 		case http.MethodPost:
 			postGoal(database, w, r)
 		default:
@@ -46,8 +62,11 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func getGoal(database *sql.DB, w http.ResponseWriter) {
-	row := database.QueryRow(`SELECT id, text, created_at FROM goals ORDER BY id DESC LIMIT 1`)
+func getGoal(database *db.DB, w http.ResponseWriter, r *http.Request) {
+	row := database.Conn.QueryRow(
+		r.Context(),
+		`SELECT id, text, created_at FROM goals ORDER BY id DESC LIMIT 1`,
+	)
 
 	var g Goal
 	err := row.Scan(&g.ID, &g.Text, &g.CreatedAt)
@@ -59,7 +78,7 @@ func getGoal(database *sql.DB, w http.ResponseWriter) {
 	json.NewEncoder(w).Encode(g)
 }
 
-func postGoal(database *sql.DB, w http.ResponseWriter, r *http.Request) {
+func postGoal(database *db.DB, w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text string `json:"text"`
 	}
@@ -74,7 +93,11 @@ func postGoal(database *sql.DB, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row := database.QueryRow(`INSERT INTO goals(text) VALUES ($1) RETURNING id`, body.Text)
+	row := database.Conn.QueryRow(
+		r.Context(),
+		`INSERT INTO goals(text) VALUES ($1) RETURNING id`,
+		body.Text,
+	)
 
 	var id int
 	if err := row.Scan(&id); err != nil {
