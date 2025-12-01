@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/rs/cors"
+
 	"reup-goals-backend/internal/config"
 	"reup-goals-backend/internal/db"
 )
@@ -13,12 +15,6 @@ type Goal struct {
 	ID        int    `json:"id"`
 	Text      string `json:"text"`
 	CreatedAt string `json:"created_at"`
-}
-
-func enableCors(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
 func main() {
@@ -32,34 +28,45 @@ func main() {
 
 	log.Println("✅ Connected to PostgreSQL!")
 
-	// Health
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		enableCors(w)
-		if r.Method == http.MethodOptions {
-			return
-		}
+	// Router
+	mux := http.NewServeMux()
+
+	// Health endpoint
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OK"))
 	})
 
-	// Goal API
-	http.HandleFunc("/goal", func(w http.ResponseWriter, r *http.Request) {
-		enableCors(w)
-		if r.Method == http.MethodOptions {
-			return
-		}
-
+	// Goals API
+	mux.HandleFunc("/goal", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			getGoal(database, w, r)
 		case http.MethodPost:
 			postGoal(database, w, r)
+		case http.MethodOptions:
+			w.WriteHeader(http.StatusOK)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 
+	// ---------------------------------------------------------
+	//                   ENABLE CORS
+	// ---------------------------------------------------------
+	c := cors.New(cors.Options{
+		AllowedOrigins:   []string{"*"}, // пока разрешаем всё
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowCredentials: true,
+	})
+
+	handler := c.Handler(mux)
+
+	// ---------------------------------------------------------
+	//                   START SERVER
+	// ---------------------------------------------------------
 	log.Println("🚀 API server is running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(":8080", handler))
 }
 
 func getGoal(database *db.DB, w http.ResponseWriter, r *http.Request) {
