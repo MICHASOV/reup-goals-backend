@@ -26,10 +26,12 @@ func main() {
 
 	log.Println("✅ Connected to PostgreSQL!")
 
+	// Health check
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OK"))
 	})
 
+	// Goal API (GET + POST)
 	http.HandleFunc("/goal", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
