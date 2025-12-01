@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -33,7 +34,7 @@ func main() {
 	http.HandleFunc("/goal", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			getGoal(database, w, r)
+			getGoal(database, w)
 		case http.MethodPost:
 			postGoal(database, w, r)
 		default:
@@ -45,11 +46,8 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func getGoal(database *db.DB, w http.ResponseWriter, r *http.Request) {
-	row := database.Conn.QueryRow(
-		r.Context(),
-		`SELECT id, text, created_at FROM goals ORDER BY id DESC LIMIT 1`,
-	)
+func getGoal(database *sql.DB, w http.ResponseWriter) {
+	row := database.QueryRow(`SELECT id, text, created_at FROM goals ORDER BY id DESC LIMIT 1`)
 
 	var g Goal
 	err := row.Scan(&g.ID, &g.Text, &g.CreatedAt)
@@ -61,7 +59,7 @@ func getGoal(database *db.DB, w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(g)
 }
 
-func postGoal(database *db.DB, w http.ResponseWriter, r *http.Request) {
+func postGoal(database *sql.DB, w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text string `json:"text"`
 	}
@@ -76,11 +74,7 @@ func postGoal(database *db.DB, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row := database.Conn.QueryRow(
-		r.Context(),
-		`INSERT INTO goals(text) VALUES ($1) RETURNING id`,
-		body.Text,
-	)
+	row := database.QueryRow(`INSERT INTO goals(text) VALUES ($1) RETURNING id`, body.Text)
 
 	var id int
 	if err := row.Scan(&id); err != nil {
