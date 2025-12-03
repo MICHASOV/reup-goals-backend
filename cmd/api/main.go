@@ -1,248 +1,312 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/cors"
 
+	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/config"
 	"reup-goals-backend/internal/db"
+	taskshandler "reup-goals-backend/internal/tasks"
 )
 
-// ----------------------
-//   DTO / MODELS
-// ----------------------
+var jwtSecret = []byte("SUPER_SECRET_CHANGE_ME")
 
-type Goal struct {
-	ID          int       `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description,omitempty"`
-	IsActive    bool      `json:"is_active"`
-	CreatedAt   time.Time `json:"created_at"`
+// ------------------------------------------------------------
+// JWT helpers
+// ------------------------------------------------------------
+
+func generateToken(userID int) (string, error) {
+	claims := jwt.MapClaims{
+		"user_id": userID,
+		"exp":     time.Now().Add(30 * 24 * time.Hour).Unix(),
+		"iat":     time.Now().Unix(),
+	}
+	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return t.SignedString(jwtSecret)
 }
 
-type Task struct {
-	ID        int       `json:"id"`
-	Text      string    `json:"text"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+func parseToken(tokenString string) (int, error) {
+	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+	if err != nil || !token.Valid {
+		return 0, err
+	}
+
+	data := token.Claims.(jwt.MapClaims)
+	uidFloat, ok := data["user_id"].(float64)
+	if !ok {
+		return 0, err
+	}
+
+	return int(uidFloat), nil
 }
 
-// ----------------------
-//        MAIN
-// ----------------------
+// Middleware
+func withAuth(next http.HandlerFunc, db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		h := r.Header.Get("Authorization")
+		if !strings.HasPrefix(h, "Bearer ") {
+			http.Error(w, "missing token", http.StatusUnauthorized)
+			return
+		}
+
+		tokenString := strings.TrimPrefix(h, "Bearer ")
+		userID, err := parseToken(tokenString)
+		if err != nil {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), "user_id", userID)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// ------------------------------------------------------------
+// Auth Handlers
+// ------------------------------------------------------------
+
+func registerHandler(dbx *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.Email == "" || body.Password == "" {
+			http.Error(w, "email & password required", http.StatusBadRequest)
+			return
+		}
+
+		var id int
+		err := dbx.QueryRow(`
+			INSERT INTO users (email, password) 
+			VALUES ($1, $2)
+			RETURNING id
+		`, body.Email, body.Password).Scan(&id)
+
+		if err != nil {
+			http.Error(w, "user exists?", http.StatusBadRequest)
+			return
+		}
+
+		token, _ := generateToken(id)
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"user_id": id,
+			"token":   token,
+		})
+	}
+}
+
+func loginHandler(dbx *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		var id int
+		err := dbx.QueryRow(`
+			SELECT id FROM users WHERE email=$1 AND password=$2
+		`, body.Email, body.Password).Scan(&id)
+
+		if err != nil {
+			http.Error(w, "invalid login", http.StatusUnauthorized)
+			return
+		}
+
+		token, _ := generateToken(id)
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"user_id": id,
+			"token":   token,
+		})
+	}
+}
+
+func meHandler(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		var email string
+		dbx.QueryRow("SELECT email FROM users WHERE id=$1", uid).Scan(&email)
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"user_id": uid,
+			"email":   email,
+		})
+	}, dbx)
+}
+
+// ------------------------------------------------------------
+// GOALS (теперь привязаны к user_id)
+// ------------------------------------------------------------
+
+func getGoal(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		row := dbx.QueryRow(`
+			SELECT id, title, description, is_active, created_at
+			FROM goals
+			WHERE user_id = $1
+			ORDER BY id DESC LIMIT 1
+		`, uid)
+
+		var g Goal
+		err := row.Scan(&g.ID, &g.Title, &g.Description, &g.IsActive, &g.CreatedAt)
+		if err != nil {
+			http.Error(w, "no goal", http.StatusNotFound)
+			return
+		}
+
+		json.NewEncoder(w).Encode(g)
+	}, dbx)
+}
+
+func postGoal(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		var body struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		var id int
+		var created time.Time
+		err := dbx.QueryRow(`
+			INSERT INTO goals (title, description, is_active, user_id)
+			VALUES ($1, $2, TRUE, $3)
+			RETURNING id, created_at
+		`, body.Title, body.Description, uid).Scan(&id, &created)
+
+		if err != nil {
+			http.Error(w, "db error", 500)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         id,
+			"title":      body.Title,
+			"created_at": created,
+		})
+	}, dbx)
+}
+
+// ------------------------------------------------------------
+// TASKS (тоже привязаны к user_id)
+// ------------------------------------------------------------
+
+func getTasks(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		rows, err := dbx.Query(`
+			SELECT id, text, status, created_at
+			FROM tasks
+			WHERE user_id=$1
+			ORDER BY id DESC
+		`, uid)
+
+		if err != nil {
+			http.Error(w, "db error", 500)
+			return
+		}
+
+		var tasks []Task
+		for rows.Next() {
+			var t Task
+			rows.Scan(&t.ID, &t.Text, &t.Status, &t.CreatedAt)
+			tasks = append(tasks, t)
+		}
+
+		json.NewEncoder(w).Encode(tasks)
+	}, dbx)
+}
+
+func postTask(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		var id int
+		var created time.Time
+		err := dbx.QueryRow(`
+			INSERT INTO tasks (text, user_id)
+			VALUES ($1, $2)
+			RETURNING id, created_at, status
+		`, body.Text, uid).Scan(&id, &created, new(string))
+
+		if err != nil {
+			http.Error(w, "db error", 500)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         id,
+			"text":       body.Text,
+			"created_at": created,
+		})
+	}, dbx)
+}
+
+// ------------------------------------------------------------
+// MAIN
+// ------------------------------------------------------------
 
 func main() {
 	cfg := config.Load()
 
 	database, err := db.Connect(cfg.ConnString())
 	if err != nil {
-		log.Fatal("❌ Failed to connect DB:", err)
+		log.Fatal("DB error:", err)
 	}
 	defer database.Close()
 
-	log.Println("✅ Connected to PostgreSQL!")
+	aiClient := ai.NewOpenAIClient()
+	taskAIHandler := taskshandler.New(aiClient)
 
 	mux := http.NewServeMux()
 
-	// Health endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("OK"))
-	})
+	// AUTH
+	mux.Handle("/auth/register", registerHandler(database))
+	mux.Handle("/auth/login", loginHandler(database))
+	mux.Handle("/auth/me", meHandler(database))
 
-	// ----- GOALS API -----
-	mux.HandleFunc("/goal", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			getGoal(database, w, r)
-		case http.MethodPost:
-			postGoal(database, w, r)
-		case http.MethodOptions:
-			w.WriteHeader(http.StatusOK)
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
+	// GOALS
+	mux.Handle("/goal", getGoal(database))
+	mux.Handle("/goal/create", postGoal(database))
 
-	// ----- TASKS API (MVP-версия, пока без AI) -----
-	mux.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			getTasks(database, w, r)
-		case http.MethodPost:
-			postTask(database, w, r)
-		case http.MethodOptions:
-			w.WriteHeader(http.StatusOK)
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
+	// TASKS
+	mux.Handle("/tasks", getTasks(database))
+	mux.Handle("/task/create", postTask(database))
+
+	// AI
+	mux.HandleFunc("/task/evaluate", taskAIHandler.Evaluate)
 
 	// CORS
-	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization"},
-		AllowCredentials: true,
-	})
+	handler := cors.AllowAll().Handler(mux)
 
-	handler := c.Handler(mux)
-
-	log.Println("🚀 API server is running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", handler))
-}
-
-// ----------------------
-//     GOAL HANDLERS
-// ----------------------
-
-func getGoal(database *sql.DB, w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	row := database.QueryRowContext(
-		r.Context(),
-		`SELECT id, title, description, is_active, created_at 
-         FROM goals 
-         ORDER BY id DESC 
-         LIMIT 1`,
-	)
-
-	var g Goal
-	err := row.Scan(&g.ID, &g.Title, &g.Description, &g.IsActive, &g.CreatedAt)
-	if err != nil {
-		http.Error(w, "no goal found", http.StatusNotFound)
-		return
-	}
-
-	if err := json.NewEncoder(w).Encode(g); err != nil {
-		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
-	}
-}
-
-func postGoal(database *sql.DB, w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	var body struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-
-	if body.Title == "" {
-		http.Error(w, "title is required", http.StatusBadRequest)
-		return
-	}
-
-	row := database.QueryRowContext(
-		r.Context(),
-		`INSERT INTO goals (title, description, is_active) 
-         VALUES ($1, $2, TRUE) 
-         RETURNING id, created_at`,
-		body.Title,
-		body.Description,
-	)
-
-	var g Goal
-	g.Title = body.Title
-	g.Description = body.Description
-	g.IsActive = true
-
-	if err := row.Scan(&g.ID, &g.CreatedAt); err != nil {
-		http.Error(w, "db insert error", http.StatusInternalServerError)
-		return
-	}
-
-	if err := json.NewEncoder(w).Encode(g); err != nil {
-		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
-	}
-}
-
-// ----------------------
-//     TASK HANDLERS
-// ----------------------
-
-func getTasks(database *sql.DB, w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	rows, err := database.QueryContext(
-		r.Context(),
-		`SELECT id, text, status, created_at 
-         FROM tasks 
-         ORDER BY id DESC`,
-	)
-	if err != nil {
-		http.Error(w, "db query error", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	var tasks []Task
-
-	for rows.Next() {
-		var t Task
-		if err := rows.Scan(&t.ID, &t.Text, &t.Status, &t.CreatedAt); err != nil {
-			http.Error(w, "db scan error", http.StatusInternalServerError)
-			return
-		}
-		tasks = append(tasks, t)
-	}
-
-	if err := rows.Err(); err != nil {
-		http.Error(w, "db rows error", http.StatusInternalServerError)
-		return
-	}
-
-	if err := json.NewEncoder(w).Encode(tasks); err != nil {
-		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
-	}
-}
-
-func postTask(database *sql.DB, w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	var body struct {
-		Text string `json:"text"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-
-	if body.Text == "" {
-		http.Error(w, "text is required", http.StatusBadRequest)
-		return
-	}
-
-	row := database.QueryRowContext(
-		r.Context(),
-		`INSERT INTO tasks (text) 
-         VALUES ($1) 
-         RETURNING id, status, created_at`,
-		body.Text,
-	)
-
-	var t Task
-	t.Text = body.Text
-
-	if err := row.Scan(&t.ID, &t.Status, &t.CreatedAt); err != nil {
-		http.Error(w, "db insert error", http.StatusInternalServerError)
-		return
-	}
-
-	if err := json.NewEncoder(w).Encode(t); err != nil {
-		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
-	}
+	log.Println("🚀 SERVER RUNNING ON :8080")
+	http.ListenAndServe(":8080", handler)
 }
