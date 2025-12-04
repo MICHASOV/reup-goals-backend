@@ -31,6 +31,7 @@ func generateToken(userID int) (string, error) {
 		"exp":     time.Now().Add(30 * 24 * time.Hour).Unix(),
 		"iat":     time.Now().Unix(),
 	}
+
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return t.SignedString(jwtSecret)
 }
@@ -52,7 +53,10 @@ func parseToken(tokenString string) (int, error) {
 	return int(uidFloat), nil
 }
 
-// Middleware
+// ------------------------------------------------------------
+// MIDDLEWARE
+// ------------------------------------------------------------
+
 func withAuth(next http.HandlerFunc, db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		h := r.Header.Get("Authorization")
@@ -92,7 +96,7 @@ func registerHandler(dbx *sql.DB) http.HandlerFunc {
 
 		var id int
 		err := dbx.QueryRow(`
-			INSERT INTO users (email, password) 
+			INSERT INTO users (email, password)
 			VALUES ($1, $2)
 			RETURNING id
 		`, body.Email, body.Password).Scan(&id)
@@ -286,7 +290,6 @@ func main() {
 	}
 	defer database.Close()
 
-	// Correct AI client
 	aiClient := ai.New(cfg.OpenAIKey, cfg.AssistantID)
 	taskAIHandler := tasks.New(aiClient)
 

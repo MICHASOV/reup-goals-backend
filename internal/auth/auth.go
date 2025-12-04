@@ -1,384 +1,319 @@
-package auth
+package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
-	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/crypto/bcrypt"
+	"github.com/rs/cors"
+
+	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/config"
 	"reup-goals-backend/internal/db"
+	goals "reup-goals-backend/internal/goals"
+	tasks "reup-goals-backend/internal/tasks"
 )
 
-var jwtSecret = []byte("SUPER_SECRET_KEY_CHANGE_ME") // ⚠️ замени на env
+var jwtSecret = []byte("SUPER_SECRET_CHANGE_ME")
 
-type AuthHandler struct {
-	DB *db.DB
-}
+// ------------------------------------------------------------
+// JWT helpers
+// ------------------------------------------------------------
 
-type User struct {
-	ID       int64  `db:"id"`
-	Email    string `db:"email"`
-	Password string `db:"password"`
-}
-
-type AuthRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
-type AuthResponse struct {
-	Token string `json:"token"`
-}
-
-func NewAuthHandler(db *db.DB) *AuthHandler {
-	return &AuthHandler{DB: db}
-}
-
-// ------------------------------------------------------------------
-// Registration: POST /auth/register
-// ------------------------------------------------------------------
-
-func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
-	var req AuthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", 400)
-		return
-	}
-
-	// check duplicate email
-	var exists int
-	err := h.DB.QueryRow(
-		context.Background(),
-		"SELECT COUNT(*) FROM users WHERE email=$1", req.Email,
-	).Scan(&exists)
-
-	if err == nil && exists > 0 {
-		http.Error(w, "email already exists", 400)
-		return
-	}
-
-	// hash password
-	hash, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-
-	// insert user
-	var id int64
-	err = h.DB.QueryRow(
-		context.Background(),
-		"INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id",
-		req.Email, string(hash),
-	).Scan(&id)
-
-	if err != nil {
-		http.Error(w, "db error: "+err.Error(), 500)
-		return
-	}
-
-	token, _ := generateToken(id)
-
-	json.NewEncoder(w).Encode(AuthResponse{Token: token})
-}
-
-// ------------------------------------------------------------------
-// Login: POST /auth/login
-// ------------------------------------------------------------------
-
-func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	var req AuthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", 400)
-		return
-	}
-
-	var user User
-	err := h.DB.QueryRow(
-		context.Background(),
-		"SELECT id, email, password FROM users WHERE email=$1",
-		req.Email,
-	).Scan(&user.ID, &user.Email, &user.Password)
-
-	if err != nil {
-		http.Error(w, "invalid credentials", 403)
-		return
-	}
-
-	// compare password
-	if bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)) != nil {
-		http.Error(w, "invalid credentials", 403)
-		return
-	}
-
-	token, _ := generateToken(user.ID)
-
-	json.NewEncoder(w).Encode(AuthResponse{Token: token})
-}
-
-// ------------------------------------------------------------------
-// Get current user: GET /auth/me
-// ------------------------------------------------------------------
-
-func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value("user_id")
-
-	if userID == nil {
-		http.Error(w, "unauthorized", 401)
-		return
-	}
-
-	var email string
-	err := h.DB.QueryRow(
-		context.Background(),
-		"SELECT email FROM users WHERE id=$1", userID,
-	).Scan(&email)
-
-	if err != nil {
-		http.Error(w, "user not found", 404)
-		return
-	}
-
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":    userID,
-		"email": email,
-	})
-}
-
-// ------------------------------------------------------------------
-// Middleware
-// ------------------------------------------------------------------
-
-func AuthMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// read bearer
-		bearer := r.Header.Get("Authorization")
-		if bearer == "" || len(bearer) < 8 {
-			http.Error(w, "missing token", 401)
-			return
-		}
-
-		tokenStr := bearer[len("Bearer "):]
-
-		token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
-			return jwtSecret, nil
-		})
-
-		if err != nil || !token.Valid {
-			http.Error(w, "invalid token", 401)
-			return
-		}
-
-		claims := token.Claims.(jwt.MapClaims)
-		id := int64(claims["id"].(float64))
-
-		ctx := context.WithValue(r.Context(), "user_id", id)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-// ------------------------------------------------------------------
-// Token generator
-// ------------------------------------------------------------------
-
-func generateToken(id int64) (string, error) {
+func generateToken(userID int) (string, error) {
 	claims := jwt.MapClaims{
-		"id":  id,
-		"exp": time.Now().Add(7 * 24 * time.Hour).Unix(),
-		"iat": time.Now().Unix(),
+		"user_id": userID,
+		"exp":     time.Now().Add(30 * 24 * time.Hour).Unix(),
+		"iat":     time.Now().Unix(),
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtSecret)
-}
-package auth
-
-import (
-	"context"
-	"encoding/json"
-	"net/http"
-	"os"
-	"time"
-
-	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/crypto/bcrypt"
-	"reup-goals-backend/internal/db"
-)
-
-var jwtSecret = []byte("SUPER_SECRET_KEY_CHANGE_ME") // ⚠️ замени на env
-
-type AuthHandler struct {
-	DB *db.DB
+	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return t.SignedString(jwtSecret)
 }
 
-type User struct {
-	ID       int64  `db:"id"`
-	Email    string `db:"email"`
-	Password string `db:"password"`
-}
-
-type AuthRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
-type AuthResponse struct {
-	Token string `json:"token"`
-}
-
-func NewAuthHandler(db *db.DB) *AuthHandler {
-	return &AuthHandler{DB: db}
-}
-
-// ------------------------------------------------------------------
-// Registration: POST /auth/register
-// ------------------------------------------------------------------
-
-func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
-	var req AuthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", 400)
-		return
-	}
-
-	// check duplicate email
-	var exists int
-	err := h.DB.QueryRow(
-		context.Background(),
-		"SELECT COUNT(*) FROM users WHERE email=$1", req.Email,
-	).Scan(&exists)
-
-	if err == nil && exists > 0 {
-		http.Error(w, "email already exists", 400)
-		return
-	}
-
-	// hash password
-	hash, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-
-	// insert user
-	var id int64
-	err = h.DB.QueryRow(
-		context.Background(),
-		"INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id",
-		req.Email, string(hash),
-	).Scan(&id)
-
-	if err != nil {
-		http.Error(w, "db error: "+err.Error(), 500)
-		return
-	}
-
-	token, _ := generateToken(id)
-
-	json.NewEncoder(w).Encode(AuthResponse{Token: token})
-}
-
-// ------------------------------------------------------------------
-// Login: POST /auth/login
-// ------------------------------------------------------------------
-
-func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	var req AuthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", 400)
-		return
-	}
-
-	var user User
-	err := h.DB.QueryRow(
-		context.Background(),
-		"SELECT id, email, password FROM users WHERE email=$1",
-		req.Email,
-	).Scan(&user.ID, &user.Email, &user.Password)
-
-	if err != nil {
-		http.Error(w, "invalid credentials", 403)
-		return
-	}
-
-	// compare password
-	if bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)) != nil {
-		http.Error(w, "invalid credentials", 403)
-		return
-	}
-
-	token, _ := generateToken(user.ID)
-
-	json.NewEncoder(w).Encode(AuthResponse{Token: token})
-}
-
-// ------------------------------------------------------------------
-// Get current user: GET /auth/me
-// ------------------------------------------------------------------
-
-func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value("user_id")
-
-	if userID == nil {
-		http.Error(w, "unauthorized", 401)
-		return
-	}
-
-	var email string
-	err := h.DB.QueryRow(
-		context.Background(),
-		"SELECT email FROM users WHERE id=$1", userID,
-	).Scan(&email)
-
-	if err != nil {
-		http.Error(w, "user not found", 404)
-		return
-	}
-
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":    userID,
-		"email": email,
+func parseToken(tokenString string) (int, error) {
+	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
 	})
+	if err != nil || !token.Valid {
+		return 0, err
+	}
+
+	data := token.Claims.(jwt.MapClaims)
+	uidFloat, ok := data["user_id"].(float64)
+	if !ok {
+		return 0, err
+	}
+
+	return int(uidFloat), nil
 }
 
-// ------------------------------------------------------------------
-// Middleware
-// ------------------------------------------------------------------
+// ------------------------------------------------------------
+// MIDDLEWARE
+// ------------------------------------------------------------
 
-func AuthMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// read bearer
-		bearer := r.Header.Get("Authorization")
-		if bearer == "" || len(bearer) < 8 {
-			http.Error(w, "missing token", 401)
+func withAuth(next http.HandlerFunc, db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		h := r.Header.Get("Authorization")
+		if !strings.HasPrefix(h, "Bearer ") {
+			http.Error(w, "missing token", http.StatusUnauthorized)
 			return
 		}
 
-		tokenStr := bearer[len("Bearer "):]
+		tokenString := strings.TrimPrefix(h, "Bearer ")
+		userID, err := parseToken(tokenString)
+		if err != nil {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
 
-		token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
-			return jwtSecret, nil
+		ctx := context.WithValue(r.Context(), "user_id", userID)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// ------------------------------------------------------------
+// AUTH
+// ------------------------------------------------------------
+
+func registerHandler(dbx *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.Email == "" || body.Password == "" {
+			http.Error(w, "email & password required", http.StatusBadRequest)
+			return
+		}
+
+		var id int
+		err := dbx.QueryRow(`
+			INSERT INTO users (email, password)
+			VALUES ($1, $2)
+			RETURNING id
+		`, body.Email, body.Password).Scan(&id)
+
+		if err != nil {
+			http.Error(w, "user exists?", http.StatusBadRequest)
+			return
+		}
+
+		token, _ := generateToken(id)
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"user_id": id,
+			"token":   token,
 		})
+	}
+}
 
-		if err != nil || !token.Valid {
-			http.Error(w, "invalid token", 401)
+func loginHandler(dbx *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		var id int
+		err := dbx.QueryRow(`
+			SELECT id FROM users WHERE email=$1 AND password=$2
+		`, body.Email, body.Password).Scan(&id)
+
+		if err != nil {
+			http.Error(w, "invalid login", http.StatusUnauthorized)
 			return
 		}
 
-		claims := token.Claims.(jwt.MapClaims)
-		id := int64(claims["id"].(float64))
+		token, _ := generateToken(id)
 
-		ctx := context.WithValue(r.Context(), "user_id", id)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+		json.NewEncoder(w).Encode(map[string]any{
+			"user_id": id,
+			"token":   token,
+		})
+	}
 }
 
-// ------------------------------------------------------------------
-// Token generator
-// ------------------------------------------------------------------
+func meHandler(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
 
-func generateToken(id int64) (string, error) {
-	claims := jwt.MapClaims{
-		"id":  id,
-		"exp": time.Now().Add(7 * 24 * time.Hour).Unix(),
-		"iat": time.Now().Unix(),
+		var email string
+		dbx.QueryRow("SELECT email FROM users WHERE id=$1", uid).Scan(&email)
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"user_id": uid,
+			"email":   email,
+		})
+	}, dbx)
+}
+
+// ------------------------------------------------------------
+// GOALS
+// ------------------------------------------------------------
+
+func getGoal(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		row := dbx.QueryRow(`
+			SELECT id, title, description, is_active, created_at
+			FROM goals
+			WHERE user_id = $1
+			ORDER BY id DESC LIMIT 1
+		`, uid)
+
+		var g goals.Goal
+		err := row.Scan(&g.ID, &g.Title, &g.Description, &g.IsActive, &g.CreatedAt)
+		if err != nil {
+			http.Error(w, "no goal", http.StatusNotFound)
+			return
+		}
+
+		json.NewEncoder(w).Encode(g)
+	}, dbx)
+}
+
+func postGoal(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		var body struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		var id int
+		var created time.Time
+		err := dbx.QueryRow(`
+			INSERT INTO goals (title, description, is_active, user_id)
+			VALUES ($1, $2, TRUE, $3)
+			RETURNING id, created_at
+		`, body.Title, body.Description, uid).Scan(&id, &created)
+
+		if err != nil {
+			http.Error(w, "db error", 500)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         id,
+			"title":      body.Title,
+			"created_at": created,
+		})
+	}, dbx)
+}
+
+// ------------------------------------------------------------
+// TASKS
+// ------------------------------------------------------------
+
+func getTasks(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		rows, err := dbx.Query(`
+			SELECT id, text, status, created_at
+			FROM tasks
+			WHERE user_id=$1
+			ORDER BY id DESC
+		`, uid)
+
+		if err != nil {
+			http.Error(w, "db error", 500)
+			return
+		}
+
+		var tasksList []tasks.Task
+		for rows.Next() {
+			var t tasks.Task
+			rows.Scan(&t.ID, &t.Text, &t.Status, &t.CreatedAt)
+			tasksList = append(tasksList, t)
+		}
+
+		json.NewEncoder(w).Encode(tasksList)
+	}, dbx)
+}
+
+func postTask(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		var id int
+		var created time.Time
+		var status string
+
+		err := dbx.QueryRow(`
+			INSERT INTO tasks (text, user_id)
+			VALUES ($1, $2)
+			RETURNING id, created_at, status
+		`, body.Text, uid).Scan(&id, &created, &status)
+
+		if err != nil {
+			http.Error(w, "db error", 500)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         id,
+			"text":       body.Text,
+			"created_at": created,
+			"status":     status,
+		})
+	}, dbx)
+}
+
+// ------------------------------------------------------------
+// MAIN
+// ------------------------------------------------------------
+
+func main() {
+	cfg := config.Load()
+
+	database, err := db.Connect(cfg.ConnString())
+	if err != nil {
+		log.Fatal("DB error:", err)
 	}
+	defer database.Close()
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtSecret)
+	aiClient := ai.New(cfg.OpenAIKey, cfg.AssistantID)
+	taskAIHandler := tasks.New(aiClient)
+
+	mux := http.NewServeMux()
+
+	// AUTH
+	mux.Handle("/auth/register", registerHandler(database))
+	mux.Handle("/auth/login", loginHandler(database))
+	mux.Handle("/auth/me", meHandler(database))
+
+	// GOALS
+	mux.Handle("/goal", getGoal(database))
+	mux.Handle("/goal/create", postGoal(database))
+
+	// TASKS
+	mux.Handle("/tasks", getTasks(database))
+	mux.Handle("/task/create", postTask(database))
+
+	// AI
+	mux.HandleFunc("/task/evaluate", taskAIHandler.Evaluate)
+
+	// CORS
+	handler := cors.AllowAll().Handler(mux)
+
+	log.Println("🚀 SERVER RUNNING ON :8080")
+	http.ListenAndServe(":8080", handler)
 }
