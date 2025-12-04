@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -16,7 +15,8 @@ import (
 	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/config"
 	"reup-goals-backend/internal/db"
-	taskshandler "reup-goals-backend/internal/tasks"
+	goals "reup-goals-backend/internal/goals"
+	tasks "reup-goals-backend/internal/tasks"
 )
 
 var jwtSecret = []byte("SUPER_SECRET_CHANGE_ME")
@@ -74,7 +74,7 @@ func withAuth(next http.HandlerFunc, db *sql.DB) http.HandlerFunc {
 }
 
 // ------------------------------------------------------------
-// Auth Handlers
+// AUTH
 // ------------------------------------------------------------
 
 func registerHandler(dbx *sql.DB) http.HandlerFunc {
@@ -153,7 +153,7 @@ func meHandler(dbx *sql.DB) http.HandlerFunc {
 }
 
 // ------------------------------------------------------------
-// GOALS (теперь привязаны к user_id)
+// GOALS
 // ------------------------------------------------------------
 
 func getGoal(dbx *sql.DB) http.HandlerFunc {
@@ -167,7 +167,7 @@ func getGoal(dbx *sql.DB) http.HandlerFunc {
 			ORDER BY id DESC LIMIT 1
 		`, uid)
 
-		var g Goal
+		var g goals.Goal
 		err := row.Scan(&g.ID, &g.Title, &g.Description, &g.IsActive, &g.CreatedAt)
 		if err != nil {
 			http.Error(w, "no goal", http.StatusNotFound)
@@ -210,7 +210,7 @@ func postGoal(dbx *sql.DB) http.HandlerFunc {
 }
 
 // ------------------------------------------------------------
-// TASKS (тоже привязаны к user_id)
+// TASKS
 // ------------------------------------------------------------
 
 func getTasks(dbx *sql.DB) http.HandlerFunc {
@@ -229,14 +229,14 @@ func getTasks(dbx *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		var tasks []Task
+		var tasksList []tasks.Task
 		for rows.Next() {
-			var t Task
+			var t tasks.Task
 			rows.Scan(&t.ID, &t.Text, &t.Status, &t.CreatedAt)
-			tasks = append(tasks, t)
+			tasksList = append(tasksList, t)
 		}
 
-		json.NewEncoder(w).Encode(tasks)
+		json.NewEncoder(w).Encode(tasksList)
 	}, dbx)
 }
 
@@ -251,11 +251,13 @@ func postTask(dbx *sql.DB) http.HandlerFunc {
 
 		var id int
 		var created time.Time
+		var status string
+
 		err := dbx.QueryRow(`
 			INSERT INTO tasks (text, user_id)
 			VALUES ($1, $2)
 			RETURNING id, created_at, status
-		`, body.Text, uid).Scan(&id, &created, new(string))
+		`, body.Text, uid).Scan(&id, &created, &status)
 
 		if err != nil {
 			http.Error(w, "db error", 500)
@@ -266,6 +268,7 @@ func postTask(dbx *sql.DB) http.HandlerFunc {
 			"id":         id,
 			"text":       body.Text,
 			"created_at": created,
+			"status":     status,
 		})
 	}, dbx)
 }
@@ -283,8 +286,9 @@ func main() {
 	}
 	defer database.Close()
 
-	aiClient := ai.NewOpenAIClient()
-	taskAIHandler := taskshandler.New(aiClient)
+	// Correct AI client
+	aiClient := ai.New(cfg.OpenAIKey, cfg.AssistantID)
+	taskAIHandler := tasks.New(aiClient)
 
 	mux := http.NewServeMux()
 
