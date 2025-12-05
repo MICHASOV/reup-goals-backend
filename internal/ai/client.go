@@ -5,175 +5,104 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"time"
 )
 
+// ---------------------------------------------------------
+// Клиент OpenAI Responses API
+// ---------------------------------------------------------
+
 type OpenAIClient struct {
-	APIKey      string
-	AssistantID string
+	APIKey string
+	Model  string // сюда передаём Assistant ID (или модель)
 }
 
-func New(apiKey, assistantID string) *OpenAIClient {
+func New(apiKey, model string) *OpenAIClient {
 	return &OpenAIClient{
-		APIKey:      apiKey,
-		AssistantID: assistantID,
+		APIKey: apiKey,
+		Model:  model,
 	}
 }
+
+// ---------------------------------------------------------
+// Запрос к Responses API
+// ---------------------------------------------------------
+
+type responseRequest struct {
+	Model string      `json:"model"`
+	Input interface{} `json:"input"`
+}
+
+type responseResponse struct {
+	Output []struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"output"`
+}
+
+// ---------------------------------------------------------
+// Основной метод — EvaluateTask
+// ---------------------------------------------------------
 
 func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interface{}) (json.RawMessage, error) {
 
-	// -------------------------------
-	// 1. Create Thread
-	// -------------------------------
-	threadBody := map[string]interface{}{}
-	threadJSON, _ := json.Marshal(threadBody)
+	// Формируем payload для /v1/responses
+	payload := responseRequest{
+		Model: c.Model, // ассистент работает как модель
+		Input: input,   // сюда отправляем JSON из бэка
+	}
 
-	reqThread, _ := http.NewRequest(
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal error: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
 		"POST",
-		"https://api.openai.com/v1/threads",
-		bytes.NewBuffer(threadJSON),
+		"https://api.openai.com/v1/responses",
+		bytes.NewBuffer(body),
 	)
-	reqThread.Header.Set("Authorization", "Bearer "+c.APIKey)
-	reqThread.Header.Set("Content-Type", "application/json")
-
-	resThread, err := http.DefaultClient.Do(reqThread)
 	if err != nil {
-		return nil, err
-	}
-	defer resThread.Body.Close()
-
-	var threadResp struct {
-		ID string `json:"id"`
-	}
-	bodyThread, _ := ioutil.ReadAll(resThread.Body)
-	json.Unmarshal(bodyThread, &threadResp)
-
-	// -------------------------------
-	// 2. Add message to thread
-	// -------------------------------
-	messageBody := map[string]interface{}{
-		"role": "user",
-		"content": []map[string]interface{}{
-			{
-				"type": "input_text",
-				"text": mustJSON(input), // send JSON as plain text inside request
-			},
-		},
+		return nil, fmt.Errorf("request create error: %w", err)
 	}
 
-	msgJSON, _ := json.Marshal(messageBody)
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Content-Type", "application/json")
 
-	reqMsg, _ := http.NewRequest(
-		"POST",
-		fmt.Sprintf("https://api.openai.com/v1/threads/%s/messages", threadResp.ID),
-		bytes.NewBuffer(msgJSON),
-	)
-	reqMsg.Header.Set("Authorization", "Bearer "+c.APIKey)
-	reqMsg.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 90 * time.Second}
 
-	_, err = http.DefaultClient.Do(reqMsg)
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("http error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Чтение тела ответа
+	raw, _ := io.ReadAll(resp.Body)
+
+	// Обработка статус-кода
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
 	}
 
-	// -------------------------------
-	// 3. Run the assistant
-	// -------------------------------
-	runBody := map[string]interface{}{
-		"assistant_id": c.AssistantID,
+	var parsed responseResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
 	}
 
-	runJSON, _ := json.Marshal(runBody)
-
-	reqRun, _ := http.NewRequest(
-		"POST",
-		fmt.Sprintf("https://api.openai.com/v1/threads/%s/runs", threadResp.ID),
-		bytes.NewBuffer(runJSON),
-	)
-	reqRun.Header.Set("Authorization", "Bearer "+c.APIKey)
-	reqRun.Header.Set("Content-Type", "application/json")
-
-	runResp, err := http.DefaultClient.Do(reqRun)
-	if err != nil {
-		return nil, err
-	}
-	defer runResp.Body.Close()
-
-	var runInfo struct {
-		ID string `json:"id"`
-	}
-	bodyRun, _ := ioutil.ReadAll(runResp.Body)
-	json.Unmarshal(bodyRun, &runInfo)
-
-	// -------------------------------
-	// 4. Poll result
-	// -------------------------------
-	for {
-		time.Sleep(700 * time.Millisecond)
-
-		reqCheck, _ := http.NewRequest(
-			"GET",
-			fmt.Sprintf("https://api.openai.com/v1/threads/%s/runs/%s", threadResp.ID, runInfo.ID),
-			nil,
-		)
-		reqCheck.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-		checkResp, _ := http.DefaultClient.Do(reqCheck)
-		buf, _ := ioutil.ReadAll(checkResp.Body)
-		checkResp.Body.Close()
-
-		var check struct {
-			Status string `json:"status"`
-		}
-		json.Unmarshal(buf, &check)
-
-		if check.Status == "completed" {
-			break
-		}
+	// Проверяем, что модель вернула текст
+	if len(parsed.Output) == 0 ||
+		len(parsed.Output[0].Content) == 0 ||
+		parsed.Output[0].Content[0].Text == "" {
+		return nil, fmt.Errorf("no output from model")
 	}
 
-	// -------------------------------
-	// 5. Fetch messages
-	// -------------------------------
-	reqMsgs, _ := http.NewRequest(
-		"GET",
-		fmt.Sprintf("https://api.openai.com/v1/threads/%s/messages", threadResp.ID),
-		nil,
-	)
-	reqMsgs.Header.Set("Authorization", "Bearer "+c.APIKey)
+	assistantText := parsed.Output[0].Content[0].Text
 
-	msgsResp, err := http.DefaultClient.Do(reqMsgs)
-	if err != nil {
-		return nil, err
-	}
-	defer msgsResp.Body.Close()
-
-	msgsBody, _ := ioutil.ReadAll(msgsResp.Body)
-
-	// Extract assistant text
-	var msgs struct {
-		Data []struct {
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"data"`
-	}
-	json.Unmarshal(msgsBody, &msgs)
-
-	for _, m := range msgs.Data {
-		if m.Role == "assistant" && len(m.Content) > 0 {
-			return json.RawMessage(m.Content[0].Text), nil
-		}
-	}
-
-	return nil, fmt.Errorf("assistant did not return text")
-}
-
-func mustJSON(v interface{}) string {
-	b, _ := json.Marshal(v)
-	return string(b)
+	// Возвращаем как JSON-фрагмент
+	return json.RawMessage(assistantText), nil
 }

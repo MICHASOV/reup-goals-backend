@@ -309,7 +309,7 @@ func main() {
 	mux.Handle("/task/create", postTask(database))
 
 	// AI
-	mux.HandleFunc("/task/evaluate", taskAIHandler.Evaluate)
+	mux.Handle("/task/evaluate", withAuth(taskAIHandler.Evaluate, database))
 
 	// CORS
 	handler := cors.AllowAll().Handler(mux)
