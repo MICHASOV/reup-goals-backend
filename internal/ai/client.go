@@ -78,14 +78,23 @@ type responseResponse struct {
 
 func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interface{}) (json.RawMessage, error) {
 
+	// Создаём HTTP-клиент через SOCKS5
 	client, err := newHTTPClientWithProxy()
 	if err != nil {
 		return nil, fmt.Errorf("proxy init error: %w", err)
 	}
 
+	// 🔥 OpenAI требует, чтобы input был либо строкой, либо массивом
+	// поэтому кодируем объект в JSON-строку
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal input: %w", err)
+	}
+
+	// Формируем payload для OpenAI
 	payload := responseRequest{
 		Model: c.Model,
-		Input: input,
+		Input: string(inputJSON), // ← КЛЮЧЕВАЯ ПРАВКА
 	}
 
 	body, err := json.Marshal(payload)
@@ -93,7 +102,8 @@ func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interf
 		return nil, fmt.Errorf("marshal error: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx,
+	req, err := http.NewRequestWithContext(
+		ctx,
 		"POST",
 		"https://api.openai.com/v1/responses",
 		bytes.NewBuffer(body),
@@ -105,6 +115,7 @@ func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interf
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
+	// Отправляем запрос
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http error: %w", err)
@@ -113,20 +124,24 @@ func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interf
 
 	raw, _ := io.ReadAll(resp.Body)
 
+	// Обработка ошибок OpenAI
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
 	}
 
+	// Парсим ответ
 	var parsed responseResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
 	}
 
+	// Проверяем, что контент есть
 	if len(parsed.Output) == 0 ||
 		len(parsed.Output[0].Content) == 0 ||
 		parsed.Output[0].Content[0].Text == "" {
 		return nil, fmt.Errorf("no output from model")
 	}
 
+	// Возвращаем JSON-фрагмент с текстом модели
 	return json.RawMessage(parsed.Output[0].Content[0].Text), nil
 }
