@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
 
 // ---------------------------------------------------------
@@ -16,7 +19,7 @@ import (
 
 type OpenAIClient struct {
 	APIKey string
-	Model  string // сюда передаём Assistant ID (или модель)
+	Model  string // Assistant ID или gpt-4.1-mini
 }
 
 func New(apiKey, model string) *OpenAIClient {
@@ -24,6 +27,36 @@ func New(apiKey, model string) *OpenAIClient {
 		APIKey: apiKey,
 		Model:  model,
 	}
+}
+
+// ---------------------------------------------------------
+// HTTP Client с SOCKS5 через XRay
+// ---------------------------------------------------------
+
+func buildProxiedHTTPClient() (*http.Client, error) {
+	// Адрес SOCKS5 Xray
+	proxyURL := "127.0.0.1:10808"
+
+	dialer, err := proxy.SOCKS5("tcp", proxyURL, nil, proxy.Direct)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create socks5 dialer: %w", err)
+	}
+
+	// Превращаем SOCKS5 dialer в net.Dialer совместимый объект
+	netDialer := func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dialer.Dial(network, address)
+	}
+
+	transport := &http.Transport{
+		DialContext: netDialer,
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   90 * time.Second,
+	}
+
+	return client, nil
 }
 
 // ---------------------------------------------------------
@@ -49,10 +82,9 @@ type responseResponse struct {
 
 func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interface{}) (json.RawMessage, error) {
 
-	// Формируем payload для /v1/responses
 	payload := responseRequest{
-		Model: c.Model, // ассистент работает как модель
-		Input: input,   // сюда отправляем JSON из бэка
+		Model: c.Model,
+		Input: input,
 	}
 
 	body, err := json.Marshal(payload)
@@ -73,18 +105,21 @@ func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interf
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 90 * time.Second}
+	// ⭐ ВАЖНО — создаём клиент с SOCKS5 + XRay
+	httpClient, err := buildProxiedHTTPClient()
+	if err != nil {
+		return nil, fmt.Errorf("proxy client error: %w", err)
+	}
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http error: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Чтение тела ответа
 	raw, _ := io.ReadAll(resp.Body)
 
-	// Обработка статус-кода
+	// Проверка на ошибки API
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
 	}
@@ -94,15 +129,12 @@ func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interf
 		return nil, fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
 	}
 
-	// Проверяем, что модель вернула текст
+	// Проверяем наличие текста
 	if len(parsed.Output) == 0 ||
 		len(parsed.Output[0].Content) == 0 ||
 		parsed.Output[0].Content[0].Text == "" {
 		return nil, fmt.Errorf("no output from model")
 	}
 
-	assistantText := parsed.Output[0].Content[0].Text
-
-	// Возвращаем как JSON-фрагмент
-	return json.RawMessage(assistantText), nil
+	return json.RawMessage(parsed.Output[0].Content[0].Text), nil
 }
