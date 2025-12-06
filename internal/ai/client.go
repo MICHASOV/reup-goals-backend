@@ -19,7 +19,33 @@ import (
 
 type OpenAIClient struct {
 	APIKey string
-	Model  string // Assistant ID или gpt-4.1-mini
+	Model  string
+}
+
+// SOCKS5 proxy = 127.0.0.1:10808
+func newHTTPClientWithProxy() (*http.Client, error) {
+	dialer, err := proxy.SOCKS5(
+		"tcp",
+		"127.0.0.1:10808",
+		nil,
+		proxy.Direct,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("socks5 dialer error: %w", err)
+	}
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
+		},
+	}
+
+	client := &http.Client{
+		Timeout:   120 * time.Second,
+		Transport: transport,
+	}
+
+	return client, nil
 }
 
 func New(apiKey, model string) *OpenAIClient {
@@ -30,37 +56,7 @@ func New(apiKey, model string) *OpenAIClient {
 }
 
 // ---------------------------------------------------------
-// HTTP Client с SOCKS5 через XRay
-// ---------------------------------------------------------
-
-func buildProxiedHTTPClient() (*http.Client, error) {
-	// Адрес SOCKS5 Xray
-	proxyURL := "127.0.0.1:10808"
-
-	dialer, err := proxy.SOCKS5("tcp", proxyURL, nil, proxy.Direct)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create socks5 dialer: %w", err)
-	}
-
-	// Превращаем SOCKS5 dialer в net.Dialer совместимый объект
-	netDialer := func(ctx context.Context, network, address string) (net.Conn, error) {
-		return dialer.Dial(network, address)
-	}
-
-	transport := &http.Transport{
-		DialContext: netDialer,
-	}
-
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   90 * time.Second,
-	}
-
-	return client, nil
-}
-
-// ---------------------------------------------------------
-// Запрос к Responses API
+// API models
 // ---------------------------------------------------------
 
 type responseRequest struct {
@@ -82,6 +78,11 @@ type responseResponse struct {
 
 func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interface{}) (json.RawMessage, error) {
 
+	client, err := newHTTPClientWithProxy()
+	if err != nil {
+		return nil, fmt.Errorf("proxy init error: %w", err)
+	}
+
 	payload := responseRequest{
 		Model: c.Model,
 		Input: input,
@@ -92,8 +93,7 @@ func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interf
 		return nil, fmt.Errorf("marshal error: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(
-		ctx,
+	req, err := http.NewRequestWithContext(ctx,
 		"POST",
 		"https://api.openai.com/v1/responses",
 		bytes.NewBuffer(body),
@@ -105,13 +105,7 @@ func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interf
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	// ⭐ ВАЖНО — создаём клиент с SOCKS5 + XRay
-	httpClient, err := buildProxiedHTTPClient()
-	if err != nil {
-		return nil, fmt.Errorf("proxy client error: %w", err)
-	}
-
-	resp, err := httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http error: %w", err)
 	}
@@ -119,7 +113,6 @@ func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interf
 
 	raw, _ := io.ReadAll(resp.Body)
 
-	// Проверка на ошибки API
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
 	}
@@ -129,7 +122,6 @@ func (c *OpenAIClient) EvaluateTask(ctx context.Context, input map[string]interf
 		return nil, fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
 	}
 
-	// Проверяем наличие текста
 	if len(parsed.Output) == 0 ||
 		len(parsed.Output[0].Content) == 0 ||
 		parsed.Output[0].Content[0].Text == "" {
