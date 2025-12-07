@@ -2,7 +2,7 @@ package ai
 
 import "strings"
 
-// BuildUserPrompt — формирует строковый input для Responses API
+// BuildUserPrompt формирует строковый input для Responses API (Path B)
 func BuildUserPrompt(
 	goalSummary string,
 	taskRaw string,
@@ -13,6 +13,9 @@ func BuildUserPrompt(
 ) string {
 
 	var b strings.Builder
+
+	// 🔥 Требование Responses API: input должен содержать слово "json"
+	b.WriteString("output_format: json\n")
 
 	b.WriteString("goal_summary: ")
 	b.WriteString(goalSummary)
