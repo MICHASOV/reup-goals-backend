@@ -94,16 +94,17 @@ func (c *OpenAIClient) EvaluateTask(
 		})
 	}
 
-	// Сборка тела запроса
-	reqBody := ResponseRequest{
-		Model:    c.Model,
-		Messages: formatted,
-		ResponseFormat: map[string]string{
-			"type": "json_object",
+	// Сборка тела запроса (новый формат Responses API)
+	reqBody := map[string]interface{}{
+		"model":    c.Model,
+		"messages": formatted,
+		"text": map[string]interface{}{
+			"format": "json",
 		},
 	}
 
 	body, err := json.Marshal(reqBody)
+
 	if err != nil {
 		return nil, fmt.Errorf("marshal error: %w", err)
 	}
