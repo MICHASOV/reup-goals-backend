@@ -52,7 +52,7 @@ func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.Background()
 
-	// ❗ Правильно: Path B → input = STRING
+	// Path B → input = ОДНА СТРОКА
 	input := ai.BuildUserPrompt(
 		req.GoalSummary,
 		req.TaskRaw,
@@ -62,7 +62,6 @@ func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 		req.UserState,
 	)
 
-	// Вызываем OpenAI
 	rawResult, err := h.AI.EvaluateTask(ctx, input)
 	if err != nil {
 		http.Error(w, "ai error: "+err.Error(), http.StatusInternalServerError)
@@ -84,7 +83,8 @@ func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO task_ai_state (
 			task_id, model_version,
 			relevance, impact, urgency, effort,
-			normalized_task, avoidance_flag, explanation_short, tags
+			normalized_task, avoidance_flag, explanation_short,
+			tags
 		)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 	`,

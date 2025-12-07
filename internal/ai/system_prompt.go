@@ -1,6 +1,6 @@
 package ai
 
-// Переименовано под Path B (EvaluateTask → Instructions)
+// Полный deterministic системный промпт для Responses API
 const SystemPrompt = `
 1. ROLE & SCOPE
 

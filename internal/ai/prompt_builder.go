@@ -2,7 +2,7 @@ package ai
 
 import "strings"
 
-// BuildUserPrompt формирует строковый input для Responses API (Path B)
+// BuildUserPrompt — формирует строковый input для Responses API
 func BuildUserPrompt(
 	goalSummary string,
 	taskRaw string,

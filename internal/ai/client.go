@@ -29,7 +29,7 @@ func New(apiKey, model string) *OpenAIClient {
 	}
 }
 
-// SOCKS5 proxy
+// SOCKS5 proxy (как у тебя ранее)
 func newHTTPClientWithProxy() (*http.Client, error) {
 	dialer, err := proxy.SOCKS5("tcp", "127.0.0.1:10808", nil, proxy.Direct)
 	if err != nil {
@@ -54,7 +54,7 @@ func newHTTPClientWithProxy() (*http.Client, error) {
 
 type responsesRequest struct {
 	Model        string                 `json:"model"`
-	Input        interface{}            `json:"input"`
+	Input        string                 `json:"input"`
 	Instructions string                 `json:"instructions"`
 	Text         map[string]interface{} `json:"text"`
 }
@@ -68,12 +68,12 @@ type responsesResponse struct {
 }
 
 // ---------------------------------------------------------
-// EvaluateTask — Path B (input + instructions)
+// EvaluateTask — Path B
 // ---------------------------------------------------------
 
 func (c *OpenAIClient) EvaluateTask(
 	ctx context.Context,
-	input string, // теперь просто строка
+	input string, // <-- строка (обязательно)
 ) (json.RawMessage, error) {
 
 	httpClient, err := newHTTPClientWithProxy()
@@ -81,12 +81,15 @@ func (c *OpenAIClient) EvaluateTask(
 		return nil, fmt.Errorf("proxy init error: %w", err)
 	}
 
+	// ❗ Правильный формат Responses API (Dec 2025)
 	reqBody := responsesRequest{
 		Model:        c.Model,
-		Input:        input,        // <-- строка
-		Instructions: SystemPrompt, // <-- системный промпт
+		Input:        input,
+		Instructions: SystemPrompt,
 		Text: map[string]interface{}{
-			"format": "json_object",
+			"format": map[string]string{
+				"type": "json_object",
+			},
 		},
 	}
 
