@@ -1,7 +1,7 @@
 package ai
 
 // Переименовано под Path B (EvaluateTask → Instructions)
-const taskEvalSystemPrompt = `
+const SystemPrompt = `
 1. ROLE & SCOPE
 
 You MUST:

@@ -1,22 +1,50 @@
 package ai
 
-// BuildPromptInput — создаёт JSON input для Path B
-func BuildPromptInput(
+import "strings"
+
+// BuildUserPrompt формирует строковый input для Responses API (Path B)
+func BuildUserPrompt(
 	goalSummary string,
 	taskRaw string,
 	deadline *string,
 	duration *string,
 	category *string,
 	userState *string,
-) map[string]interface{} {
+) string {
 
-	return map[string]interface{}{
-		"goal_summary":                goalSummary,
-		"task_raw":                    taskRaw,
-		"optional_deadline":           deadline,
-		"optional_estimated_duration": duration,
-		"optional_category":           category,
-		"optional_user_state":         userState,
-		"history_metadata":            nil,
+	var b strings.Builder
+
+	b.WriteString("goal_summary: ")
+	b.WriteString(goalSummary)
+	b.WriteString("\n")
+
+	b.WriteString("task_raw: ")
+	b.WriteString(taskRaw)
+	b.WriteString("\n")
+
+	if deadline != nil && *deadline != "" {
+		b.WriteString("optional_deadline: ")
+		b.WriteString(*deadline)
+		b.WriteString("\n")
 	}
+
+	if duration != nil && *duration != "" {
+		b.WriteString("optional_estimated_duration: ")
+		b.WriteString(*duration)
+		b.WriteString("\n")
+	}
+
+	if category != nil && *category != "" {
+		b.WriteString("optional_category: ")
+		b.WriteString(*category)
+		b.WriteString("\n")
+	}
+
+	if userState != nil && *userState != "" {
+		b.WriteString("optional_user_state: ")
+		b.WriteString(*userState)
+		b.WriteString("\n")
+	}
+
+	return b.String()
 }

@@ -73,7 +73,7 @@ type responsesResponse struct {
 
 func (c *OpenAIClient) EvaluateTask(
 	ctx context.Context,
-	input map[string]interface{},
+	input string, // теперь просто строка
 ) (json.RawMessage, error) {
 
 	httpClient, err := newHTTPClientWithProxy()
@@ -81,11 +81,10 @@ func (c *OpenAIClient) EvaluateTask(
 		return nil, fmt.Errorf("proxy init error: %w", err)
 	}
 
-	// JSON payload
 	reqBody := responsesRequest{
 		Model:        c.Model,
-		Input:        input,
-		Instructions: taskEvalSystemPrompt, // здесь твой системный промпт
+		Input:        input,        // <-- строка
+		Instructions: SystemPrompt, // <-- системный промпт
 		Text: map[string]interface{}{
 			"format": "json_object",
 		},

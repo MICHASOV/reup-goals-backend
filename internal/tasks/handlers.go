@@ -52,7 +52,8 @@ func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.Background()
 
-	input := ai.BuildPromptInput(
+	// ❗ Правильно: Path B → input = STRING
+	input := ai.BuildUserPrompt(
 		req.GoalSummary,
 		req.TaskRaw,
 		req.Deadline,
@@ -61,6 +62,7 @@ func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 		req.UserState,
 	)
 
+	// Вызываем OpenAI
 	rawResult, err := h.AI.EvaluateTask(ctx, input)
 	if err != nil {
 		http.Error(w, "ai error: "+err.Error(), http.StatusInternalServerError)
