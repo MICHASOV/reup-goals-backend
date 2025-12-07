@@ -23,7 +23,6 @@ func New(aiClient *ai.OpenAIClient, db *sql.DB) *TaskHandler {
 	}
 }
 
-// --- JSON структура ответа модели Path B ---
 type AIParsedResult struct {
 	NormalizedTask string `json:"normalized_task"`
 
@@ -41,7 +40,6 @@ type AIParsedResult struct {
 func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 	var req EvaluateRequest
 
-	// Декод входящего JSON
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
@@ -52,9 +50,9 @@ func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Создаем prompt
 	ctx := context.Background()
-	prompt := ai.BuildChatPrompt(
+
+	input := ai.BuildPromptInput(
 		req.GoalSummary,
 		req.TaskRaw,
 		req.Deadline,
@@ -63,42 +61,34 @@ func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 		req.UserState,
 	)
 
-	// Вызываем OpenAI
-	rawResult, err := h.AI.EvaluateTask(ctx, prompt)
+	rawResult, err := h.AI.EvaluateTask(ctx, input)
 	if err != nil {
 		http.Error(w, "ai error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Парсим JSON от модели
 	var parsed AIParsedResult
 	if err := json.Unmarshal(rawResult, &parsed); err != nil {
 		http.Error(w, "invalid AI JSON: "+err.Error(), 500)
 		return
 	}
 
-	// Конвертация float→int (0..1 → 0..100)
 	rel := int(parsed.Scores.Relevance * 100)
 	imp := int(parsed.Scores.Impact * 100)
 	urg := int(parsed.Scores.Urgency * 100)
 	eff := int(parsed.Scores.Effort * 100)
 
-	// Сохраняем state в БД
 	_, err = h.DB.Exec(`
 		INSERT INTO task_ai_state (
 			task_id, model_version,
 			relevance, impact, urgency, effort,
-			normalized_task, avoidance_flag, explanation_short,
-			tags
+			normalized_task, avoidance_flag, explanation_short, tags
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 	`,
 		req.TaskID,
 		h.AI.Model,
-		rel,
-		imp,
-		urg,
-		eff,
+		rel, imp, urg, eff,
 		parsed.NormalizedTask,
 		parsed.Avoidance,
 		parsed.Explanation,
@@ -110,7 +100,6 @@ func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Отдаем полностью распарсенный JSON
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(parsed)
 }

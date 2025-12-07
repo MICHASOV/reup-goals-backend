@@ -14,29 +14,6 @@ import (
 )
 
 // ---------------------------------------------------------
-// Модели Responses API
-// ---------------------------------------------------------
-
-type ResponseMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type ResponseRequest struct {
-	Model          string            `json:"model"`
-	Messages       []ResponseMessage `json:"messages"`
-	ResponseFormat map[string]string `json:"response_format,omitempty"`
-}
-
-type ResponseOutput struct {
-	Output []struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"output"`
-}
-
-// ---------------------------------------------------------
 // OpenAI Client
 // ---------------------------------------------------------
 
@@ -52,7 +29,7 @@ func New(apiKey, model string) *OpenAIClient {
 	}
 }
 
-// Используем SOCKS5 — как у тебя было
+// SOCKS5 proxy
 func newHTTPClientWithProxy() (*http.Client, error) {
 	dialer, err := proxy.SOCKS5("tcp", "127.0.0.1:10808", nil, proxy.Direct)
 	if err != nil {
@@ -72,12 +49,31 @@ func newHTTPClientWithProxy() (*http.Client, error) {
 }
 
 // ---------------------------------------------------------
-// EvaluateTask — принимает MESSAGES, а не JSON input
+// Responses API models
+// ---------------------------------------------------------
+
+type responsesRequest struct {
+	Model        string                 `json:"model"`
+	Input        interface{}            `json:"input"`
+	Instructions string                 `json:"instructions"`
+	Text         map[string]interface{} `json:"text"`
+}
+
+type responsesResponse struct {
+	Output []struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"output"`
+}
+
+// ---------------------------------------------------------
+// EvaluateTask — Path B (input + instructions)
 // ---------------------------------------------------------
 
 func (c *OpenAIClient) EvaluateTask(
 	ctx context.Context,
-	messages []map[string]string, // <-- то, что формирует BuildChatPrompt
+	input map[string]interface{},
 ) (json.RawMessage, error) {
 
 	httpClient, err := newHTTPClientWithProxy()
@@ -85,45 +81,34 @@ func (c *OpenAIClient) EvaluateTask(
 		return nil, fmt.Errorf("proxy init error: %w", err)
 	}
 
-	// Преобразуем messages в формат Responses API
-	var formatted []ResponseMessage
-	for _, m := range messages {
-		formatted = append(formatted, ResponseMessage{
-			Role:    m["role"],
-			Content: m["content"],
-		})
-	}
-
-	// Сборка тела запроса (новый формат Responses API)
-	reqBody := map[string]interface{}{
-		"model":    c.Model,
-		"messages": formatted,
-		"text": map[string]interface{}{
-			"format": "json",
+	// JSON payload
+	reqBody := responsesRequest{
+		Model:        c.Model,
+		Input:        input,
+		Instructions: taskEvalSystemPrompt, // здесь твой системный промпт
+		Text: map[string]interface{}{
+			"format": "json_object",
 		},
 	}
 
 	body, err := json.Marshal(reqBody)
-
 	if err != nil {
 		return nil, fmt.Errorf("marshal error: %w", err)
 	}
 
-	// Формируем запрос
 	req, err := http.NewRequestWithContext(
 		ctx,
-		"POST",
+		http.MethodPost,
 		"https://api.openai.com/v1/responses",
 		bytes.NewBuffer(body),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("request create error: %w", err)
+		return nil, fmt.Errorf("request error: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	// Отправка
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http error: %w", err)
@@ -136,7 +121,7 @@ func (c *OpenAIClient) EvaluateTask(
 		return nil, fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
 	}
 
-	var parsed ResponseOutput
+	var parsed responsesResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
 	}
