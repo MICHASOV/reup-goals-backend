@@ -2,47 +2,115 @@ package tasks
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 
 	"reup-goals-backend/internal/ai"
+
+	"github.com/lib/pq"
 )
 
 type TaskHandler struct {
 	AI *ai.OpenAIClient
+	DB *sql.DB
 }
 
-func New(aiClient *ai.OpenAIClient) *TaskHandler {
-	return &TaskHandler{AI: aiClient}
+func New(aiClient *ai.OpenAIClient, db *sql.DB) *TaskHandler {
+	return &TaskHandler{
+		AI: aiClient,
+		DB: db,
+	}
+}
+
+// --- JSON структура ответа модели Path B ---
+type AIParsedResult struct {
+	NormalizedTask string `json:"normalized_task"`
+
+	Scores struct {
+		Relevance float64 `json:"relevance"`
+		Impact    float64 `json:"impact"`
+		Urgency   float64 `json:"urgency"`
+		Effort    float64 `json:"effort"`
+	} `json:"scores"`
+
+	Avoidance   bool   `json:"avoidance_flag"`
+	Explanation string `json:"explanation_short"`
 }
 
 func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 	var req EvaluateRequest
+
+	// Декод входящего JSON
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 
-	input := map[string]interface{}{
-		"goal_summary":                  req.GoalSummary,
-		"task_raw":                      req.TaskRaw,
-		"optional_deadline":             req.Deadline,
-		"optional_estimated_duration":   req.Duration,
-		"optional_category":             req.Category,
-		"optional_user_state":           req.UserState,
-		"history_metadata":              nil,
-	}
-
-	ctx := context.Background()
-
-	result, err := h.AI.EvaluateTask(ctx, input)
-	if err != nil {
-		http.Error(w, "ai error: "+err.Error(), 500)
+	if req.TaskID == 0 {
+		http.Error(w, "task_id required", http.StatusBadRequest)
 		return
 	}
 
+	// Создаем prompt
+	ctx := context.Background()
+	prompt := ai.BuildChatPrompt(
+		req.GoalSummary,
+		req.TaskRaw,
+		req.Deadline,
+		req.Duration,
+		req.Category,
+		req.UserState,
+	)
+
+	// Вызываем OpenAI
+	rawResult, err := h.AI.EvaluateTask(ctx, prompt)
+	if err != nil {
+		http.Error(w, "ai error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Парсим JSON от модели
+	var parsed AIParsedResult
+	if err := json.Unmarshal(rawResult, &parsed); err != nil {
+		http.Error(w, "invalid AI JSON: "+err.Error(), 500)
+		return
+	}
+
+	// Конвертация float→int (0..1 → 0..100)
+	rel := int(parsed.Scores.Relevance * 100)
+	imp := int(parsed.Scores.Impact * 100)
+	urg := int(parsed.Scores.Urgency * 100)
+	eff := int(parsed.Scores.Effort * 100)
+
+	// Сохраняем state в БД
+	_, err = h.DB.Exec(`
+		INSERT INTO task_ai_state (
+			task_id, model_version,
+			relevance, impact, urgency, effort,
+			normalized_task, avoidance_flag, explanation_short,
+			tags
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`,
+		req.TaskID,
+		h.AI.Model,
+		rel,
+		imp,
+		urg,
+		eff,
+		parsed.NormalizedTask,
+		parsed.Avoidance,
+		parsed.Explanation,
+		pq.Array([]string{}),
+	)
+
+	if err != nil {
+		http.Error(w, "db insert error: "+err.Error(), 500)
+		return
+	}
+
+	// Отдаем полностью распарсенный JSON
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(EvaluateResponse{
-		AIResult: json.RawMessage(result),
-	})
+	json.NewEncoder(w).Encode(parsed)
 }

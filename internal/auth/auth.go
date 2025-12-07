@@ -290,8 +290,11 @@ func main() {
 	}
 	defer database.Close()
 
-	aiClient := ai.New(cfg.OpenAIKey, cfg.AssistantID)
-	taskAIHandler := tasks.New(aiClient)
+	// Новый AI-клиент (model вместо AssistantID)
+	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel)
+
+	// ❗ ПЕРЕДАЁМ database В TaskHandler
+	taskAIHandler := tasks.New(aiClient, database)
 
 	mux := http.NewServeMux()
 
@@ -308,8 +311,8 @@ func main() {
 	mux.Handle("/tasks", getTasks(database))
 	mux.Handle("/task/create", postTask(database))
 
-	// AI
-	mux.HandleFunc("/task/evaluate", taskAIHandler.Evaluate)
+	// AI — обязательно под авторизацией!
+	mux.Handle("/task/evaluate", withAuth(taskAIHandler.Evaluate, database))
 
 	// CORS
 	handler := cors.AllowAll().Handler(mux)

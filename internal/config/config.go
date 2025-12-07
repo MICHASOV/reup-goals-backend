@@ -7,34 +7,39 @@ import (
 )
 
 type Config struct {
-	DBHost      string
-	DBPort      int
-	DBUser      string
-	DBPassword  string
-	DBName      string
+	DBHost     string
+	DBPort     int
+	DBUser     string
+	DBPassword string
+	DBName     string
 
-	OpenAIKey    string
-	AssistantID  string
+	OpenAIKey   string
+	OpenAIModel string
 }
 
 func Load() *Config {
 
-	// DB port parse
+	// Парсим DB_PORT
 	portStr := os.Getenv("DB_PORT")
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		port = 5432 // fallback
 	}
 
-	return &Config{
-		DBHost:      os.Getenv("DB_HOST"),
-		DBPort:      port,
-		DBUser:      os.Getenv("DB_USER"),
-		DBPassword:  os.Getenv("DB_PASSWORD"),
-		DBName:      os.Getenv("DB_NAME"),
+	model := os.Getenv("OPENAI_MODEL")
+	if model == "" {
+		model = "gpt-4o-mini" // дефолтная модель (можешь заменить на нужную)
+	}
 
-		OpenAIKey:    os.Getenv("OPENAI_API_KEY"),
-		AssistantID:  os.Getenv("OPENAI_ASSISTANT_ID"),
+	return &Config{
+		DBHost:     os.Getenv("DB_HOST"),
+		DBPort:     port,
+		DBUser:     os.Getenv("DB_USER"),
+		DBPassword: os.Getenv("DB_PASSWORD"),
+		DBName:     os.Getenv("DB_NAME"),
+
+		OpenAIKey:   os.Getenv("OPENAI_API_KEY"),
+		OpenAIModel: model,
 	}
 }
 

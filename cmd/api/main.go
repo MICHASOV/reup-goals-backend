@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,7 +23,7 @@ import (
 var jwtSecret = []byte("SUPER_SECRET_CHANGE_ME")
 
 // ------------------------------------------------------------
-// JWT helpers
+// JWT
 // ------------------------------------------------------------
 
 func generateToken(userID int) (string, error) {
@@ -31,7 +32,6 @@ func generateToken(userID int) (string, error) {
 		"exp":     time.Now().Add(30 * 24 * time.Hour).Unix(),
 		"iat":     time.Now().Unix(),
 	}
-
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return t.SignedString(jwtSecret)
 }
@@ -43,13 +43,11 @@ func parseToken(tokenString string) (int, error) {
 	if err != nil || !token.Valid {
 		return 0, err
 	}
-
 	data := token.Claims.(jwt.MapClaims)
 	uidFloat, ok := data["user_id"].(float64)
 	if !ok {
 		return 0, err
 	}
-
 	return int(uidFloat), nil
 }
 
@@ -78,7 +76,7 @@ func withAuth(next http.HandlerFunc, db *sql.DB) http.HandlerFunc {
 }
 
 // ------------------------------------------------------------
-// AUTH
+// AUTH HANDLERS
 // ------------------------------------------------------------
 
 func registerHandler(dbx *sql.DB) http.HandlerFunc {
@@ -145,7 +143,6 @@ func loginHandler(dbx *sql.DB) http.HandlerFunc {
 func meHandler(dbx *sql.DB) http.HandlerFunc {
 	return withAuth(func(w http.ResponseWriter, r *http.Request) {
 		uid := r.Context().Value("user_id").(int)
-
 		var email string
 		dbx.QueryRow("SELECT email FROM users WHERE id=$1", uid).Scan(&email)
 
@@ -219,33 +216,107 @@ func postGoal(dbx *sql.DB) http.HandlerFunc {
 
 func getTasks(dbx *sql.DB) http.HandlerFunc {
 	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+
 		uid := r.Context().Value("user_id").(int)
 
 		rows, err := dbx.Query(`
-			SELECT id, text, status, created_at
-			FROM tasks
-			WHERE user_id=$1
-			ORDER BY id DESC
+			SELECT 
+				t.id,
+				t.text,
+				t.status,
+				t.created_at,
+
+				COALESCE(a.relevance, 0),
+				COALESCE(a.impact, 0),
+				COALESCE(a.urgency, 0),
+				COALESCE(a.effort, 0),
+
+				COALESCE(a.normalized_task, ''),
+				COALESCE(a.avoidance_flag, false),
+				COALESCE(a.explanation_short, '')
+
+			FROM tasks t
+			LEFT JOIN LATERAL (
+				SELECT 
+					relevance,
+					impact,
+					urgency,
+					effort,
+					normalized_task,
+					avoidance_flag,
+					explanation_short
+				FROM task_ai_state
+				WHERE task_id = t.id
+				ORDER BY updated_at DESC
+				LIMIT 1
+			) a ON TRUE
+			WHERE t.user_id = $1
+			ORDER BY t.id DESC
+
 		`, uid)
 
 		if err != nil {
-			http.Error(w, "db error", 500)
+			http.Error(w, "db error: "+err.Error(), 500)
 			return
 		}
 
-		var tasksList []tasks.Task
+		var result []tasks.Task
+
 		for rows.Next() {
-			var t tasks.Task
-			rows.Scan(&t.ID, &t.Text, &t.Status, &t.CreatedAt)
-			tasksList = append(tasksList, t)
+			var (
+				t          tasks.Task
+				rel, imp   int
+				urg, eff   int
+				normalized string
+				avoidance  bool
+				explain    string
+			)
+
+			err := rows.Scan(
+				&t.ID,
+				&t.Text,
+				&t.Status,
+				&t.CreatedAt,
+				&rel,
+				&imp,
+				&urg,
+				&eff,
+				&normalized,
+				&avoidance,
+				&explain,
+			)
+
+			if err != nil {
+				http.Error(w, "scan error: "+err.Error(), 500)
+				return
+			}
+
+			t.NormalizedTask = normalized
+			t.Avoidance = avoidance
+			t.Explanation = explain
+
+			t.Priority = int(
+				float64(rel)*0.4 +
+					float64(imp)*0.4 +
+					float64(urg)*0.2 -
+					float64(eff)*0.1,
+			)
+
+			result = append(result, t)
 		}
 
-		json.NewEncoder(w).Encode(tasksList)
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].Priority > result[j].Priority
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
 	}, dbx)
 }
 
 func postTask(dbx *sql.DB) http.HandlerFunc {
 	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+
 		uid := r.Context().Value("user_id").(int)
 
 		var body struct {
@@ -253,26 +324,39 @@ func postTask(dbx *sql.DB) http.HandlerFunc {
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 
-		var id int
+		if body.Text == "" {
+			http.Error(w, "empty task text", 400)
+			return
+		}
+
+		var goalID *int
+		dbx.QueryRow(`
+			SELECT id FROM goals
+			WHERE user_id=$1 AND is_active=TRUE
+			ORDER BY id DESC LIMIT 1
+		`, uid).Scan(&goalID)
+
+		var taskID int
 		var created time.Time
 		var status string
 
 		err := dbx.QueryRow(`
-			INSERT INTO tasks (text, user_id)
-			VALUES ($1, $2)
+			INSERT INTO tasks (text, user_id, goal_id)
+			VALUES ($1, $2, $3)
 			RETURNING id, created_at, status
-		`, body.Text, uid).Scan(&id, &created, &status)
+		`, body.Text, uid, goalID).Scan(&taskID, &created, &status)
 
 		if err != nil {
-			http.Error(w, "db error", 500)
+			http.Error(w, "db error: "+err.Error(), 500)
 			return
 		}
 
 		json.NewEncoder(w).Encode(map[string]any{
-			"id":         id,
+			"id":         taskID,
 			"text":       body.Text,
 			"created_at": created,
 			"status":     status,
+			"priority":   0,
 		})
 	}, dbx)
 }
@@ -290,28 +374,23 @@ func main() {
 	}
 	defer database.Close()
 
-	aiClient := ai.New(cfg.OpenAIKey, cfg.AssistantID)
-	taskAIHandler := tasks.New(aiClient)
+	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel)
+	taskAIHandler := tasks.New(aiClient, database)
 
 	mux := http.NewServeMux()
 
-	// AUTH
 	mux.Handle("/auth/register", registerHandler(database))
 	mux.Handle("/auth/login", loginHandler(database))
 	mux.Handle("/auth/me", meHandler(database))
 
-	// GOALS
 	mux.Handle("/goal", getGoal(database))
 	mux.Handle("/goal/create", postGoal(database))
 
-	// TASKS
 	mux.Handle("/tasks", getTasks(database))
 	mux.Handle("/task/create", postTask(database))
 
-	// AI
 	mux.Handle("/task/evaluate", withAuth(taskAIHandler.Evaluate, database))
 
-	// CORS
 	handler := cors.AllowAll().Handler(mux)
 
 	log.Println("🚀 SERVER RUNNING ON :8080")
