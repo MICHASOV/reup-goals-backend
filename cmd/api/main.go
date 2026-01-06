@@ -230,8 +230,8 @@ func postGoal(dbx *sql.DB) http.HandlerFunc {
 
 		// ✅ NEW: сохраняем context в goal_context.summary_for_ai
 		_, err = dbx.Exec(`
-			INSERT INTO goal_context (goal_id, summary_for_ai, updated_at)
-			VALUES ($1, $2, now())
+			INSERT INTO goal_context (goal_id, summary_for_ai, context_json, updated_at)
+			VALUES ($1, $2, '{}'::jsonb, now())
 			ON CONFLICT (goal_id) DO UPDATE SET
 				summary_for_ai = EXCLUDED.summary_for_ai,
 				updated_at = now()
@@ -239,7 +239,7 @@ func postGoal(dbx *sql.DB) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, "db error (goal_context): "+err.Error(), 500)
 			return
-		}
+}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -553,22 +553,33 @@ func postTask(dbx *sql.DB, taskAI *tasks.TaskHandler) http.HandlerFunc {
 			return
 		}
 
-		// ✅ AI on create
-		_, err = taskAI.EvaluateAndStore(context.Background(), taskID, goalSummary, combined)
-		if err != nil {
-			http.Error(w, "ai error: "+err.Error(), 500)
-			return
+		// ✅ AI on create (НЕ ЛОМАЕМ CRUD если AI упал)
+		if _, aiErr := taskAI.EvaluateAndStore(context.Background(), taskID, goalSummary, combined); aiErr != nil {
+			log.Printf("[WARN] AI evaluate failed on CREATE task_id=%d: %v", taskID, aiErr)
+			w.Header().Set("X-AI-Error", "1")
 		}
 
-		// ✅ fullpack response
-		full, err := fetchTaskFullpack(dbx, uid, taskID)
-		if err != nil {
-			http.Error(w, "db fetch error: "+err.Error(), 500)
-			return
-		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(full)
+		// ✅ fullpack response (даже если AI упал)
+full, err := fetchTaskFullpack(dbx, uid, taskID)
+if err != nil {
+    // fallback: вернём хотя бы то, что знаем
+    log.Printf("[WARN] fetchTaskFullpack failed on CREATE task_id=%d: %v", taskID, err)
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(map[string]any{
+        "id":          taskID,
+        "text":        combined,
+        "title":       safeTitle,
+        "description": desc,
+        "status":      status,
+        "created_at":  created,
+        "priority":    0,
+    })
+    return
+}
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(full)
 	}, dbx)
 }
 
@@ -619,16 +630,24 @@ func updateTask(dbx *sql.DB, taskAI *tasks.TaskHandler) http.HandlerFunc {
 			return
 		}
 
-		// ✅ AI on update (как ты хотел)
-		_, err = taskAI.EvaluateAndStore(context.Background(), body.TaskID, goalSummary, combined)
-		if err != nil {
-			http.Error(w, "ai error: "+err.Error(), 500)
-			return
-		}
+		// ✅ AI on update (НЕ ЛОМАЕМ CRUD если AI упал)
+if _, aiErr := taskAI.EvaluateAndStore(context.Background(), body.TaskID, goalSummary, combined); aiErr != nil {
+    log.Printf("[WARN] AI evaluate failed on UPDATE task_id=%d: %v", body.TaskID, aiErr)
+    w.Header().Set("X-AI-Error", "1")
+}
 
 		full, err := fetchTaskFullpack(dbx, uid, body.TaskID)
 		if err != nil {
-			http.Error(w, "db fetch error: "+err.Error(), 500)
+			log.Printf("[WARN] fetchTaskFullpack failed on UPDATE task_id=%d: %v", body.TaskID, err)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":          body.TaskID,
+				"text":        combined,
+				"title":       safeTitle,
+				"description": desc,
+				"status":      "active",
+				"priority":    0,
+			})
 			return
 		}
 
