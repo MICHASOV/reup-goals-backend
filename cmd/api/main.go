@@ -229,17 +229,20 @@ func postGoal(dbx *sql.DB) http.HandlerFunc {
 		}
 
 		// ✅ NEW: сохраняем context в goal_context.summary_for_ai
+		// ВАЖНО: goal_context.context_json = NOT NULL, поэтому кладём минимум пустой JSON.
 		_, err = dbx.Exec(`
-			INSERT INTO goal_context (goal_id, summary_for_ai, context_json, updated_at)
-			VALUES ($1, $2, '{}'::jsonb, now())
-			ON CONFLICT (goal_id) DO UPDATE SET
-				summary_for_ai = EXCLUDED.summary_for_ai,
-				updated_at = now()
+		INSERT INTO goal_context (goal_id, context_json, summary_for_ai, updated_at)
+		VALUES ($1, '{}'::jsonb, $2, now())
+		ON CONFLICT (goal_id) DO UPDATE SET
+			context_json = COALESCE(goal_context.context_json, '{}'::jsonb),
+			summary_for_ai = EXCLUDED.summary_for_ai,
+			updated_at = now()
 		`, id, body.Context)
 		if err != nil {
-			http.Error(w, "db error (goal_context): "+err.Error(), 500)
-			return
-}
+		http.Error(w, "db error (goal_context): "+err.Error(), 500)
+		return
+		}
+
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
