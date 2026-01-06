@@ -154,7 +154,7 @@ func meHandler(dbx *sql.DB) http.HandlerFunc {
 }
 
 // ------------------------------------------------------------
-// GOALS
+// GOALS (Этап 3 расширим, тут не трогаем)
 // ------------------------------------------------------------
 
 func getGoal(dbx *sql.DB) http.HandlerFunc {
@@ -175,7 +175,29 @@ func getGoal(dbx *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		json.NewEncoder(w).Encode(g)
+		// ✅ ДОБАВЛЯЕМ: подтягиваем context из goal_context.summary_for_ai
+		var ctx sql.NullString
+		_ = dbx.QueryRow(`
+			SELECT summary_for_ai
+			FROM goal_context
+			WHERE goal_id = $1
+			LIMIT 1
+		`, g.ID).Scan(&ctx)
+
+		contextText := ""
+		if ctx.Valid {
+			contextText = ctx.String
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":          g.ID,
+			"title":       g.Title,
+			"description": g.Description,
+			"context":     contextText,
+			"is_active":   g.IsActive,
+			"created_at":  g.CreatedAt,
+		})
 	}, dbx)
 }
 
@@ -186,8 +208,12 @@ func postGoal(dbx *sql.DB) http.HandlerFunc {
 		var body struct {
 			Title       string `json:"title"`
 			Description string `json:"description"`
+			Context     string `json:"context"` // ✅ NEW
 		}
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
 
 		var id int
 		var created time.Time
@@ -202,16 +228,177 @@ func postGoal(dbx *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		// ✅ NEW: сохраняем context в goal_context.summary_for_ai
+		_, err = dbx.Exec(`
+			INSERT INTO goal_context (goal_id, summary_for_ai, updated_at)
+			VALUES ($1, $2, now())
+			ON CONFLICT (goal_id) DO UPDATE SET
+				summary_for_ai = EXCLUDED.summary_for_ai,
+				updated_at = now()
+		`, id, body.Context)
+		if err != nil {
+			http.Error(w, "db error (goal_context): "+err.Error(), 500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"id":         id,
-			"title":      body.Title,
-			"created_at": created,
+			"id":          id,
+			"title":       body.Title,
+			"description": body.Description,
+			"context":     body.Context,
+			"created_at":  created,
 		})
 	}, dbx)
 }
 
+
 // ------------------------------------------------------------
-// TASKS
+// TASKS HELPERS
+// ------------------------------------------------------------
+
+func buildCombinedTaskText(title, description string) (safeTitle, desc, combined string) {
+	t := strings.TrimSpace(title)
+	d := strings.TrimSpace(description)
+
+	if t == "" && d != "" {
+		t = "Без названия"
+	}
+	if t == "" && d == "" {
+		return "", "", ""
+	}
+
+	safeTitle = t
+	desc = d
+
+	combined = safeTitle
+	if desc != "" {
+		combined = combined + "\n\n" + desc
+	}
+	return
+}
+
+func fetchActiveGoalAndSummary(dbx *sql.DB, uid int) (goalID *int, goalSummary string, err error) {
+	// Берём активную цель
+	var gid *int
+	var title, desc string
+	err = dbx.QueryRow(`
+		SELECT id, COALESCE(title,''), COALESCE(description,'')
+		FROM goals
+		WHERE user_id=$1 AND is_active=TRUE
+		ORDER BY id DESC LIMIT 1
+	`, uid).Scan(&gid, &title, &desc)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Контекст (summary_for_ai) — если есть, добавим; если нет, просто пусто
+	var ctxText sql.NullString
+	_ = dbx.QueryRow(`
+		SELECT summary_for_ai
+		FROM goal_context
+		WHERE goal_id = $1
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, *gid).Scan(&ctxText)
+
+	parts := []string{}
+	if strings.TrimSpace(title) != "" {
+		parts = append(parts, strings.TrimSpace(title))
+	}
+	if strings.TrimSpace(desc) != "" {
+		parts = append(parts, strings.TrimSpace(desc))
+	}
+	if ctxText.Valid && strings.TrimSpace(ctxText.String) != "" {
+		parts = append(parts, "CONTEXT:\n"+strings.TrimSpace(ctxText.String))
+	}
+
+	return gid, strings.Join(parts, "\n\n"), nil
+}
+
+func fetchTaskFullpack(dbx *sql.DB, uid int, taskID int) (tasks.Task, error) {
+	row := dbx.QueryRow(`
+		SELECT 
+			t.id,
+			t.text,
+			COALESCE(t.title,''),
+			COALESCE(t.description,''),
+			t.status,
+			t.created_at,
+
+			COALESCE(a.relevance, 0),
+			COALESCE(a.impact, 0),
+			COALESCE(a.urgency, 0),
+			COALESCE(a.effort, 0),
+
+			COALESCE(a.normalized_task, ''),
+			COALESCE(a.avoidance_flag, false),
+			COALESCE(a.trap_task, false),
+			COALESCE(a.clarification_needed, false),
+			COALESCE(a.clarification_question, ''),
+			COALESCE(a.explanation_short, '')
+
+		FROM tasks t
+		LEFT JOIN LATERAL (
+			SELECT 
+				relevance,
+				impact,
+				urgency,
+				effort,
+				normalized_task,
+				avoidance_flag,
+				trap_task,
+				clarification_needed,
+				clarification_question,
+				explanation_short
+			FROM task_ai_state
+			WHERE task_id = t.id
+			ORDER BY updated_at DESC
+			LIMIT 1
+		) a ON TRUE
+		WHERE t.user_id = $1 AND t.id = $2
+	`, uid, taskID)
+
+	var (
+		t          tasks.Task
+		rel, imp   int
+		urg, eff   int
+	)
+
+	err := row.Scan(
+		&t.ID,
+		&t.Text,
+		&t.Title,
+		&t.Description,
+		&t.Status,
+		&t.CreatedAt,
+		&rel,
+		&imp,
+		&urg,
+		&eff,
+		&t.NormalizedTask,
+		&t.AvoidanceFlag,
+		&t.TrapTask,
+		&t.ClarificationNeeded,
+		&t.ClarificationQuestion,
+		&t.ExplanationShort,
+	)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+
+	t.Priority = int(
+		float64(rel)*0.4 +
+			float64(imp)*0.4 +
+			float64(urg)*0.2 -
+			float64(eff)*0.1,
+	)
+
+	return t, nil
+}
+
+// ------------------------------------------------------------
+// TASKS HANDLERS
 // ------------------------------------------------------------
 
 func getTasks(dbx *sql.DB) http.HandlerFunc {
@@ -220,40 +407,47 @@ func getTasks(dbx *sql.DB) http.HandlerFunc {
 		uid := r.Context().Value("user_id").(int)
 
 		rows, err := dbx.Query(`
-			SELECT 
-				t.id,
-				t.text,
-				t.status,
-				t.created_at,
-
-				COALESCE(a.relevance, 0),
-				COALESCE(a.impact, 0),
-				COALESCE(a.urgency, 0),
-				COALESCE(a.effort, 0),
-
-				COALESCE(a.normalized_task, ''),
-				COALESCE(a.avoidance_flag, false),
-				COALESCE(a.explanation_short, '')
-
-			FROM tasks t
-			LEFT JOIN LATERAL (
 				SELECT 
-					relevance,
-					impact,
-					urgency,
-					effort,
-					normalized_task,
-					avoidance_flag,
-					explanation_short
-				FROM task_ai_state
-				WHERE task_id = t.id
-				ORDER BY updated_at DESC
-				LIMIT 1
-			) a ON TRUE
-			WHERE t.user_id = $1
-			ORDER BY t.id DESC
+					t.id,
+					t.text,
+					COALESCE(t.title,''),
+					COALESCE(t.description,''),
+					t.status,
+					t.created_at,
 
-		`, uid)
+					COALESCE(a.relevance, 0),
+					COALESCE(a.impact, 0),
+					COALESCE(a.urgency, 0),
+					COALESCE(a.effort, 0),
+
+					COALESCE(a.normalized_task, ''),
+					COALESCE(a.avoidance_flag, false),
+					COALESCE(a.trap_task, false),
+					COALESCE(a.clarification_needed, false),
+					COALESCE(a.clarification_question, ''),
+					COALESCE(a.explanation_short, '')
+
+				FROM tasks t
+				LEFT JOIN LATERAL (
+					SELECT 
+						relevance,
+						impact,
+						urgency,
+						effort,
+						normalized_task,
+						avoidance_flag,
+						trap_task,
+						clarification_needed,
+						clarification_question,
+						explanation_short
+					FROM task_ai_state
+					WHERE task_id = t.id
+					ORDER BY updated_at DESC
+					LIMIT 1
+				) a ON TRUE
+				WHERE t.user_id = $1
+				ORDER BY t.id DESC
+			`, uid)
 
 		if err != nil {
 			http.Error(w, "db error: "+err.Error(), 500)
@@ -264,36 +458,33 @@ func getTasks(dbx *sql.DB) http.HandlerFunc {
 
 		for rows.Next() {
 			var (
-				t          tasks.Task
-				rel, imp   int
-				urg, eff   int
-				normalized string
-				avoidance  bool
-				explain    string
+				t        tasks.Task
+				rel, imp int
+				urg, eff int
 			)
 
 			err := rows.Scan(
 				&t.ID,
 				&t.Text,
+				&t.Title,
+				&t.Description,
 				&t.Status,
 				&t.CreatedAt,
 				&rel,
 				&imp,
 				&urg,
 				&eff,
-				&normalized,
-				&avoidance,
-				&explain,
+				&t.NormalizedTask,
+				&t.AvoidanceFlag,
+				&t.TrapTask,
+				&t.ClarificationNeeded,
+				&t.ClarificationQuestion,
+				&t.ExplanationShort,
 			)
-
 			if err != nil {
 				http.Error(w, "scan error: "+err.Error(), 500)
 				return
 			}
-
-			t.NormalizedTask = normalized
-			t.Avoidance = avoidance
-			t.Explanation = explain
 
 			t.Priority = int(
 				float64(rel)*0.4 +
@@ -306,58 +497,143 @@ func getTasks(dbx *sql.DB) http.HandlerFunc {
 		}
 
 		sort.Slice(result, func(i, j int) bool {
-			return result[i].Priority > result[j].Priority
-		})
+	if result[i].Priority != result[j].Priority {
+		return result[i].Priority > result[j].Priority
+	}
+	// тайбрейкер: старые выше или ниже — выбери один.
+	// Я предлагаю: более ранние выше (чтобы не прыгало)
+	if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	}
+	return result[i].ID < result[j].ID
+})
+
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	}, dbx)
 }
 
-func postTask(dbx *sql.DB) http.HandlerFunc {
+// ✅ ОБНОВЛЁННЫЙ CREATE: принимает title/description, сохраняет, запускает AI, отдаёт fullpack
+func postTask(dbx *sql.DB, taskAI *tasks.TaskHandler) http.HandlerFunc {
 	return withAuth(func(w http.ResponseWriter, r *http.Request) {
 
 		uid := r.Context().Value("user_id").(int)
 
 		var body struct {
-			Text string `json:"text"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 
-		if body.Text == "" {
-			http.Error(w, "empty task text", 400)
+		safeTitle, desc, combined := buildCombinedTaskText(body.Title, body.Description)
+		if combined == "" {
+			http.Error(w, "empty task", 400)
 			return
 		}
 
-		var goalID *int
-		dbx.QueryRow(`
-			SELECT id FROM goals
-			WHERE user_id=$1 AND is_active=TRUE
-			ORDER BY id DESC LIMIT 1
-		`, uid).Scan(&goalID)
+		goalID, goalSummary, err := fetchActiveGoalAndSummary(dbx, uid)
+		if err != nil {
+			http.Error(w, "no active goal", 404)
+			return
+		}
 
 		var taskID int
 		var created time.Time
 		var status string
 
-		err := dbx.QueryRow(`
-			INSERT INTO tasks (text, user_id, goal_id)
-			VALUES ($1, $2, $3)
+		err = dbx.QueryRow(`
+			INSERT INTO tasks (text, title, description, user_id, goal_id)
+			VALUES ($1, $2, $3, $4, $5)
 			RETURNING id, created_at, status
-		`, body.Text, uid, goalID).Scan(&taskID, &created, &status)
+		`, combined, safeTitle, desc, uid, goalID).Scan(&taskID, &created, &status)
 
 		if err != nil {
 			http.Error(w, "db error: "+err.Error(), 500)
 			return
 		}
 
-		json.NewEncoder(w).Encode(map[string]any{
-			"id":         taskID,
-			"text":       body.Text,
-			"created_at": created,
-			"status":     status,
-			"priority":   0,
-		})
+		// ✅ AI on create
+		_, err = taskAI.EvaluateAndStore(context.Background(), taskID, goalSummary, combined)
+		if err != nil {
+			http.Error(w, "ai error: "+err.Error(), 500)
+			return
+		}
+
+		// ✅ fullpack response
+		full, err := fetchTaskFullpack(dbx, uid, taskID)
+		if err != nil {
+			http.Error(w, "db fetch error: "+err.Error(), 500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(full)
+	}, dbx)
+}
+
+// ✅ НОВЫЙ UPDATE: обновляет title/description/text, запускает AI, отдаёт fullpack
+func updateTask(dbx *sql.DB, taskAI *tasks.TaskHandler) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		var body struct {
+			TaskID      int    `json:"task_id"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", 400)
+			return
+		}
+		if body.TaskID == 0 {
+			http.Error(w, "task_id required", 400)
+			return
+		}
+
+		safeTitle, desc, combined := buildCombinedTaskText(body.Title, body.Description)
+		if combined == "" {
+			http.Error(w, "empty task", 400)
+			return
+		}
+
+		// update owned task
+		res, err := dbx.Exec(`
+			UPDATE tasks
+			SET title = $1, description = $2, text = $3
+			WHERE id = $4 AND user_id = $5
+		`, safeTitle, desc, combined, body.TaskID, uid)
+		if err != nil {
+			http.Error(w, "db error: "+err.Error(), 500)
+			return
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			http.Error(w, "task not found", 404)
+			return
+		}
+
+		_, goalSummary, err := fetchActiveGoalAndSummary(dbx, uid)
+		if err != nil {
+			http.Error(w, "no active goal", 404)
+			return
+		}
+
+		// ✅ AI on update (как ты хотел)
+		_, err = taskAI.EvaluateAndStore(context.Background(), body.TaskID, goalSummary, combined)
+		if err != nil {
+			http.Error(w, "ai error: "+err.Error(), 500)
+			return
+		}
+
+		full, err := fetchTaskFullpack(dbx, uid, body.TaskID)
+		if err != nil {
+			http.Error(w, "db fetch error: "+err.Error(), 500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(full)
 	}, dbx)
 }
 
@@ -387,8 +663,14 @@ func main() {
 	mux.Handle("/goal/create", postGoal(database))
 
 	mux.Handle("/tasks", getTasks(database))
-	mux.Handle("/task/create", postTask(database))
 
+	// ✅ Create task теперь принимает title/description и возвращает fullpack
+	mux.Handle("/task/create", postTask(database, taskAIHandler))
+
+	// ✅ New update
+	mux.Handle("/task/update", updateTask(database, taskAIHandler))
+
+	// оставляем evaluate как отдельный endpoint (может пригодиться)
 	mux.Handle("/task/evaluate", withAuth(taskAIHandler.Evaluate, database))
 
 	handler := cors.AllowAll().Handler(mux)
