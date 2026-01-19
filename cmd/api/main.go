@@ -659,6 +659,59 @@ if _, aiErr := taskAI.EvaluateAndStore(context.Background(), body.TaskID, goalSu
 	}, dbx)
 }
 
+func setTaskStatus(dbx *sql.DB) http.HandlerFunc {
+	return withAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Context().Value("user_id").(int)
+
+		var body struct {
+			TaskID int    `json:"task_id"`
+			Status string `json:"status"` // active|done|canceled
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", 400)
+			return
+		}
+		if body.TaskID == 0 {
+			http.Error(w, "task_id required", 400)
+			return
+		}
+
+		switch body.Status {
+		case "active", "done", "canceled":
+			// ok
+		default:
+			http.Error(w, "invalid status", 400)
+			return
+		}
+
+		res, err := dbx.Exec(`
+			UPDATE tasks
+			SET status = $1
+			WHERE id = $2 AND user_id = $3
+		`, body.Status, body.TaskID, uid)
+		if err != nil {
+			http.Error(w, "db error: "+err.Error(), 500)
+			return
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			http.Error(w, "task not found", 404)
+			return
+		}
+
+		// возвращаем fullpack как в create/update
+		full, err := fetchTaskFullpack(dbx, uid, body.TaskID)
+		if err != nil {
+			http.Error(w, "fetch error: "+err.Error(), 500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(full)
+	}, dbx)
+}
+
+
 // ------------------------------------------------------------
 // MAIN
 // ------------------------------------------------------------
@@ -694,6 +747,9 @@ func main() {
 
 	// оставляем evaluate как отдельный endpoint (может пригодиться)
 	mux.Handle("/task/evaluate", withAuth(taskAIHandler.Evaluate, database))
+
+	mux.Handle("/task/status", setTaskStatus(database))
+
 
 	handler := cors.AllowAll().Handler(mux)
 
