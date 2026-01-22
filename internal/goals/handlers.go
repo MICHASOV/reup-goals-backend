@@ -134,7 +134,8 @@ func CreateGoalHandler(dbx *sql.DB) http.HandlerFunc {
 			"id":          id,
 			"title":       body.Title,
 			"description": body.Description,
-			"context":     body.Context,
+			"context":     strings.TrimSpace(body.Context),
+			"is_active":   true,
 			"created_at":  created,
 		})
 	}
@@ -221,7 +222,7 @@ func UpdateGoalHandler(dbx *sql.DB) http.HandlerFunc {
 					len(strings.TrimSpace(body.Context))
 
 			props := map[string]any{
-				"goal_id": goalID,
+				"goal_id":  goalID,
 				"text_len": textLen,
 				"changed": map[string]any{
 					"title":       changedTitle,
@@ -234,12 +235,37 @@ func UpdateGoalHandler(dbx *sql.DB) http.HandlerFunc {
 			_ = analytics.Log(r.Context(), dbx, env, "goal_updated", props, analytics.SourceEventKeyFromRequest(r))
 		}
 
+		// ✅ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: возвращаем НОРМАЛЬНЫЙ JSON как у /goal
+		var isActive bool
+		var createdAt time.Time
+		_ = dbx.QueryRow(`
+			SELECT is_active, created_at
+			FROM goals
+			WHERE id=$1 AND user_id=$2
+		`, goalID, uid).Scan(&isActive, &createdAt)
+
+		var ctx sql.NullString
+		_ = dbx.QueryRow(`
+			SELECT summary_for_ai
+			FROM goal_context
+			WHERE goal_id=$1
+			ORDER BY updated_at DESC
+			LIMIT 1
+		`, goalID).Scan(&ctx)
+
+		contextText := ""
+		if ctx.Valid {
+			contextText = ctx.String
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"goal_id": goalID,
-			"title":   body.Title,
+			"id":          goalID,                // ✅ было goal_id — из-за этого ломался фронт
+			"title":       body.Title,
 			"description": body.Description,
-			"context": body.Context,
+			"context":     contextText,
+			"is_active":   isActive,
+			"created_at":  createdAt,
 		})
 	}
 }
