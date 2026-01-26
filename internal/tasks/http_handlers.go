@@ -91,7 +91,10 @@ func fetchTaskFullpack(dbx *sql.DB, uid int, taskID int) (Task, error) {
 			COALESCE(a.trap_task, false),
 			COALESCE(a.clarification_needed, false),
 			COALESCE(a.clarification_question, ''),
-			COALESCE(a.explanation_short, '')
+			COALESCE(a.explanation_short, ''),
+			COALESCE(c.question, ''),
+			COALESCE(c.answer, '')
+
 
 		FROM tasks t
 		LEFT JOIN LATERAL (
@@ -111,6 +114,13 @@ func fetchTaskFullpack(dbx *sql.DB, uid int, taskID int) (Task, error) {
 			ORDER BY updated_at DESC
 			LIMIT 1
 		) a ON TRUE
+		 LEFT JOIN LATERAL (
+		SELECT question, answer
+		FROM task_clarifications
+		WHERE task_id = t.id AND user_id = $1
+		ORDER BY created_at DESC
+		LIMIT 1
+		) c ON TRUE
 		WHERE t.user_id = $1 AND t.id = $2
 	`, uid, taskID)
 
@@ -137,6 +147,8 @@ func fetchTaskFullpack(dbx *sql.DB, uid int, taskID int) (Task, error) {
 		&t.ClarificationNeeded,
 		&t.ClarificationQuestion,
 		&t.ExplanationShort,
+		&t.ClarificationLastQuestion,
+		&t.ClarificationLastAnswer,
 	)
 	if err != nil {
 		return Task{}, err
@@ -237,6 +249,8 @@ func GetTasksHandler(dbx *sql.DB) http.HandlerFunc {
 				&t.ClarificationNeeded,
 				&t.ClarificationQuestion,
 				&t.ExplanationShort,
+				&t.ClarificationLastQuestion,
+				&t.ClarificationLastAnswer,
 			); err != nil {
 				http.Error(w, "scan error: "+err.Error(), 500)
 				return
@@ -579,6 +593,7 @@ func SetTaskStatusHandler(dbx *sql.DB) http.HandlerFunc {
 			tier := analytics.TierFromScore(full.Priority)
 			timeSinceCreated := int(time.Now().UTC().Sub(createdAt).Seconds())
 
+
 			if prevStatus != "done" && body.Status == "done" {
 				props := map[string]any{
 					"task_id":                       body.TaskID,
@@ -606,6 +621,92 @@ func SetTaskStatusHandler(dbx *sql.DB) http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(full)
 	}
 }
+
+func CreateTaskClarificationHandler(dbx *sql.DB, taskAI *TaskHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var body struct {
+			TaskID   int    `json:"task_id"`
+			Question string `json:"question"`
+			Answer   string `json:"answer"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", 400)
+			return
+		}
+		if body.TaskID == 0 {
+			http.Error(w, "task_id required", 400)
+			return
+		}
+		q := strings.TrimSpace(body.Question)
+		a := strings.TrimSpace(body.Answer)
+		if q == "" || a == "" {
+			http.Error(w, "question and answer required", 400)
+			return
+		}
+
+		// check ownership + get current combined text
+		var combined string
+		err := dbx.QueryRow(`
+			SELECT text
+			FROM tasks
+			WHERE id=$1 AND user_id=$2
+		`, body.TaskID, uid).Scan(&combined)
+		if err != nil {
+			http.Error(w, "task not found", 404)
+			return
+		}
+
+		// insert clarification
+		_, err = dbx.Exec(`
+			INSERT INTO task_clarifications (user_id, task_id, question, answer)
+			VALUES ($1, $2, $3, $4)
+		`, uid, body.TaskID, q, a)
+		if err != nil {
+			http.Error(w, "db error: "+err.Error(), 500)
+			return
+		}
+
+		// analytics (опционально, но полезно)
+		{
+			env := analytics.FromRequest(r)
+			env.UserID = uid
+			props := map[string]any{
+				"task_id":   body.TaskID,
+				"q_len":     len(q),
+				"answer_len": len(a),
+			}
+			_ = analytics.Log(r.Context(), dbx, env, "task_clarification_created", props, analytics.SourceEventKeyFromRequest(r))
+		}
+
+		// ✅ ВАЖНО: на MVP можно НЕ гонять AI.
+		// Но если хочешь — можно перезапустить оценку на основе уточнения.
+		// Самый простой вариант: просто добавим уточнение к тексту, который уходит в AI.
+		_, goalSummary, gErr := fetchActiveGoalAndSummary(dbx, uid)
+		if gErr == nil {
+			augmented := combined + "\n\nCLARIFICATION:\nQ: " + q + "\nA: " + a
+			if _, aiErr := taskAI.EvaluateAndStore(r.Context(), body.TaskID, goalSummary, augmented); aiErr != nil {
+				log.Printf("[WARN] AI evaluate failed on CLARIFICATION task_id=%d: %v", body.TaskID, aiErr)
+				w.Header().Set("X-AI-Error", "1")
+			}
+		}
+
+		full, err := fetchTaskFullpack(dbx, uid, body.TaskID)
+		if err != nil {
+			http.Error(w, "fetch error: "+err.Error(), 500)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(full)
+	}
+}
+
 
 func nullableInt(v sql.NullInt64) any {
 	if !v.Valid {

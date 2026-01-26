@@ -55,6 +55,7 @@ func main() {
 	mux.Handle("/task/create", mw.Wrap(tasks.CreateTaskHandler(database, taskAI)))
 	mux.Handle("/task/update", mw.Wrap(tasks.UpdateTaskHandler(database, taskAI)))
 	mux.Handle("/task/status", mw.Wrap(tasks.SetTaskStatusHandler(database)))
+	mux.Handle("/task/clarification/create", mw.Wrap(tasks.CreateTaskClarificationHandler(database, taskAI)))
 
 	// AI endpoint (protected)
 	mux.Handle("/task/evaluate", mw.Wrap(taskAI.Evaluate))
