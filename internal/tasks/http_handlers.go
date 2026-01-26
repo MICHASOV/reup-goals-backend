@@ -147,8 +147,6 @@ func fetchTaskFullpack(dbx *sql.DB, uid int, taskID int) (Task, error) {
 		&t.ClarificationNeeded,
 		&t.ClarificationQuestion,
 		&t.ExplanationShort,
-		&t.ClarificationLastQuestion,
-		&t.ClarificationLastAnswer,
 	)
 	if err != nil {
 		return Task{}, err
@@ -249,8 +247,6 @@ func GetTasksHandler(dbx *sql.DB) http.HandlerFunc {
 				&t.ClarificationNeeded,
 				&t.ClarificationQuestion,
 				&t.ExplanationShort,
-				&t.ClarificationLastQuestion,
-				&t.ClarificationLastAnswer,
 			); err != nil {
 				http.Error(w, "scan error: "+err.Error(), 500)
 				return

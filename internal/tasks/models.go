@@ -32,8 +32,4 @@ type Task struct {
 	// Вычисленный приоритет (не хранится в БД)
 	Priority int `json:"priority"`
 
-	// последнее уточнение (из task_clarifications)
-	ClarificationLastQuestion string `json:"clarification_last_question"`
-	ClarificationLastAnswer   string `json:"clarification_last_answer"`
-
 }
