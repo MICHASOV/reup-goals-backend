@@ -91,8 +91,7 @@ func fetchTaskFullpack(dbx *sql.DB, uid int, taskID int) (Task, error) {
 			COALESCE(a.trap_task, false),
 			COALESCE(a.clarification_needed, false),
 			COALESCE(a.clarification_question, ''),
-			COALESCE(a.explanation_short, ''),
-
+			COALESCE(a.explanation_short, '')
 
 		FROM tasks t
 		LEFT JOIN LATERAL (
