@@ -92,8 +92,6 @@ func fetchTaskFullpack(dbx *sql.DB, uid int, taskID int) (Task, error) {
 			COALESCE(a.clarification_needed, false),
 			COALESCE(a.clarification_question, ''),
 			COALESCE(a.explanation_short, ''),
-			COALESCE(c.question, ''),
-			COALESCE(c.answer, '')
 
 
 		FROM tasks t
