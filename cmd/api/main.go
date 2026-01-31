@@ -57,11 +57,6 @@ func main() {
 	mux.Handle("/task/status", mw.Wrap(tasks.SetTaskStatusHandler(database)))
 	mux.Handle("/task/clarification/create", mw.Wrap(tasks.CreateTaskClarificationHandler(database, taskAI)))
 
-	// AUTH (public)
-	mux.Handle("/auth/register", auth.RegisterHandler(database, jwtSecret))
-	mux.Handle("/auth/login", auth.LoginHandler(database, jwtSecret))
-	mux.Handle("/auth/me", mw.Wrap(auth.MeHandler(database)))
-
 	// ✅ AUTH (protected actions)
 	mux.Handle("/auth/logout", mw.Wrap(auth.LogoutHandler()))
 	mux.Handle("/auth/delete", mw.Wrap(auth.DeleteAccountHandler(database)))
