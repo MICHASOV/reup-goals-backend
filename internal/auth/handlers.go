@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 func RegisterHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
@@ -12,8 +13,17 @@ func RegisterHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 			Email    string `json:"email"`
 			Password string `json:"password"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body.Email == "" || body.Password == "" {
+
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+
+		// ✅ НОРМАЛИЗАЦИЯ (КРИТИЧНО ДЛЯ iOS/macOS)
+		email := strings.ToLower(strings.TrimSpace(body.Email))
+		password := strings.TrimSpace(body.Password)
+
+		if email == "" || password == "" {
 			http.Error(w, "email & password required", http.StatusBadRequest)
 			return
 		}
@@ -23,13 +33,19 @@ func RegisterHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 			INSERT INTO users (email, password)
 			VALUES ($1, $2)
 			RETURNING id
-		`, body.Email, body.Password).Scan(&id)
+		`, email, password).Scan(&id)
+
 		if err != nil {
-			http.Error(w, "user exists?", http.StatusBadRequest)
+			// ❗️ больше не говорим "user exists?" на любую ошибку
+			http.Error(w, "registration failed", http.StatusBadRequest)
 			return
 		}
 
-		token, _ := GenerateToken(secret, id)
+		token, err := GenerateToken(secret, id)
+		if err != nil {
+			http.Error(w, "token generation failed", http.StatusInternalServerError)
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -45,18 +61,36 @@ func LoginHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 			Email    string `json:"email"`
 			Password string `json:"password"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+
+		// ✅ ТА ЖЕ НОРМАЛИЗАЦИЯ
+		email := strings.ToLower(strings.TrimSpace(body.Email))
+		password := strings.TrimSpace(body.Password)
+
+		if email == "" || password == "" {
+			http.Error(w, "email & password required", http.StatusBadRequest)
+			return
+		}
 
 		var id int
 		err := dbx.QueryRow(`
 			SELECT id FROM users WHERE email=$1 AND password=$2
-		`, body.Email, body.Password).Scan(&id)
+		`, email, password).Scan(&id)
+
 		if err != nil {
 			http.Error(w, "invalid login", http.StatusUnauthorized)
 			return
 		}
 
-		token, _ := GenerateToken(secret, id)
+		token, err := GenerateToken(secret, id)
+		if err != nil {
+			http.Error(w, "token generation failed", http.StatusInternalServerError)
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -75,7 +109,11 @@ func MeHandler(dbx *sql.DB) http.HandlerFunc {
 		}
 
 		var email string
-		_ = dbx.QueryRow("SELECT email FROM users WHERE id=$1", uid).Scan(&email)
+		err := dbx.QueryRow(`SELECT email FROM users WHERE id=$1`, uid).Scan(&email)
+		if err != nil {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
