@@ -4,10 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"strings"
 )
 
-func RegisterHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
+func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Email    string `json:"email"`
@@ -15,11 +14,18 @@ func RegisterHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 
-		email := strings.ToLower(strings.TrimSpace(body.Email))
-		password := strings.TrimSpace(body.Password)
-
-		if email == "" || password == "" {
+		email, ok := normalizeAndValidateEmail(body.Email)
+		if !ok {
+			http.Error(w, "invalid_email", http.StatusBadRequest)
+			return
+		}
+		password := normalizeSecret(body.Password)
+		if password == "" {
 			http.Error(w, "email & password required", http.StatusBadRequest)
+			return
+		}
+		if len(password) < 6 {
+			http.Error(w, "weak_password", http.StatusBadRequest)
 			return
 		}
 
@@ -37,7 +43,13 @@ func RegisterHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 		`, email, passwordHash).Scan(&id)
 
 		if err != nil {
-			http.Error(w, "user exists", http.StatusBadRequest)
+			http.Error(w, "user_already_exists", http.StatusBadRequest)
+			return
+		}
+
+		if err := createAndSendCode(dbx, emailService, email, id, codeTypeVerifyEmail); err != nil {
+			_, _ = dbx.Exec(`DELETE FROM users WHERE id=$1`, id)
+			writeCodeError(w, err)
 			return
 		}
 
@@ -63,8 +75,12 @@ func LoginHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 			return
 		}
 
-		email := strings.ToLower(strings.TrimSpace(body.Email))
-		password := strings.TrimSpace(body.Password)
+		email, ok := normalizeAndValidateEmail(body.Email)
+		if !ok {
+			http.Error(w, "invalid_email", http.StatusBadRequest)
+			return
+		}
+		password := normalizeSecret(body.Password)
 
 		if email == "" || password == "" {
 			http.Error(w, "email & password required", http.StatusBadRequest)

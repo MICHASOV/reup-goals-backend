@@ -25,8 +25,13 @@ func main() {
 	}
 	defer database.Close()
 
+	if err := auth.EnsureSchema(database); err != nil {
+		log.Fatal("DB migration error:", err)
+	}
+
 	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel)
 	taskAI := tasks.New(aiClient, database)
+	emailService := auth.NewEmailService(cfg)
 
 	mux := http.NewServeMux()
 
@@ -36,8 +41,13 @@ func main() {
 	// -----------------------
 	// AUTH (public)
 	// -----------------------
-	mux.Handle("/auth/register", auth.RegisterHandler(database, jwtSecret))
+	mux.Handle("/auth/register", auth.RegisterHandler(database, jwtSecret, emailService))
 	mux.Handle("/auth/login", auth.LoginHandler(database, jwtSecret))
+	mux.Handle("/auth/verify-email", auth.VerifyEmailHandler(database))
+	mux.Handle("/auth/resend-code", auth.ResendCodeHandler(database, emailService))
+	mux.Handle("/auth/forgot-password", auth.ForgotPasswordHandler(database, emailService))
+	mux.Handle("/auth/verify-reset-code", auth.VerifyResetCodeHandler(database))
+	mux.Handle("/auth/reset-password", auth.ResetPasswordHandler(database))
 	mux.Handle("/auth/me", mw.Wrap(auth.MeHandler(database)))
 
 	// -----------------------

@@ -15,6 +15,13 @@ type Config struct {
 
 	OpenAIKey   string
 	OpenAIModel string
+
+	UnisenderAPIKey           string
+	UnisenderBaseURL          string
+	UnisenderSenderEmail      string
+	UnisenderSenderName       string
+	UnisenderListID           string
+	UnisenderServiceListTitle string
 }
 
 func Load() *Config {
@@ -31,6 +38,21 @@ func Load() *Config {
 		model = "gpt-4o-mini" // дефолтная модель (можешь заменить на нужную)
 	}
 
+	unisenderBaseURL := os.Getenv("UNISENDER_BASE_URL")
+	if unisenderBaseURL == "" {
+		unisenderBaseURL = "https://api.unisender.com/ru/api"
+	}
+
+	unisenderSenderName := os.Getenv("UNISENDER_SENDER_NAME")
+	if unisenderSenderName == "" {
+		unisenderSenderName = "REUP.goals"
+	}
+
+	unisenderServiceListTitle := os.Getenv("UNISENDER_SERVICE_LIST_TITLE")
+	if unisenderServiceListTitle == "" {
+		unisenderServiceListTitle = "REUP.goals service emails"
+	}
+
 	return &Config{
 		DBHost:     os.Getenv("DB_HOST"),
 		DBPort:     port,
@@ -40,6 +62,13 @@ func Load() *Config {
 
 		OpenAIKey:   os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel: model,
+
+		UnisenderAPIKey:           os.Getenv("UNISENDER_API_KEY"),
+		UnisenderBaseURL:          unisenderBaseURL,
+		UnisenderSenderEmail:      os.Getenv("UNISENDER_SENDER_EMAIL"),
+		UnisenderSenderName:       unisenderSenderName,
+		UnisenderListID:           os.Getenv("UNISENDER_LIST_ID"),
+		UnisenderServiceListTitle: unisenderServiceListTitle,
 	}
 }
 
