@@ -16,19 +16,25 @@ func RegisterHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 
 		email := strings.ToLower(strings.TrimSpace(body.Email))
-		password := body.Password
+		password := strings.TrimSpace(body.Password)
 
 		if email == "" || password == "" {
 			http.Error(w, "email & password required", http.StatusBadRequest)
 			return
 		}
 
+		passwordHash, err := hashPassword(password)
+		if err != nil {
+			http.Error(w, "password hashing failed", http.StatusInternalServerError)
+			return
+		}
+
 		var id int
-		err := dbx.QueryRow(`
+		err = dbx.QueryRow(`
 			INSERT INTO users (email, password)
 			VALUES ($1, $2)
 			RETURNING id
-		`, email, password).Scan(&id)
+		`, email, passwordHash).Scan(&id)
 
 		if err != nil {
 			http.Error(w, "user exists", http.StatusBadRequest)
@@ -45,7 +51,6 @@ func RegisterHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 	}
 }
 
-
 func LoginHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -58,7 +63,6 @@ func LoginHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 			return
 		}
 
-		// ✅ ТА ЖЕ НОРМАЛИЗАЦИЯ
 		email := strings.ToLower(strings.TrimSpace(body.Email))
 		password := strings.TrimSpace(body.Password)
 
@@ -68,13 +72,31 @@ func LoginHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 		}
 
 		var id int
+		var storedPassword string
 		err := dbx.QueryRow(`
-			SELECT id FROM users WHERE email=$1 AND password=$2
-		`, email, password).Scan(&id)
+			SELECT id, password FROM users WHERE email=$1
+		`, email).Scan(&id, &storedPassword)
 
-		if err != nil {
+		if err != nil || !passwordMatches(storedPassword, password) {
 			http.Error(w, "invalid login", http.StatusUnauthorized)
 			return
+		}
+
+		if !isPasswordHash(storedPassword) {
+			passwordHash, err := hashPassword(password)
+			if err != nil {
+				http.Error(w, "password migration failed", http.StatusInternalServerError)
+				return
+			}
+
+			if _, err := dbx.Exec(
+				`UPDATE users SET password=$1 WHERE id=$2`,
+				passwordHash,
+				id,
+			); err != nil {
+				http.Error(w, "password migration failed", http.StatusInternalServerError)
+				return
+			}
 		}
 
 		token, err := GenerateToken(secret, id)
