@@ -11,6 +11,7 @@ import (
 	"reup-goals-backend/internal/config"
 	"reup-goals-backend/internal/db"
 	"reup-goals-backend/internal/goals"
+	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/tasks"
 )
 
@@ -28,10 +29,15 @@ func main() {
 	if err := auth.EnsureSchema(database); err != nil {
 		log.Fatal("DB migration error:", err)
 	}
+	if err := subscriptions.EnsureSchema(database); err != nil {
+		log.Fatal("DB migration error:", err)
+	}
 
 	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel)
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)
+	cloudPayments := subscriptions.NewCloudPaymentsClient(cfg)
+	subscriptionHandler := subscriptions.NewHandler(database, cloudPayments)
 
 	mux := http.NewServeMux()
 
@@ -49,6 +55,19 @@ func main() {
 	mux.Handle("/auth/verify-reset-code", auth.VerifyResetCodeHandler(database))
 	mux.Handle("/auth/reset-password", auth.ResetPasswordHandler(database))
 	mux.Handle("/auth/me", mw.Wrap(auth.MeHandler(database)))
+
+	// -----------------------
+	// SUBSCRIPTIONS
+	// -----------------------
+	mux.Handle("/subscription/status", mw.Wrap(subscriptionHandler.Status))
+	mux.Handle("/subscription/checkout-config", mw.Wrap(subscriptionHandler.CheckoutConfig))
+	mux.Handle("/subscription/cancel", mw.Wrap(subscriptionHandler.Cancel))
+
+	mux.Handle("/payments/cloudpayments/check", subscriptionHandler.CloudPaymentsWebhook("check"))
+	mux.Handle("/payments/cloudpayments/pay", subscriptionHandler.CloudPaymentsWebhook("pay"))
+	mux.Handle("/payments/cloudpayments/fail", subscriptionHandler.CloudPaymentsWebhook("fail"))
+	mux.Handle("/payments/cloudpayments/recurrent", subscriptionHandler.CloudPaymentsWebhook("recurrent"))
+	mux.Handle("/payments/cloudpayments/cancel", subscriptionHandler.CloudPaymentsWebhook("cancel"))
 
 	// -----------------------
 	// GOALS (protected)

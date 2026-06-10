@@ -22,6 +22,15 @@ type Config struct {
 	UnisenderSenderName       string
 	UnisenderListID           string
 	UnisenderServiceListTitle string
+
+	CloudPaymentsPublicID           string
+	CloudPaymentsAPISecret          string
+	CloudPaymentsBaseURL            string
+	CloudPaymentsPlanName           string
+	CloudPaymentsAmount             float64
+	CloudPaymentsFirstPaymentAmount float64
+	CloudPaymentsCurrency           string
+	CloudPaymentsTrialDays          int
 }
 
 func Load() *Config {
@@ -53,6 +62,26 @@ func Load() *Config {
 		unisenderServiceListTitle = "REUP.goals service emails"
 	}
 
+	cloudPaymentsBaseURL := os.Getenv("CLOUDPAYMENTS_BASE_URL")
+	if cloudPaymentsBaseURL == "" {
+		cloudPaymentsBaseURL = "https://api.cloudpayments.ru"
+	}
+
+	cloudPaymentsPlanName := os.Getenv("CLOUDPAYMENTS_PLAN_NAME")
+	if cloudPaymentsPlanName == "" {
+		cloudPaymentsPlanName = "REUP.goals Pro"
+	}
+
+	cloudPaymentsAmount := parseFloatEnv("CLOUDPAYMENTS_AMOUNT", 199)
+	cloudPaymentsFirstPaymentAmount := parseFloatEnv("CLOUDPAYMENTS_FIRST_PAYMENT_AMOUNT", 1)
+
+	cloudPaymentsCurrency := os.Getenv("CLOUDPAYMENTS_CURRENCY")
+	if cloudPaymentsCurrency == "" {
+		cloudPaymentsCurrency = "RUB"
+	}
+
+	cloudPaymentsTrialDays := parseIntEnv("CLOUDPAYMENTS_TRIAL_DAYS", 14)
+
 	return &Config{
 		DBHost:     os.Getenv("DB_HOST"),
 		DBPort:     port,
@@ -69,7 +98,44 @@ func Load() *Config {
 		UnisenderSenderName:       unisenderSenderName,
 		UnisenderListID:           os.Getenv("UNISENDER_LIST_ID"),
 		UnisenderServiceListTitle: unisenderServiceListTitle,
+
+		CloudPaymentsPublicID:           os.Getenv("CLOUDPAYMENTS_PUBLIC_ID"),
+		CloudPaymentsAPISecret:          os.Getenv("CLOUDPAYMENTS_API_SECRET"),
+		CloudPaymentsBaseURL:            cloudPaymentsBaseURL,
+		CloudPaymentsPlanName:           cloudPaymentsPlanName,
+		CloudPaymentsAmount:             cloudPaymentsAmount,
+		CloudPaymentsFirstPaymentAmount: cloudPaymentsFirstPaymentAmount,
+		CloudPaymentsCurrency:           cloudPaymentsCurrency,
+		CloudPaymentsTrialDays:          cloudPaymentsTrialDays,
 	}
+}
+
+func parseIntEnv(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+
+	return parsed
+}
+
+func parseFloatEnv(key string, fallback float64) float64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+
+	return parsed
 }
 
 func (c *Config) ConnString() string {
