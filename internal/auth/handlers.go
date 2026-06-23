@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+
+	"reup-goals-backend/internal/v2/workspaces"
 )
 
 func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService) http.HandlerFunc {
@@ -44,6 +46,13 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService) htt
 
 		if err != nil {
 			http.Error(w, "user_already_exists", http.StatusBadRequest)
+			return
+		}
+
+		workspaceStore := workspaces.NewStore(dbx)
+		if _, _, err := workspaceStore.GetOrCreateDefault(r.Context(), id); err != nil {
+			_, _ = dbx.Exec(`DELETE FROM users WHERE id=$1`, id)
+			http.Error(w, "workspace_create_failed", http.StatusInternalServerError)
 			return
 		}
 

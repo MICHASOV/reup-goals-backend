@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -15,6 +16,9 @@ type Config struct {
 
 	OpenAIKey   string
 	OpenAIModel string
+
+	JWTSecret          string
+	CORSAllowedOrigins []string
 
 	UnisenderAPIKey           string
 	UnisenderBaseURL          string
@@ -45,6 +49,11 @@ func Load() *Config {
 	model := os.Getenv("OPENAI_MODEL")
 	if model == "" {
 		model = "gpt-4o-mini" // дефолтная модель (можешь заменить на нужную)
+	}
+
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		jwtSecret = "SUPER_SECRET_CHANGE_ME"
 	}
 
 	unisenderBaseURL := os.Getenv("UNISENDER_BASE_URL")
@@ -92,6 +101,9 @@ func Load() *Config {
 		OpenAIKey:   os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel: model,
 
+		JWTSecret:          jwtSecret,
+		CORSAllowedOrigins: parseCSVEnv("CORS_ALLOWED_ORIGINS"),
+
 		UnisenderAPIKey:           os.Getenv("UNISENDER_API_KEY"),
 		UnisenderBaseURL:          unisenderBaseURL,
 		UnisenderSenderEmail:      os.Getenv("UNISENDER_SENDER_EMAIL"),
@@ -108,6 +120,24 @@ func Load() *Config {
 		CloudPaymentsCurrency:           cloudPaymentsCurrency,
 		CloudPaymentsTrialDays:          cloudPaymentsTrialDays,
 	}
+}
+
+func parseCSVEnv(key string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item != "" {
+			result = append(result, item)
+		}
+	}
+
+	return result
 }
 
 func parseIntEnv(key string, fallback int) int {

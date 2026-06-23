@@ -35,13 +35,15 @@ func (m Middleware) Wrap(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), userIDKey, userID)
-
-		// прокидываем user_id в analytics context
-		ctx = analytics.WithUserID(ctx, userID)
+		ctx := ContextWithUserID(r.Context(), userID)
 
 		next(w, r.WithContext(ctx))
 	}
+}
+
+func ContextWithUserID(ctx context.Context, userID int) context.Context {
+	ctx = context.WithValue(ctx, userIDKey, userID)
+	return analytics.WithUserID(ctx, userID)
 }
 
 func UserIDFromContext(ctx context.Context) (int, bool) {

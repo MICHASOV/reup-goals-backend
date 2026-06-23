@@ -11,14 +11,17 @@ import (
 	"reup-goals-backend/internal/config"
 	"reup-goals-backend/internal/db"
 	"reup-goals-backend/internal/goals"
+	"reup-goals-backend/internal/migrations"
 	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/tasks"
+	v2api "reup-goals-backend/internal/v2/api"
+	"reup-goals-backend/internal/v2/bootstrap"
+	"reup-goals-backend/internal/v2/knowledge"
 )
-
-var jwtSecret = []byte("SUPER_SECRET_CHANGE_ME")
 
 func main() {
 	cfg := config.Load()
+	jwtSecret := []byte(cfg.JWTSecret)
 
 	database, err := db.Connect(cfg.ConnString())
 	if err != nil {
@@ -32,14 +35,24 @@ func main() {
 	if err := subscriptions.EnsureSchema(database); err != nil {
 		log.Fatal("DB migration error:", err)
 	}
+	if err := migrations.Run(database); err != nil {
+		log.Fatal("DB migration error:", err)
+	}
 
 	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel)
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)
 	cloudPayments := subscriptions.NewCloudPaymentsClient(cfg)
 	subscriptionHandler := subscriptions.NewHandler(database, cloudPayments)
+	bootstrapHandler := bootstrap.NewHandler(database)
+	knowledgeHandler := knowledge.NewHandler(database)
 
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
 
 	// Auth middleware
 	mw := auth.New(jwtSecret)
@@ -70,6 +83,13 @@ func main() {
 	mux.Handle("/payments/cloudpayments/cancel", subscriptionHandler.CloudPaymentsWebhook("cancel"))
 
 	// -----------------------
+	// V2 FOUNDATION
+	// -----------------------
+	mux.Handle("/api/v2/bootstrap", v2api.RequireAuth(jwtSecret, bootstrapHandler.Bootstrap))
+	mux.Handle("/api/v2/knowledge-base/blocks", v2api.RequireAuth(jwtSecret, knowledgeHandler.Blocks))
+	mux.Handle("/api/v2/knowledge-base/blocks/", v2api.RequireAuth(jwtSecret, knowledgeHandler.Block))
+
+	// -----------------------
 	// GOALS (protected)
 	// -----------------------
 	mux.Handle("/goal", mw.Wrap(goals.GetGoalHandler(database)))
@@ -93,7 +113,23 @@ func main() {
 	// AI endpoint (protected)
 	mux.Handle("/task/evaluate", mw.Wrap(taskAI.Evaluate))
 
-	handler := cors.AllowAll().Handler(mux)
+	var handler http.Handler
+	if len(cfg.CORSAllowedOrigins) > 0 {
+		handler = cors.New(cors.Options{
+			AllowedOrigins: cfg.CORSAllowedOrigins,
+			AllowedMethods: []string{
+				http.MethodGet,
+				http.MethodPost,
+				http.MethodPatch,
+				http.MethodPut,
+				http.MethodDelete,
+				http.MethodOptions,
+			},
+			AllowedHeaders: []string{"Authorization", "Content-Type"},
+		}).Handler(mux)
+	} else {
+		handler = cors.AllowAll().Handler(mux)
+	}
 
 	log.Println("🚀 SERVER RUNNING ON :8080")
 	_ = http.ListenAndServe(":8080", handler)
