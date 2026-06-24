@@ -79,6 +79,57 @@ var migrations = []Migration{
 				ON v2_knowledge_base_blocks (workspace_id, status);
 		`,
 	},
+	{
+		ID: "20260624_003_v2_strategies",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_strategies (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				status TEXT NOT NULL DEFAULT 'draft',
+				version INTEGER NOT NULL DEFAULT 1,
+				title TEXT NOT NULL DEFAULT 'Стратегия v1',
+				summary TEXT NOT NULL DEFAULT '',
+				source_type TEXT NOT NULL DEFAULT 'manual',
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				approved_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				approved_at TIMESTAMPTZ NULL,
+				activated_at TIMESTAMPTZ NULL,
+				archived_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_strategies_workspace
+				ON v2_strategies (workspace_id, status, version);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_strategies_one_active
+				ON v2_strategies (workspace_id)
+				WHERE status = 'active' AND archived_at IS NULL;
+
+			CREATE TABLE IF NOT EXISTS v2_strategy_artifacts (
+				id SERIAL PRIMARY KEY,
+				strategy_id INTEGER NOT NULL REFERENCES v2_strategies(id) ON DELETE CASCADE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				type TEXT NOT NULL,
+				title TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				content TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'empty',
+				sort_order INTEGER NOT NULL DEFAULT 0,
+				confidence DOUBLE PRECISION NULL,
+				source TEXT NOT NULL DEFAULT 'manual',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(strategy_id, type)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_strategy_artifacts_strategy
+				ON v2_strategy_artifacts (strategy_id, sort_order);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_strategy_artifacts_workspace
+				ON v2_strategy_artifacts (workspace_id, type);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

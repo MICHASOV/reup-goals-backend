@@ -17,6 +17,7 @@ import (
 	v2api "reup-goals-backend/internal/v2/api"
 	"reup-goals-backend/internal/v2/bootstrap"
 	"reup-goals-backend/internal/v2/knowledge"
+	"reup-goals-backend/internal/v2/strategy"
 )
 
 func main() {
@@ -46,6 +47,7 @@ func main() {
 	subscriptionHandler := subscriptions.NewHandler(database, cloudPayments)
 	bootstrapHandler := bootstrap.NewHandler(database)
 	knowledgeHandler := knowledge.NewHandler(database)
+	strategyHandler := strategy.NewHandler(database)
 
 	mux := http.NewServeMux()
 
@@ -88,6 +90,9 @@ func main() {
 	mux.Handle("/api/v2/bootstrap", v2api.RequireAuth(jwtSecret, bootstrapHandler.Bootstrap))
 	mux.Handle("/api/v2/knowledge-base/blocks", v2api.RequireAuth(jwtSecret, knowledgeHandler.Blocks))
 	mux.Handle("/api/v2/knowledge-base/blocks/", v2api.RequireAuth(jwtSecret, knowledgeHandler.Block))
+	mux.Handle("/api/v2/strategy/current", v2api.RequireAuth(jwtSecret, strategyHandler.Current))
+	mux.Handle("/api/v2/strategy/artifacts/", v2api.RequireAuth(jwtSecret, strategyHandler.Artifacts))
+	mux.Handle("/api/v2/strategy/", v2api.RequireAuth(jwtSecret, strategyHandler.Strategy))
 
 	// -----------------------
 	// GOALS (protected)
