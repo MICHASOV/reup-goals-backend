@@ -312,6 +312,54 @@ var migrations = []Migration{
 			END $$;
 		`,
 	},
+	{
+		ID: "20260630_006_v2_tasks",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_tasks (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				course_id INTEGER NOT NULL REFERENCES v2_courses(id) ON DELETE CASCADE,
+				tactical_plan_id INTEGER NOT NULL REFERENCES v2_tactical_plans(id) ON DELETE CASCADE,
+				workstream_id INTEGER NOT NULL REFERENCES v2_tactical_workstreams(id) ON DELETE CASCADE,
+				project_id INTEGER NULL REFERENCES v2_tactical_projects(id) ON DELETE SET NULL,
+				risk_id INTEGER NULL REFERENCES v2_tactical_risks(id) ON DELETE SET NULL,
+				opportunity_id INTEGER NULL REFERENCES v2_tactical_opportunities(id) ON DELETE SET NULL,
+				title TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'free',
+				priority_order INTEGER NULL,
+				owner_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				due_date DATE NULL,
+				source_type TEXT NOT NULL DEFAULT 'manual',
+				source_id INTEGER NULL,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				updated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				started_at TIMESTAMPTZ NULL,
+				completed_at TIMESTAMPTZ NULL,
+				archived_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tasks_workspace_status
+				ON v2_tasks (workspace_id, status, updated_at DESC);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tasks_workstream_status
+				ON v2_tasks (workspace_id, workstream_id, status, priority_order, id);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tasks_project
+				ON v2_tasks (workspace_id, project_id)
+				WHERE project_id IS NOT NULL;
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tasks_risk
+				ON v2_tasks (workspace_id, risk_id)
+				WHERE risk_id IS NOT NULL;
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tasks_opportunity
+				ON v2_tasks (workspace_id, opportunity_id)
+				WHERE opportunity_id IS NOT NULL;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

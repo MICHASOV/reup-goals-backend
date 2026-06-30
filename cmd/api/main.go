@@ -20,6 +20,7 @@ import (
 	"reup-goals-backend/internal/v2/knowledge"
 	"reup-goals-backend/internal/v2/strategy"
 	"reup-goals-backend/internal/v2/tactics"
+	tasksv2 "reup-goals-backend/internal/v2/tasks"
 )
 
 func main() {
@@ -52,6 +53,7 @@ func main() {
 	knowledgeHandler := knowledge.NewHandler(database)
 	strategyHandler := strategy.NewHandler(database)
 	tacticsHandler := tactics.NewHandler(database)
+	tasksV2Handler := tasksv2.NewHandler(database)
 
 	mux := http.NewServeMux()
 
@@ -109,6 +111,8 @@ func main() {
 	mux.Handle("/api/v2/tactics/opportunities", v2api.RequireAuth(jwtSecret, tacticsHandler.Opportunities))
 	mux.Handle("/api/v2/tactics/opportunities/", v2api.RequireAuth(jwtSecret, tacticsHandler.Opportunities))
 	mux.Handle("/api/v2/tactics/", v2api.RequireAuth(jwtSecret, tacticsHandler.Tactics))
+	mux.Handle("/api/v2/tasks", v2api.RequireAuth(jwtSecret, tasksV2Handler.Tasks))
+	mux.Handle("/api/v2/tasks/", v2api.RequireAuth(jwtSecret, tasksV2Handler.Tasks))
 
 	// -----------------------
 	// GOALS (protected)
