@@ -249,6 +249,69 @@ var migrations = []Migration{
 				ON v2_tactical_opportunities (workspace_id, tactical_plan_id, entity_type, entity_id);
 		`,
 	},
+	{
+		ID: "20260630_005_v2_courses",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_courses (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				strategy_id INTEGER NOT NULL REFERENCES v2_strategies(id) ON DELETE CASCADE,
+				title TEXT NOT NULL DEFAULT 'Курс компании',
+				direction TEXT NOT NULL DEFAULT '',
+				strategic_goal TEXT NOT NULL DEFAULT '',
+				meaning TEXT NOT NULL DEFAULT '',
+				horizon INTEGER NOT NULL DEFAULT 90,
+				horizon_unit TEXT NOT NULL DEFAULT 'days',
+				start_date DATE NOT NULL DEFAULT CURRENT_DATE,
+				end_date DATE NULL,
+				key_metric TEXT NOT NULL DEFAULT '',
+				success_criterion TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'active',
+				source TEXT NOT NULL DEFAULT 'from_strategy',
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				activated_at TIMESTAMPTZ NULL,
+				archived_at TIMESTAMPTZ NULL,
+				UNIQUE(workspace_id, strategy_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_courses_workspace
+				ON v2_courses (workspace_id, status, strategy_id);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_courses_one_active
+				ON v2_courses (workspace_id)
+				WHERE status = 'active' AND archived_at IS NULL;
+
+			DO $$
+			BEGIN
+				IF NOT EXISTS (
+					SELECT 1
+					FROM information_schema.table_constraints
+					WHERE constraint_name = 'fk_v2_tactical_plans_course'
+						AND table_name = 'v2_tactical_plans'
+				) THEN
+					ALTER TABLE v2_tactical_plans
+						ADD CONSTRAINT fk_v2_tactical_plans_course
+						FOREIGN KEY (course_id) REFERENCES v2_courses(id) ON DELETE SET NULL;
+				END IF;
+			END $$;
+
+			DO $$
+			BEGIN
+				IF NOT EXISTS (
+					SELECT 1
+					FROM information_schema.table_constraints
+					WHERE constraint_name = 'fk_v2_tactical_workstreams_course'
+						AND table_name = 'v2_tactical_workstreams'
+				) THEN
+					ALTER TABLE v2_tactical_workstreams
+						ADD CONSTRAINT fk_v2_tactical_workstreams_course
+						FOREIGN KEY (course_id) REFERENCES v2_courses(id) ON DELETE SET NULL;
+				END IF;
+			END $$;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

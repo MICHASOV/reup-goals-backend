@@ -37,6 +37,12 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	if err != nil {
 		return CurrentResponse{}, err
 	}
+	if plan.CourseID == nil {
+		plan, err = s.attachActiveCourse(ctx, workspaceID, plan)
+		if err != nil {
+			return CurrentResponse{}, err
+		}
+	}
 
 	workstreams, err := s.listWorkstreams(ctx, workspaceID, plan.ID)
 	if err != nil {
@@ -415,12 +421,17 @@ func (s *Store) getOrCreatePlan(ctx context.Context, workspaceID int, userID int
 		return TacticalPlan{}, err
 	}
 
+	courseID, err := activeCourseIDTx(ctx, tx, workspaceID, strategyID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return TacticalPlan{}, err
+	}
+
 	row := tx.QueryRowContext(ctx, `
-		INSERT INTO v2_tactical_plans (workspace_id, strategy_id, status, title, summary, source, created_by)
-		VALUES ($1, $2, $3, $4, '', $5, $6)
+		INSERT INTO v2_tactical_plans (workspace_id, strategy_id, course_id, status, title, summary, source, created_by)
+		VALUES ($1, $2, $3, $4, $5, '', $6, $7)
 		ON CONFLICT (workspace_id, strategy_id) DO UPDATE SET updated_at=v2_tactical_plans.updated_at
 		RETURNING id, workspace_id, strategy_id, course_id, status, title, summary, source, created_by, created_at, updated_at, activated_at
-	`, workspaceID, strategyID, PlanStatusDraft, "Тактический план", SourceManual, userID)
+	`, workspaceID, strategyID, nullableInt(courseID), PlanStatusDraft, "Тактический план", SourceManual, userID)
 
 	plan, err = scanPlan(row)
 	if err != nil {
@@ -430,6 +441,49 @@ func (s *Store) getOrCreatePlan(ctx context.Context, workspaceID int, userID int
 		return TacticalPlan{}, err
 	}
 	return plan, nil
+}
+
+func (s *Store) attachActiveCourse(ctx context.Context, workspaceID int, plan TacticalPlan) (TacticalPlan, error) {
+	var courseID int
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id
+		FROM v2_courses
+		WHERE workspace_id=$1
+			AND strategy_id=$2
+			AND status='active'
+			AND archived_at IS NULL
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, workspaceID, plan.StrategyID).Scan(&courseID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return plan, nil
+	}
+	if err != nil {
+		return TacticalPlan{}, err
+	}
+
+	row := s.dbx.QueryRowContext(ctx, `
+		UPDATE v2_tactical_plans
+		SET course_id=$1, updated_at=NOW()
+		WHERE id=$2 AND workspace_id=$3 AND strategy_id=$4 AND archived_at IS NULL
+		RETURNING id, workspace_id, strategy_id, course_id, status, title, summary, source, created_by, created_at, updated_at, activated_at
+	`, courseID, plan.ID, workspaceID, plan.StrategyID)
+	return scanPlan(row)
+}
+
+func activeCourseIDTx(ctx context.Context, tx *sql.Tx, workspaceID int, strategyID int) (int, error) {
+	var courseID int
+	err := tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM v2_courses
+		WHERE workspace_id=$1
+			AND strategy_id=$2
+			AND status='active'
+			AND archived_at IS NULL
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, workspaceID, strategyID).Scan(&courseID)
+	return courseID, err
 }
 
 func (s *Store) planByStrategy(ctx context.Context, workspaceID int, strategyID int) (TacticalPlan, error) {
@@ -825,6 +879,13 @@ func (i *OpportunityInput) trim() {
 	i.PotentialImpact = strings.TrimSpace(i.PotentialImpact)
 	i.Status = strings.TrimSpace(i.Status)
 	i.CoverageStatus = strings.TrimSpace(i.CoverageStatus)
+}
+
+func nullableInt(value int) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
 }
 
 type scanner interface {
