@@ -18,6 +18,7 @@ import (
 	"reup-goals-backend/internal/v2/bootstrap"
 	"reup-goals-backend/internal/v2/knowledge"
 	"reup-goals-backend/internal/v2/strategy"
+	"reup-goals-backend/internal/v2/tactics"
 )
 
 func main() {
@@ -48,6 +49,7 @@ func main() {
 	bootstrapHandler := bootstrap.NewHandler(database)
 	knowledgeHandler := knowledge.NewHandler(database)
 	strategyHandler := strategy.NewHandler(database)
+	tacticsHandler := tactics.NewHandler(database)
 
 	mux := http.NewServeMux()
 
@@ -93,6 +95,16 @@ func main() {
 	mux.Handle("/api/v2/strategy/current", v2api.RequireAuth(jwtSecret, strategyHandler.Current))
 	mux.Handle("/api/v2/strategy/artifacts/", v2api.RequireAuth(jwtSecret, strategyHandler.Artifacts))
 	mux.Handle("/api/v2/strategy/", v2api.RequireAuth(jwtSecret, strategyHandler.Strategy))
+	mux.Handle("/api/v2/tactics/current", v2api.RequireAuth(jwtSecret, tacticsHandler.Current))
+	mux.Handle("/api/v2/tactics/workstreams", v2api.RequireAuth(jwtSecret, tacticsHandler.Workstreams))
+	mux.Handle("/api/v2/tactics/workstreams/", v2api.RequireAuth(jwtSecret, tacticsHandler.Workstreams))
+	mux.Handle("/api/v2/tactics/projects", v2api.RequireAuth(jwtSecret, tacticsHandler.Projects))
+	mux.Handle("/api/v2/tactics/projects/", v2api.RequireAuth(jwtSecret, tacticsHandler.Projects))
+	mux.Handle("/api/v2/tactics/risks", v2api.RequireAuth(jwtSecret, tacticsHandler.Risks))
+	mux.Handle("/api/v2/tactics/risks/", v2api.RequireAuth(jwtSecret, tacticsHandler.Risks))
+	mux.Handle("/api/v2/tactics/opportunities", v2api.RequireAuth(jwtSecret, tacticsHandler.Opportunities))
+	mux.Handle("/api/v2/tactics/opportunities/", v2api.RequireAuth(jwtSecret, tacticsHandler.Opportunities))
+	mux.Handle("/api/v2/tactics/", v2api.RequireAuth(jwtSecret, tacticsHandler.Tactics))
 
 	// -----------------------
 	// GOALS (protected)

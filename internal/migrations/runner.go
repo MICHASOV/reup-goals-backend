@@ -130,6 +130,125 @@ var migrations = []Migration{
 				ON v2_strategy_artifacts (workspace_id, type);
 		`,
 	},
+	{
+		ID: "20260624_004_v2_tactics",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_tactical_plans (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				strategy_id INTEGER NOT NULL REFERENCES v2_strategies(id) ON DELETE CASCADE,
+				course_id INTEGER NULL,
+				status TEXT NOT NULL DEFAULT 'draft',
+				title TEXT NOT NULL DEFAULT 'Тактический план',
+				summary TEXT NOT NULL DEFAULT '',
+				source TEXT NOT NULL DEFAULT 'manual',
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				activated_at TIMESTAMPTZ NULL,
+				archived_at TIMESTAMPTZ NULL,
+				UNIQUE(workspace_id, strategy_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactical_plans_workspace
+				ON v2_tactical_plans (workspace_id, status, strategy_id);
+
+			CREATE TABLE IF NOT EXISTS v2_tactical_workstreams (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				tactical_plan_id INTEGER NOT NULL REFERENCES v2_tactical_plans(id) ON DELETE CASCADE,
+				strategy_id INTEGER NOT NULL REFERENCES v2_strategies(id) ON DELETE CASCADE,
+				course_id INTEGER NULL,
+				title TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				goal TEXT NOT NULL DEFAULT '',
+				ckp TEXT NOT NULL DEFAULT '',
+				reason TEXT NOT NULL DEFAULT '',
+				closes_risk TEXT NOT NULL DEFAULT '',
+				metric_name TEXT NOT NULL DEFAULT '',
+				metric_current TEXT NOT NULL DEFAULT '',
+				metric_target TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'active',
+				health_status TEXT NOT NULL DEFAULT 'В работе',
+				contribution_type TEXT NOT NULL DEFAULT '',
+				confidence DOUBLE PRECISION NULL,
+				source TEXT NOT NULL DEFAULT 'manual',
+				sort_order INTEGER NOT NULL DEFAULT 0,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				archived_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactical_workstreams_plan
+				ON v2_tactical_workstreams (workspace_id, tactical_plan_id, sort_order);
+
+			CREATE TABLE IF NOT EXISTS v2_tactical_projects (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				workstream_id INTEGER NOT NULL REFERENCES v2_tactical_workstreams(id) ON DELETE CASCADE,
+				title TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				why_needed TEXT NOT NULL DEFAULT '',
+				success_criteria TEXT NOT NULL DEFAULT '',
+				failure_criteria TEXT NOT NULL DEFAULT '',
+				metric_name TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'active',
+				confidence DOUBLE PRECISION NULL,
+				source TEXT NOT NULL DEFAULT 'manual',
+				sort_order INTEGER NOT NULL DEFAULT 0,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				archived_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactical_projects_workstream
+				ON v2_tactical_projects (workspace_id, workstream_id, sort_order);
+
+			CREATE TABLE IF NOT EXISTS v2_tactical_risks (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				tactical_plan_id INTEGER NOT NULL REFERENCES v2_tactical_plans(id) ON DELETE CASCADE,
+				entity_type TEXT NOT NULL,
+				entity_id INTEGER NOT NULL,
+				title TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				severity TEXT NOT NULL DEFAULT 'medium',
+				status TEXT NOT NULL DEFAULT 'active',
+				coverage_status TEXT NOT NULL DEFAULT 'uncovered',
+				source TEXT NOT NULL DEFAULT 'manual',
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				archived_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactical_risks_plan
+				ON v2_tactical_risks (workspace_id, tactical_plan_id, entity_type, entity_id);
+
+			CREATE TABLE IF NOT EXISTS v2_tactical_opportunities (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				tactical_plan_id INTEGER NOT NULL REFERENCES v2_tactical_plans(id) ON DELETE CASCADE,
+				entity_type TEXT NOT NULL,
+				entity_id INTEGER NOT NULL,
+				title TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				potential_impact TEXT NOT NULL DEFAULT 'medium',
+				status TEXT NOT NULL DEFAULT 'active',
+				coverage_status TEXT NOT NULL DEFAULT 'uncovered',
+				source TEXT NOT NULL DEFAULT 'manual',
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				archived_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactical_opportunities_plan
+				ON v2_tactical_opportunities (workspace_id, tactical_plan_id, entity_type, entity_id);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
