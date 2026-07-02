@@ -258,6 +258,27 @@ func (s *Store) SaveReconcilerResponse(ctx context.Context, sessionID int, works
 	return nil
 }
 
+func (s *Store) SaveDirectAddPatches(ctx context.Context, sessionID int, workspaceID int, documentID int, documentType string, items []proposedItemRecord) error {
+	for _, item := range items {
+		sourceIDs, err := json.Marshal([]string{item.ClientItemID})
+		if err != nil {
+			return err
+		}
+		if _, err := s.dbx.ExecContext(ctx, `
+			INSERT INTO v2_proposed_document_patches (
+				session_id, workspace_id, document_id, document_type, patch_type, target_entry_id,
+				source_item_ids, existing_text, new_text, reason, status
+			)
+			VALUES ($1, $2, $3, $4, $5, NULL, $6::jsonb, '', $7, $8, $9)
+		`, sessionID, workspaceID, documentID, documentType, PatchTypeAdd, string(sourceIDs),
+			item.CleanText, "Документ пустой, информация добавляется как новая запись.", PatchStatusSuggested); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (s *Store) MarkSessionPreviewReady(ctx context.Context, sessionID int) error {
 	_, err := s.dbx.ExecContext(ctx, `
 		UPDATE v2_knowledge_intake_sessions

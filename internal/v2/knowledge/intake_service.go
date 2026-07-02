@@ -67,6 +67,14 @@ func (s *IntakeService) BuildPreview(ctx context.Context, workspaceID int, userI
 			return IntakePreviewResponse{}, err
 		}
 
+		if len(entries) == 0 {
+			if err := s.store.SaveDirectAddPatches(ctx, sessionID, workspaceID, documentID, documentType, items); err != nil {
+				_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
+				return IntakePreviewResponse{}, err
+			}
+			continue
+		}
+
 		_, reconcilerResponse, err := s.callReconciler(ctx, definition, entries, items)
 		if err != nil {
 			_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
