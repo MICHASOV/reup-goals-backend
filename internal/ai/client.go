@@ -84,10 +84,12 @@ func (c *OpenAIClient) GenerateJSON(ctx context.Context, instructions string, in
 		return nil, fmt.Errorf("proxy init error: %w", err)
 	}
 
+	jsonInput := "Return valid JSON only.\n\nInput JSON:\n" + input
+
 	// ❗ Правильный формат Responses API (Dec 2025)
 	reqBody := responsesRequest{
 		Model:        c.Model,
-		Input:        input,
+		Input:        jsonInput,
 		Instructions: instructions,
 		Text: map[string]interface{}{
 			"format": map[string]string{

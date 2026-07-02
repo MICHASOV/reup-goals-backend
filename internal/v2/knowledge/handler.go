@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -189,6 +190,7 @@ func (h *Handler) previewIntake(w http.ResponseWriter, r *http.Request, workspac
 
 	preview, err := h.intake.BuildPreview(r.Context(), workspaceID, uid, rawText)
 	if err != nil {
+		log.Printf("[WARN] knowledge intake preview failed workspace_id=%d user_id=%d: %v", workspaceID, uid, err)
 		api.WriteError(w, http.StatusBadGateway, "knowledge_intake_failed")
 		return
 	}
