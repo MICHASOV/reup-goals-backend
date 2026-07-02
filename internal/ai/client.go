@@ -75,7 +75,10 @@ func (c *OpenAIClient) EvaluateTask(
 	ctx context.Context,
 	input string, // <-- строка (обязательно)
 ) (json.RawMessage, error) {
+	return c.GenerateJSON(ctx, SystemPrompt, input)
+}
 
+func (c *OpenAIClient) GenerateJSON(ctx context.Context, instructions string, input string) (json.RawMessage, error) {
 	httpClient, err := newHTTPClientWithProxy()
 	if err != nil {
 		return nil, fmt.Errorf("proxy init error: %w", err)
@@ -85,7 +88,7 @@ func (c *OpenAIClient) EvaluateTask(
 	reqBody := responsesRequest{
 		Model:        c.Model,
 		Input:        input,
-		Instructions: SystemPrompt,
+		Instructions: instructions,
 		Text: map[string]interface{}{
 			"format": map[string]string{
 				"type": "json_object",

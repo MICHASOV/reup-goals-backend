@@ -360,6 +360,143 @@ var migrations = []Migration{
 				WHERE opportunity_id IS NOT NULL;
 		`,
 	},
+	{
+		ID: "20260702_007_v2_knowledge_intake",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_knowledge_documents (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				title TEXT NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id, document_type)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_knowledge_documents_workspace
+				ON v2_knowledge_documents (workspace_id, document_type);
+
+			CREATE TABLE IF NOT EXISTS v2_knowledge_document_entries (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_id INTEGER NOT NULL REFERENCES v2_knowledge_documents(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				text TEXT NOT NULL,
+				statement_type TEXT NOT NULL DEFAULT 'statement',
+				source_type TEXT NOT NULL DEFAULT 'manual',
+				source_session_id INTEGER NULL,
+				source_message_id TEXT NULL,
+				source_quote TEXT NOT NULL DEFAULT '',
+				position INTEGER NOT NULL DEFAULT 0,
+				status TEXT NOT NULL DEFAULT 'active',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_knowledge_entries_document
+				ON v2_knowledge_document_entries (workspace_id, document_id, status, position, id);
+
+			CREATE TABLE IF NOT EXISTS v2_knowledge_document_entry_versions (
+				id SERIAL PRIMARY KEY,
+				entry_id INTEGER NOT NULL REFERENCES v2_knowledge_document_entries(id) ON DELETE CASCADE,
+				old_text TEXT NOT NULL,
+				new_text TEXT NOT NULL,
+				changed_by_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				source_session_id INTEGER NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE TABLE IF NOT EXISTS v2_knowledge_intake_sessions (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				raw_text TEXT NOT NULL,
+				input_summary TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'processing',
+				router_prompt_version TEXT NOT NULL DEFAULT '',
+				reconciler_prompt_version TEXT NOT NULL DEFAULT '',
+				router_raw_response_json JSONB NULL,
+				error_message TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_knowledge_intake_sessions_workspace
+				ON v2_knowledge_intake_sessions (workspace_id, status, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_proposed_knowledge_items (
+				id SERIAL PRIMARY KEY,
+				session_id INTEGER NOT NULL REFERENCES v2_knowledge_intake_sessions(id) ON DELETE CASCADE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				client_item_id TEXT NOT NULL,
+				source_quote TEXT NOT NULL DEFAULT '',
+				clean_text TEXT NOT NULL,
+				statement_type TEXT NOT NULL,
+				target_document_type TEXT NOT NULL,
+				routing_reason TEXT NOT NULL DEFAULT '',
+				confidence TEXT NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(session_id, client_item_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_proposed_knowledge_items_session
+				ON v2_proposed_knowledge_items (session_id, target_document_type);
+
+			CREATE TABLE IF NOT EXISTS v2_proposed_document_patches (
+				id SERIAL PRIMARY KEY,
+				session_id INTEGER NOT NULL REFERENCES v2_knowledge_intake_sessions(id) ON DELETE CASCADE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_id INTEGER NOT NULL REFERENCES v2_knowledge_documents(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				patch_type TEXT NOT NULL,
+				target_entry_id INTEGER NULL REFERENCES v2_knowledge_document_entries(id) ON DELETE SET NULL,
+				source_item_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+				existing_text TEXT NOT NULL DEFAULT '',
+				new_text TEXT NOT NULL,
+				reason TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'suggested',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				applied_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_proposed_patches_session
+				ON v2_proposed_document_patches (session_id, document_type, status);
+
+			CREATE TABLE IF NOT EXISTS v2_proposed_document_conflicts (
+				id SERIAL PRIMARY KEY,
+				session_id INTEGER NOT NULL REFERENCES v2_knowledge_intake_sessions(id) ON DELETE CASCADE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_id INTEGER NOT NULL REFERENCES v2_knowledge_documents(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				existing_entry_id INTEGER NULL REFERENCES v2_knowledge_document_entries(id) ON DELETE SET NULL,
+				source_item_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+				existing_text TEXT NOT NULL DEFAULT '',
+				new_text TEXT NOT NULL,
+				question TEXT NOT NULL DEFAULT '',
+				option_a_text TEXT NOT NULL DEFAULT '',
+				option_b_text TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'active',
+				selected_option TEXT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				resolved_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_proposed_conflicts_session
+				ON v2_proposed_document_conflicts (session_id, document_type, status);
+
+			CREATE TABLE IF NOT EXISTS v2_ignored_knowledge_items (
+				id SERIAL PRIMARY KEY,
+				session_id INTEGER NOT NULL REFERENCES v2_knowledge_intake_sessions(id) ON DELETE CASCADE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_id INTEGER NOT NULL REFERENCES v2_knowledge_documents(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				source_item_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+				clean_text TEXT NOT NULL DEFAULT '',
+				reason TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
