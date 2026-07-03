@@ -44,6 +44,13 @@ INPUT FORMAT:
 OUTPUT FORMAT:
 {
   "input_summary": "",
+  "conversation_intent": {
+    "has_intent": false,
+    "intent_type": "business_context",
+    "raw_text": "",
+    "clean_text": "",
+    "handling_note": ""
+  },
   "items": [
     {
       "client_item_id": "item_001",
@@ -62,6 +69,15 @@ OUTPUT FORMAT:
     }
   ]
 }
+
+Conversation intent patch:
+- Detect conversation-level user intent addressed to the AI interface and do not store it as business knowledge.
+- Examples: "хочу поговорить про маркетинг", "почему ты это спрашиваешь?", "не хочу отвечать", "это раздражает", "дай совет", "что мне делать?", "давай про команду".
+- If the message is only business context, use has_intent=false, intent_type="business_context", empty raw_text/clean_text/handling_note.
+- If the message contains a topic change, advice request, clarification, refusal, frustration, why-question, command, or meta-comment, set has_intent=true and classify it.
+- Allowed intent_type values: "business_context", "topic_change_request", "advice_request", "clarification_request", "refusal", "frustration", "why_question", "unknown", "other".
+- If a message contains both conversation intent and business knowledge, split them: business knowledge goes to items, conversation intent goes to conversation_intent.
+- Do not route conversation intent to Knowledge Base documents.
 
 Allowed statement_type values: "statement", "hypothesis", "unknown".
 Use "statement" for user claims about current or past business reality.
@@ -94,6 +110,13 @@ Extraction policy:
 If raw_text contains no useful business context, return:
 {
   "input_summary": "В тексте нет достаточно полезной информации о бизнесе для Базы знаний.",
+  "conversation_intent": {
+    "has_intent": false,
+    "intent_type": "business_context",
+    "raw_text": "",
+    "clean_text": "",
+    "handling_note": ""
+  },
   "items": [],
   "unrouted_fragments": []
 }

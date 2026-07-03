@@ -575,8 +575,21 @@ func (s *Store) validateLinks(ctx context.Context, workspaceID int, workstream w
 			SELECT EXISTS(
 				SELECT 1 FROM v2_tactical_risks
 				WHERE id=$1 AND workspace_id=$2 AND tactical_plan_id=$3 AND archived_at IS NULL
+					AND (
+						(entity_type='workstream' AND entity_id=$4)
+						OR (
+							entity_type='project'
+							AND EXISTS (
+								SELECT 1 FROM v2_tactical_projects p
+								WHERE p.id=v2_tactical_risks.entity_id
+									AND p.workspace_id=$2
+									AND p.workstream_id=$4
+									AND p.archived_at IS NULL
+							)
+						)
+					)
 			)
-		`, *input.RiskID, workspaceID, workstream.TacticalPlanID).Scan(&exists); err != nil {
+		`, *input.RiskID, workspaceID, workstream.TacticalPlanID, workstream.ID).Scan(&exists); err != nil {
 			return err
 		}
 		if !exists {
@@ -589,8 +602,21 @@ func (s *Store) validateLinks(ctx context.Context, workspaceID int, workstream w
 			SELECT EXISTS(
 				SELECT 1 FROM v2_tactical_opportunities
 				WHERE id=$1 AND workspace_id=$2 AND tactical_plan_id=$3 AND archived_at IS NULL
+					AND (
+						(entity_type='workstream' AND entity_id=$4)
+						OR (
+							entity_type='project'
+							AND EXISTS (
+								SELECT 1 FROM v2_tactical_projects p
+								WHERE p.id=v2_tactical_opportunities.entity_id
+									AND p.workspace_id=$2
+									AND p.workstream_id=$4
+									AND p.archived_at IS NULL
+							)
+						)
+					)
 			)
-		`, *input.OpportunityID, workspaceID, workstream.TacticalPlanID).Scan(&exists); err != nil {
+		`, *input.OpportunityID, workspaceID, workstream.TacticalPlanID, workstream.ID).Scan(&exists); err != nil {
 			return err
 		}
 		if !exists {

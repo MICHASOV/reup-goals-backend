@@ -497,6 +497,110 @@ var migrations = []Migration{
 			);
 		`,
 	},
+	{
+		ID: "20260703_008_v2_knowledge_guidance",
+		SQL: `
+			ALTER TABLE v2_knowledge_intake_sessions
+				ADD COLUMN IF NOT EXISTS conversation_intent_json JSONB NULL,
+				ADD COLUMN IF NOT EXISTS guidance_question_block_id INTEGER NULL;
+
+			CREATE TABLE IF NOT EXISTS v2_ai_prompt_configs (
+				id SERIAL PRIMARY KEY,
+				prompt_name TEXT NOT NULL,
+				prompt_version TEXT NOT NULL,
+				model TEXT NOT NULL DEFAULT '',
+				temperature DOUBLE PRECISION NOT NULL DEFAULT 0,
+				template TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(prompt_name, prompt_version)
+			);
+
+			CREATE TABLE IF NOT EXISTS v2_ai_call_logs (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				ai_module TEXT NOT NULL,
+				prompt_version TEXT NOT NULL DEFAULT '',
+				model TEXT NOT NULL DEFAULT '',
+				input_json JSONB NULL,
+				output_json JSONB NULL,
+				status TEXT NOT NULL DEFAULT 'processing',
+				error TEXT NOT NULL DEFAULT '',
+				latency_ms INTEGER NOT NULL DEFAULT 0,
+				token_usage_input INTEGER NULL,
+				token_usage_output INTEGER NULL,
+				estimated_cost DOUBLE PRECISION NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_ai_call_logs_workspace
+				ON v2_ai_call_logs (workspace_id, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_company_profiles (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				company_profile_text TEXT NOT NULL DEFAULT '',
+				company_profile_status TEXT NOT NULL DEFAULT 'red',
+				company_profile_version TEXT NOT NULL DEFAULT 'company_profile_collector_v1',
+				company_profile_raw_json JSONB NULL,
+				baseline_coverage_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id)
+			);
+
+			CREATE TABLE IF NOT EXISTS v2_knowledge_document_readiness (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_id INTEGER NOT NULL REFERENCES v2_knowledge_documents(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				readiness_status TEXT NOT NULL DEFAULT 'red',
+				readiness_reason TEXT NOT NULL DEFAULT '',
+				main_missing_areas_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				should_run_deep_evaluator BOOLEAN NOT NULL DEFAULT FALSE,
+				confidence TEXT NOT NULL DEFAULT 'low',
+				prompt_version TEXT NOT NULL DEFAULT 'document_readiness_preflight_v1',
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id, document_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_knowledge_readiness_workspace
+				ON v2_knowledge_document_readiness (workspace_id, document_type);
+
+			CREATE TABLE IF NOT EXISTS v2_guidance_question_blocks (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				source TEXT NOT NULL DEFAULT 'first_gate',
+				guidance_status TEXT NOT NULL DEFAULT 'ask_next_question',
+				question_type TEXT NOT NULL DEFAULT 'new_area_opening',
+				intended_focus_summary TEXT NOT NULL DEFAULT '',
+				intended_documents_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				selection_reason_internal TEXT NOT NULL DEFAULT '',
+				title TEXT NOT NULL DEFAULT '',
+				intro TEXT NOT NULL DEFAULT '',
+				questions_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				handled_user_intent_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				confidence TEXT NOT NULL DEFAULT 'medium',
+				status TEXT NOT NULL DEFAULT 'active',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				answered_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_guidance_question_blocks_active
+				ON v2_guidance_question_blocks (workspace_id, status, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_knowledge_base_readiness (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				overall_status TEXT NOT NULL DEFAULT 'not_ready',
+				overall_score INTEGER NOT NULL DEFAULT 0,
+				strategy_transition_allowed BOOLEAN NOT NULL DEFAULT FALSE,
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id)
+			);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

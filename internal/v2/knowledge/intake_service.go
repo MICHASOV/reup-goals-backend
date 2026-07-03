@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"reup-goals-backend/internal/ai"
 )
@@ -31,7 +32,7 @@ func (s *IntakeService) BuildPreview(ctx context.Context, workspaceID int, userI
 		return IntakePreviewResponse{}, err
 	}
 
-	routerRaw, routerResponse, err := s.callRouter(ctx, rawText)
+	routerRaw, routerResponse, err := s.callRouter(ctx, workspaceID, userID, rawText)
 	if err != nil {
 		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
 		return IntakePreviewResponse{}, err
@@ -75,7 +76,7 @@ func (s *IntakeService) BuildPreview(ctx context.Context, workspaceID int, userI
 			continue
 		}
 
-		_, reconcilerResponse, err := s.callReconciler(ctx, definition, entries, items)
+		_, reconcilerResponse, err := s.callReconciler(ctx, workspaceID, userID, definition, entries, items)
 		if err != nil {
 			_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
 			return IntakePreviewResponse{}, err
@@ -101,7 +102,114 @@ func (s *IntakeService) BuildPreview(ctx context.Context, workspaceID int, userI
 	return preview, nil
 }
 
-func (s *IntakeService) callRouter(ctx context.Context, rawText string) (json.RawMessage, RouterResponse, error) {
+func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID int, userID int, questionBlockID int, rawText string) (GuidancePreviewResponse, error) {
+	sessionID, err := s.store.CreateIntakeSession(ctx, workspaceID, userID, rawText)
+	if err != nil {
+		return GuidancePreviewResponse{}, err
+	}
+	if err := s.store.AttachQuestionBlockToSession(ctx, sessionID, questionBlockID); err != nil {
+		return GuidancePreviewResponse{}, err
+	}
+
+	documents, err := s.store.EnsureDocuments(ctx, workspaceID)
+	if err != nil {
+		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), nil)
+		return GuidancePreviewResponse{}, err
+	}
+
+	routerRaw, routerResponse, err := s.callRouter(ctx, workspaceID, userID, rawText)
+	if err != nil {
+		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
+		return GuidancePreviewResponse{}, err
+	}
+	if err := validateRouterResponse(routerResponse); err != nil {
+		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
+		return GuidancePreviewResponse{}, err
+	}
+	if err := s.store.SaveRouterResponse(ctx, sessionID, routerResponse, routerRaw); err != nil {
+		return GuidancePreviewResponse{}, err
+	}
+
+	intent := defaultConversationIntent(routerResponse.ConversationIntent)
+	response := GuidancePreviewResponse{
+		SessionID:          sessionID,
+		Status:             "no_preview_needed",
+		ConversationIntent: intent,
+		UnroutedFragments:  routerResponse.UnroutedFragments,
+	}
+
+	if len(routerResponse.Items) == 0 {
+		if err := s.store.MarkSessionPreviewReady(ctx, sessionID); err != nil {
+			return GuidancePreviewResponse{}, err
+		}
+		return response, nil
+	}
+
+	if err := s.store.SaveRouterItems(ctx, sessionID, workspaceID, routerResponse.Items); err != nil {
+		return GuidancePreviewResponse{}, err
+	}
+
+	itemsByDocument, err := s.store.ProposedItemsByDocument(ctx, sessionID)
+	if err != nil {
+		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
+		return GuidancePreviewResponse{}, err
+	}
+
+	for documentType, items := range itemsByDocument {
+		documentID := documents[documentType]
+		definition, ok := documentDefinitionByType(documentType)
+		if !ok || documentID == 0 {
+			_ = s.store.MarkSessionFailed(ctx, sessionID, "unknown_document_type", routerRaw)
+			return GuidancePreviewResponse{}, fmt.Errorf("unknown document type %s", documentType)
+		}
+
+		entries, err := s.store.DocumentEntries(ctx, workspaceID, documentID)
+		if err != nil {
+			_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
+			return GuidancePreviewResponse{}, err
+		}
+
+		if len(entries) == 0 {
+			if err := s.store.SaveDirectAddPatches(ctx, sessionID, workspaceID, documentID, documentType, items); err != nil {
+				_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
+				return GuidancePreviewResponse{}, err
+			}
+			continue
+		}
+
+		_, reconcilerResponse, err := s.callReconciler(ctx, workspaceID, userID, definition, entries, items)
+		if err != nil {
+			_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
+			return GuidancePreviewResponse{}, err
+		}
+		if err := validateReconcilerResponse(reconcilerResponse, documentType, entries, items); err != nil {
+			_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
+			return GuidancePreviewResponse{}, err
+		}
+		if err := s.store.SaveReconcilerResponse(ctx, sessionID, workspaceID, documentID, documentType, reconcilerResponse); err != nil {
+			return GuidancePreviewResponse{}, err
+		}
+	}
+
+	if err := s.store.MarkSessionPreviewReady(ctx, sessionID); err != nil {
+		return GuidancePreviewResponse{}, err
+	}
+	preview, err := s.store.Preview(ctx, workspaceID, sessionID)
+	if err != nil {
+		return GuidancePreviewResponse{}, err
+	}
+	response.Status = SessionPreviewReady
+	response.UpdatedDocuments = preview.UpdatedDocuments
+	response.Conflicts = preview.Conflicts
+	response.IgnoredItems = preview.IgnoredItems
+	response.UnroutedFragments = routerResponse.UnroutedFragments
+	if len(response.UpdatedDocuments) == 0 && len(response.Conflicts) == 0 {
+		response.Status = "no_preview_needed"
+	}
+	return response, nil
+}
+
+func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID int, rawText string) (json.RawMessage, RouterResponse, error) {
 	input, err := json.Marshal(map[string]string{
 		"raw_text":           rawText,
 		"workspace_language": "ru",
@@ -111,13 +219,18 @@ func (s *IntakeService) callRouter(ctx context.Context, rawText string) (json.Ra
 		return nil, RouterResponse{}, err
 	}
 
+	logID, started, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, "knowledge_intake_router", RouterPromptVersion, s.ai.Model, json.RawMessage(input))
+	defer func(start time.Time) { _ = start }(started)
 	raw, err := s.ai.GenerateJSON(ctx, routerSystemPrompt, string(input))
+	s.store.FinishAICallLog(ctx, logID, started, raw, err)
 	if err != nil {
 		return raw, RouterResponse{}, err
 	}
 	var response RouterResponse
 	if err := json.Unmarshal(raw, &response); err != nil {
+		retryLogID, retryStarted, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, "knowledge_intake_router_retry", RouterPromptVersion, s.ai.Model, json.RawMessage(input))
 		raw, retryErr := s.ai.GenerateJSON(ctx, routerSystemPrompt+jsonOnlyRetryInstruction, string(input))
+		s.store.FinishAICallLog(ctx, retryLogID, retryStarted, raw, retryErr)
 		if retryErr != nil {
 			return raw, RouterResponse{}, err
 		}
@@ -129,7 +242,7 @@ func (s *IntakeService) callRouter(ctx context.Context, rawText string) (json.Ra
 	return raw, response, nil
 }
 
-func (s *IntakeService) callReconciler(ctx context.Context, definition DocumentDefinition, entries []documentEntry, items []proposedItemRecord) (json.RawMessage, ReconcilerResponse, error) {
+func (s *IntakeService) callReconciler(ctx context.Context, workspaceID int, userID int, definition DocumentDefinition, entries []documentEntry, items []proposedItemRecord) (json.RawMessage, ReconcilerResponse, error) {
 	currentEntries := make([]map[string]string, 0, len(entries))
 	for _, entry := range entries {
 		currentEntries = append(currentEntries, map[string]string{
@@ -160,13 +273,17 @@ func (s *IntakeService) callReconciler(ctx context.Context, definition DocumentD
 		return nil, ReconcilerResponse{}, err
 	}
 
+	logID, started, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, "knowledge_document_reconciler", ReconcilerPromptVersion, s.ai.Model, json.RawMessage(input))
 	raw, err := s.ai.GenerateJSON(ctx, reconcilerSystemPrompt, string(input))
+	s.store.FinishAICallLog(ctx, logID, started, raw, err)
 	if err != nil {
 		return raw, ReconcilerResponse{}, err
 	}
 	var response ReconcilerResponse
 	if err := json.Unmarshal(raw, &response); err != nil {
+		retryLogID, retryStarted, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, "knowledge_document_reconciler_retry", ReconcilerPromptVersion, s.ai.Model, json.RawMessage(input))
 		raw, retryErr := s.ai.GenerateJSON(ctx, reconcilerSystemPrompt+jsonOnlyRetryInstruction, string(input))
+		s.store.FinishAICallLog(ctx, retryLogID, retryStarted, raw, retryErr)
 		if retryErr != nil {
 			return raw, ReconcilerResponse{}, err
 		}

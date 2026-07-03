@@ -44,6 +44,28 @@ func (s *Store) CreateIntakeSession(ctx context.Context, workspaceID int, userID
 	return sessionID, err
 }
 
+func (s *Store) AttachQuestionBlockToSession(ctx context.Context, sessionID int, questionBlockID int) error {
+	if questionBlockID <= 0 {
+		return nil
+	}
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_knowledge_intake_sessions
+		SET guidance_question_block_id=$1, updated_at=NOW()
+		WHERE id=$2
+	`, questionBlockID, sessionID)
+	return err
+}
+
+func (s *Store) IntakeSessionStatus(ctx context.Context, workspaceID int, sessionID int) (string, error) {
+	var status string
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT status
+		FROM v2_knowledge_intake_sessions
+		WHERE workspace_id=$1 AND id=$2
+	`, workspaceID, sessionID).Scan(&status)
+	return status, err
+}
+
 func (s *Store) MarkSessionFailed(ctx context.Context, sessionID int, message string, raw json.RawMessage) error {
 	_, err := s.dbx.ExecContext(ctx, `
 		UPDATE v2_knowledge_intake_sessions
@@ -54,11 +76,15 @@ func (s *Store) MarkSessionFailed(ctx context.Context, sessionID int, message st
 }
 
 func (s *Store) SaveRouterResponse(ctx context.Context, sessionID int, response RouterResponse, raw json.RawMessage) error {
-	_, err := s.dbx.ExecContext(ctx, `
+	intentRaw, err := json.Marshal(defaultConversationIntent(response.ConversationIntent))
+	if err != nil {
+		return err
+	}
+	_, err = s.dbx.ExecContext(ctx, `
 		UPDATE v2_knowledge_intake_sessions
-		SET input_summary=$1, router_raw_response_json=$2::jsonb, updated_at=NOW()
-		WHERE id=$3
-	`, strings.TrimSpace(response.InputSummary), nullableJSON(raw), sessionID)
+		SET input_summary=$1, router_raw_response_json=$2::jsonb, conversation_intent_json=$3::jsonb, updated_at=NOW()
+		WHERE id=$4
+	`, strings.TrimSpace(response.InputSummary), nullableJSON(raw), string(intentRaw), sessionID)
 	return err
 }
 
@@ -478,7 +504,7 @@ func (s *Store) ConfirmIntake(ctx context.Context, workspaceID int, userID int, 
 		return IntakeConfirmResponse{}, err
 	}
 	if status == SessionConfirmed {
-		return IntakeConfirmResponse{}, errors.New("session_already_confirmed")
+		return IntakeConfirmResponse{SessionID: sessionID}, nil
 	}
 	if status != SessionPreviewReady {
 		return IntakeConfirmResponse{}, errors.New("session_not_ready")

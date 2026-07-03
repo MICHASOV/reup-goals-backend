@@ -71,9 +71,10 @@ type IntakeConfirmResponse struct {
 }
 
 type RouterResponse struct {
-	InputSummary      string                   `json:"input_summary"`
-	Items             []RouterItem             `json:"items"`
-	UnroutedFragments []RouterUnroutedFragment `json:"unrouted_fragments"`
+	InputSummary       string                   `json:"input_summary"`
+	ConversationIntent ConversationIntent       `json:"conversation_intent"`
+	Items              []RouterItem             `json:"items"`
+	UnroutedFragments  []RouterUnroutedFragment `json:"unrouted_fragments"`
 }
 
 type RouterItem struct {

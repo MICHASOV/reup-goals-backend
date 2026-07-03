@@ -36,8 +36,33 @@ const (
 	ConflictOptionExisting = "existing"
 	ConflictOptionNew      = "new"
 
-	RouterPromptVersion     = "knowledge_intake_router_v1"
+	RouterPromptVersion     = "knowledge_intake_router_v1_1_patch"
 	ReconcilerPromptVersion = "knowledge_document_reconciler_v1"
+
+	CompanyProfileCollectorVersion = "company_profile_collector_v1"
+	DocumentReadinessVersion       = "document_readiness_preflight_v1"
+	GuidancePlannerVersion         = "strategic_guidance_question_planner_v2"
+
+	ProfileStatusRed    = "red"
+	ProfileStatusOrange = "orange"
+	ProfileStatusGreen  = "green"
+
+	ReadinessRed    = "red"
+	ReadinessYellow = "yellow"
+	ReadinessGreen  = "green"
+
+	KnowledgeReadinessNotReady      = "not_ready"
+	KnowledgeReadinessAlmostReady   = "almost_ready"
+	KnowledgeReadinessStrategyReady = "strategy_ready"
+
+	QuestionSourceFirstGate = "first_gate"
+	QuestionSourcePlanner   = "planner"
+
+	QuestionStatusActive   = "active"
+	QuestionStatusAnswered = "answered"
+
+	GuidanceStatusAskNextQuestion           = "ask_next_question"
+	GuidanceStatusSuggestStrategyTransition = "suggest_strategy_transition"
 )
 
 type Block struct {
