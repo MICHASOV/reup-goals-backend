@@ -60,7 +60,7 @@ func (s *Store) EnsurePromptConfigs(ctx context.Context) error {
 func (s *Store) CompanyProfile(ctx context.Context, workspaceID int) (CompanyProfile, error) {
 	var profile CompanyProfile
 	err := s.dbx.QueryRowContext(ctx, `
-		SELECT company_profile_status, company_profile_text, baseline_coverage_json, company_profile_raw_json
+		SELECT company_profile_status, company_profile_text, baseline_coverage_json, COALESCE(company_profile_raw_json, '{}'::jsonb)
 		FROM v2_company_profiles
 		WHERE workspace_id=$1
 	`, workspaceID).Scan(&profile.Status, &profile.ProfileText, &profile.BaselineCoverage, &profile.Raw)
