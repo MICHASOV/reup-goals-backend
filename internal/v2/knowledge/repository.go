@@ -75,6 +75,14 @@ func (s *Store) Update(ctx context.Context, workspaceID int, blockID int, conten
 }
 
 func (s *Store) ensureDefaultBlocks(ctx context.Context, workspaceID int) error {
+	ready, err := s.defaultBlocksReady(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	if ready {
+		return nil
+	}
+
 	tx, err := s.dbx.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -102,6 +110,39 @@ func (s *Store) ensureDefaultBlocks(ctx context.Context, workspaceID int) error 
 	}
 
 	return tx.Commit()
+}
+
+func (s *Store) defaultBlocksReady(ctx context.Context, workspaceID int) (bool, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT type
+		FROM v2_knowledge_base_blocks
+		WHERE workspace_id=$1 AND archived_at IS NULL
+	`, workspaceID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	existing := map[string]bool{}
+	for rows.Next() {
+		var blockType string
+		if err := rows.Scan(&blockType); err != nil {
+			return false, err
+		}
+		existing[blockType] = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(existing) < len(blockDefinitions) {
+		return false, nil
+	}
+	for _, definition := range blockDefinitions {
+		if !existing[definition.Type] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 type blockScanner interface {

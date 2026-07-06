@@ -43,6 +43,14 @@ func (s *Store) EnsurePromptConfigs(ctx context.Context) error {
 		{"strategic_guidance_question_planner", GuidancePlannerVersion, strategicGuidanceQuestionPlannerPrompt},
 		{"knowledge_intake_router", RouterPromptVersion, routerSystemPrompt},
 	}
+	ready, err := s.promptConfigsReady(ctx, configs)
+	if err != nil {
+		return err
+	}
+	if ready {
+		return nil
+	}
+
 	for _, config := range configs {
 		if _, err := s.dbx.ExecContext(ctx, `
 			INSERT INTO v2_ai_prompt_configs (prompt_name, prompt_version, template)
@@ -55,6 +63,41 @@ func (s *Store) EnsurePromptConfigs(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) promptConfigsReady(ctx context.Context, configs []struct {
+	Name     string
+	Version  string
+	Template string
+}) (bool, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT prompt_name, prompt_version
+		FROM v2_ai_prompt_configs
+	`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	existing := map[string]bool{}
+	for rows.Next() {
+		var name string
+		var version string
+		if err := rows.Scan(&name, &version); err != nil {
+			return false, err
+		}
+		existing[name+"::"+version] = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+
+	for _, config := range configs {
+		if !existing[config.Name+"::"+config.Version] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (s *Store) CompanyProfile(ctx context.Context, workspaceID int) (CompanyProfile, error) {
@@ -479,6 +522,13 @@ func (s *Store) ensureDocumentReadinessRows(ctx context.Context, workspaceID int
 	if err != nil {
 		return err
 	}
+	ready, err := s.documentReadinessRowsReady(ctx, workspaceID, documents)
+	if err != nil {
+		return err
+	}
+	if ready {
+		return nil
+	}
 	for documentType, documentID := range documents {
 		if _, err := s.dbx.ExecContext(ctx, `
 			INSERT INTO v2_knowledge_document_readiness (
@@ -491,6 +541,41 @@ func (s *Store) ensureDocumentReadinessRows(ctx context.Context, workspaceID int
 		}
 	}
 	return nil
+}
+
+func (s *Store) documentReadinessRowsReady(ctx context.Context, workspaceID int, documents map[string]int) (bool, error) {
+	if len(documents) == 0 {
+		return false, nil
+	}
+
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT document_id
+		FROM v2_knowledge_document_readiness
+		WHERE workspace_id=$1
+	`, workspaceID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	existing := map[int]bool{}
+	for rows.Next() {
+		var documentID int
+		if err := rows.Scan(&documentID); err != nil {
+			return false, err
+		}
+		existing[documentID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+
+	for _, documentID := range documents {
+		if documentID == 0 || !existing[documentID] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 type questionBlockScanner interface {

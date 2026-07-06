@@ -110,6 +110,14 @@ func (s *Store) EnsureDocuments(ctx context.Context, workspaceID int) (map[strin
 		return nil, err
 	}
 
+	existing, err := s.existingDocuments(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if documentsReady(existing) {
+		return existing, nil
+	}
+
 	result := make(map[string]int, len(documentDefinitions))
 	for _, definition := range documentDefinitions {
 		var documentID int
@@ -131,6 +139,41 @@ func (s *Store) EnsureDocuments(ctx context.Context, workspaceID int) (map[strin
 	}
 
 	return result, nil
+}
+
+func (s *Store) existingDocuments(ctx context.Context, workspaceID int) (map[string]int, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT document_type, id
+		FROM v2_knowledge_documents
+		WHERE workspace_id=$1
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]int, len(documentDefinitions))
+	for rows.Next() {
+		var documentType string
+		var documentID int
+		if err := rows.Scan(&documentType, &documentID); err != nil {
+			return nil, err
+		}
+		result[documentType] = documentID
+	}
+	return result, rows.Err()
+}
+
+func documentsReady(documents map[string]int) bool {
+	if len(documents) < len(documentDefinitions) {
+		return false
+	}
+	for _, definition := range documentDefinitions {
+		if documents[definition.Type] == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) ensureInitialEntryFromBlock(ctx context.Context, workspaceID int, documentID int, definition DocumentDefinition) error {
