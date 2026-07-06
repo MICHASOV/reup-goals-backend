@@ -1,0 +1,148 @@
+name: Deploy backend staging
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build Linux binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o reup_goals_backend ./cmd/api
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/staging_key
+          chmod 600 ~/.ssh/staging_key
+          ssh-keyscan -H "${{ secrets.STAGING_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Prepare staging backend host
+        run: |
+          ssh -i ~/.ssh/staging_key -o IdentitiesOnly=yes \
+            "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot python3-certbot-nginx
+
+          mkdir -p /opt/reup-goals-staging/backend /etc/reup-goals-staging
+
+          if [ ! -f /etc/reup-goals-staging/backend.env ]; then
+            cat >/etc/reup-goals-staging/backend.env <<'ENV'
+          # Fill staging values before starting the backend.
+          DB_HOST=
+          DB_PORT=5432
+          DB_USER=
+          DB_PASSWORD=
+          DB_NAME=
+          JWT_SECRET=
+          CORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro,http://staging.reupgoals.pro
+          OPENAI_API_KEY=
+          OPENAI_MODEL=gpt-4.1
+          UNISENDER_API_KEY=
+          UNISENDER_BASE_URL=https://api.unisender.com/ru/api
+          UNISENDER_SENDER_EMAIL=noreply@reupgoals.pro
+          UNISENDER_SENDER_NAME=REUP.goals
+          UNISENDER_LIST_ID=
+          UNISENDER_SERVICE_LIST_TITLE="REUP.goals service emails"
+          CLOUDPAYMENTS_PUBLIC_ID=
+          CLOUDPAYMENTS_API_SECRET=
+          CLOUDPAYMENTS_BASE_URL=https://api.cloudpayments.ru
+          CLOUDPAYMENTS_PLAN_NAME="REUP.goals Pro"
+          CLOUDPAYMENTS_AMOUNT=199
+          CLOUDPAYMENTS_FIRST_PAYMENT_AMOUNT=1
+          CLOUDPAYMENTS_CURRENCY=RUB
+          CLOUDPAYMENTS_TRIAL_DAYS=14
+          ENV
+            chmod 600 /etc/reup-goals-staging/backend.env
+          fi
+
+          cat >/etc/systemd/system/reup-goals-staging.service <<'SERVICE'
+          [Unit]
+          Description=REUP Goals Backend Staging
+          After=network.target
+
+          [Service]
+          Type=simple
+          WorkingDirectory=/opt/reup-goals-staging/backend
+          EnvironmentFile=/etc/reup-goals-staging/backend.env
+          ExecStart=/opt/reup-goals-staging/backend/reup_goals_backend
+          Restart=always
+          RestartSec=3
+          StandardOutput=journal
+          StandardError=journal
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
+
+          cat >/etc/nginx/sites-available/api-staging.reupgoals.pro <<'NGINX'
+          server {
+              listen 80;
+              listen [::]:80;
+              server_name api-staging.reupgoals.pro;
+
+              client_max_body_size 10m;
+
+              location / {
+                  proxy_pass http://127.0.0.1:8080;
+                  proxy_http_version 1.1;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_connect_timeout 180s;
+                  proxy_send_timeout 180s;
+                  proxy_read_timeout 180s;
+              }
+          }
+          NGINX
+
+          ln -sf /etc/nginx/sites-available/api-staging.reupgoals.pro /etc/nginx/sites-enabled/api-staging.reupgoals.pro
+          nginx -t
+          systemctl reload nginx
+          systemctl daemon-reload
+          systemctl enable reup-goals-staging.service
+          REMOTE
+
+      - name: Upload backend binary
+        run: |
+          scp -i ~/.ssh/staging_key -o IdentitiesOnly=yes \
+            reup_goals_backend \
+            "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}:/tmp/reup_goals_backend"
+
+      - name: Install and start backend
+        run: |
+          ssh -i ~/.ssh/staging_key -o IdentitiesOnly=yes \
+            "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          install -m 755 /tmp/reup_goals_backend /opt/reup-goals-staging/backend/reup_goals_backend
+
+          if ! grep -Eq '^DB_HOST=.+$' /etc/reup-goals-staging/backend.env; then
+            echo "Staging backend env is not filled yet. Binary installed, service start skipped."
+            exit 0
+          fi
+
+          systemctl restart reup-goals-staging.service
+          systemctl status reup-goals-staging.service --no-pager
+
+          certbot --nginx --non-interactive --agree-tos --register-unsafely-without-email \
+            -d api-staging.reupgoals.pro --redirect || true
+          REMOTE
