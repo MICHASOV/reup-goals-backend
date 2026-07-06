@@ -73,9 +73,9 @@ type GuidancePreviewResponse struct {
 	SessionID          int                      `json:"session_id"`
 	Status             string                   `json:"status"`
 	ConversationIntent ConversationIntent       `json:"conversation_intent"`
-	UpdatedDocuments   []IntakeDocumentPreview  `json:"updated_documents,omitempty"`
-	Conflicts          []IntakeConflict         `json:"conflicts,omitempty"`
-	IgnoredItems       []IntakeIgnoredItem      `json:"ignored_items,omitempty"`
+	UpdatedDocuments   []IntakeDocumentPreview  `json:"updated_documents"`
+	Conflicts          []IntakeConflict         `json:"conflicts"`
+	IgnoredItems       []IntakeIgnoredItem      `json:"ignored_items"`
 	UnroutedFragments  []RouterUnroutedFragment `json:"unrouted_fragments,omitempty"`
 	NextQuestionBlock  *GuidanceQuestionBlock   `json:"next_question_block,omitempty"`
 }

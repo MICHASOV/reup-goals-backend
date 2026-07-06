@@ -103,6 +103,10 @@ func (s *IntakeService) BuildPreview(ctx context.Context, workspaceID int, userI
 }
 
 func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID int, userID int, questionBlockID int, rawText string) (GuidancePreviewResponse, error) {
+	if err := s.store.ValidateActiveQuestionBlock(ctx, workspaceID, questionBlockID); err != nil {
+		return GuidancePreviewResponse{}, err
+	}
+
 	sessionID, err := s.store.CreateIntakeSession(ctx, workspaceID, userID, rawText)
 	if err != nil {
 		return GuidancePreviewResponse{}, err
@@ -135,6 +139,9 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 		SessionID:          sessionID,
 		Status:             "no_preview_needed",
 		ConversationIntent: intent,
+		UpdatedDocuments:   []IntakeDocumentPreview{},
+		Conflicts:          []IntakeConflict{},
+		IgnoredItems:       []IntakeIgnoredItem{},
 		UnroutedFragments:  routerResponse.UnroutedFragments,
 	}
 

@@ -284,6 +284,10 @@ func (h *Handler) guidancePreview(w http.ResponseWriter, r *http.Request, worksp
 
 	response, err := h.guidance.PreviewAnswer(r.Context(), workspaceID, uid, body.QuestionBlockID, rawText)
 	if err != nil {
+		if err.Error() == "invalid_question_block" {
+			api.WriteError(w, http.StatusConflict, "invalid_question_block")
+			return
+		}
 		log.Printf("[WARN] knowledge guidance preview failed workspace_id=%d user_id=%d: %v", workspaceID, uid, err)
 		api.WriteError(w, http.StatusBadGateway, "knowledge_guidance_preview_failed")
 		return

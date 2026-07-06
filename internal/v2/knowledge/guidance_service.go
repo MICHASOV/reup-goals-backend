@@ -64,7 +64,7 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 		return response, nil
 	}
 
-	profile, err := s.updateCompanyProfileIfNeeded(ctx, workspaceID, userID, rawText, response.ConversationIntent)
+	profile, err := s.updateCompanyProfileIfNeeded(ctx, workspaceID, userID, rawText, response.ConversationIntent, false)
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
@@ -121,15 +121,21 @@ func (s *GuidanceService) Confirm(ctx context.Context, workspaceID int, userID i
 		return GuidanceConfirmResponse{}, err
 	}
 
-	profile, err := s.updateCompanyProfileIfNeeded(ctx, workspaceID, userID, rawText, intent)
-	if err != nil {
-		return GuidanceConfirmResponse{}, err
-	}
-
 	affected, err := s.store.SessionAffectedDocuments(ctx, workspaceID, sessionID)
 	if err != nil {
 		return GuidanceConfirmResponse{}, err
 	}
+
+	companyCardChanged, err := s.store.SessionChangedCompanyCard(ctx, workspaceID, sessionID)
+	if err != nil {
+		return GuidanceConfirmResponse{}, err
+	}
+
+	profile, err := s.updateCompanyProfileIfNeeded(ctx, workspaceID, userID, rawText, intent, companyCardChanged)
+	if err != nil {
+		return GuidanceConfirmResponse{}, err
+	}
+
 	updates := []DocumentReadiness{}
 	for _, document := range affected {
 		update, err := s.runDocumentReadiness(ctx, workspaceID, userID, document.DocumentID, document.DocumentType, document.Title)
@@ -170,12 +176,12 @@ func (s *GuidanceService) Reject(ctx context.Context, workspaceID int, sessionID
 	return question, nil
 }
 
-func (s *GuidanceService) updateCompanyProfileIfNeeded(ctx context.Context, workspaceID int, userID int, latestMessage string, intent ConversationIntent) (CompanyProfile, error) {
+func (s *GuidanceService) updateCompanyProfileIfNeeded(ctx context.Context, workspaceID int, userID int, latestMessage string, intent ConversationIntent, force bool) (CompanyProfile, error) {
 	current, err := s.store.CompanyProfile(ctx, workspaceID)
 	if err != nil {
 		return CompanyProfile{}, err
 	}
-	if current.Status == ProfileStatusGreen {
+	if current.Status == ProfileStatusGreen && !force {
 		return current, nil
 	}
 

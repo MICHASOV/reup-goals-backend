@@ -250,6 +250,26 @@ func (s *Store) ActiveQuestionBlock(ctx context.Context, workspaceID int) (Guida
 	return scanQuestionBlock(row)
 }
 
+func (s *Store) ValidateActiveQuestionBlock(ctx context.Context, workspaceID int, questionBlockID int) error {
+	if questionBlockID <= 0 {
+		return errors.New("invalid_question_block")
+	}
+	var exists bool
+	if err := s.dbx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM v2_guidance_question_blocks
+			WHERE workspace_id=$1 AND id=$2 AND status=$3
+		)
+	`, workspaceID, questionBlockID, QuestionStatusActive).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("invalid_question_block")
+	}
+	return nil
+}
+
 func (s *Store) CreateQuestionBlock(ctx context.Context, workspaceID int, block GuidanceQuestionBlock) (GuidanceQuestionBlock, error) {
 	if block.GuidanceStatus == "" {
 		block.GuidanceStatus = GuidanceStatusAskNextQuestion
@@ -333,10 +353,16 @@ func (s *Store) SessionAffectedDocuments(ctx context.Context, workspaceID int, s
 		SELECT DISTINCT d.id, d.document_type, d.title, 'red', '', '[]'::jsonb, false, 'low', 0
 		FROM v2_knowledge_documents d
 		WHERE d.workspace_id=$1
-			AND EXISTS (
+			AND (
+			EXISTS (
 				SELECT 1 FROM v2_proposed_document_patches p
 				WHERE p.workspace_id=$1 AND p.session_id=$2 AND p.document_id=d.id
 			)
+			OR EXISTS (
+				SELECT 1 FROM v2_proposed_document_conflicts c
+				WHERE c.workspace_id=$1 AND c.session_id=$2 AND c.document_id=d.id
+			)
+		)
 		ORDER BY d.id ASC
 	`, workspaceID, sessionID)
 	if err != nil {
@@ -355,6 +381,29 @@ func (s *Store) SessionAffectedDocuments(ctx context.Context, workspaceID int, s
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) SessionChangedCompanyCard(ctx context.Context, workspaceID int, sessionID int) (bool, error) {
+	var changed bool
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM v2_proposed_document_patches p
+			WHERE p.workspace_id=$1
+				AND p.session_id=$2
+				AND p.document_type='company_card'
+				AND p.status=$3
+		) OR EXISTS(
+			SELECT 1
+			FROM v2_proposed_document_conflicts c
+			WHERE c.workspace_id=$1
+				AND c.session_id=$2
+				AND c.document_type='company_card'
+				AND c.status=$4
+				AND c.selected_option=$5
+		)
+	`, workspaceID, sessionID, PatchStatusApplied, ConflictStatusResolved, ConflictOptionNew).Scan(&changed)
+	return changed, err
 }
 
 func (s *Store) DocumentEntriesForAI(ctx context.Context, workspaceID int, documentID int) ([]documentEntry, error) {
