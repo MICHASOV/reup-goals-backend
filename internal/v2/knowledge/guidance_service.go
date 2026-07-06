@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"reup-goals-backend/internal/ai"
 )
@@ -136,13 +137,9 @@ func (s *GuidanceService) Confirm(ctx context.Context, workspaceID int, userID i
 		return GuidanceConfirmResponse{}, err
 	}
 
-	updates := []DocumentReadiness{}
-	for _, document := range affected {
-		update, err := s.runDocumentReadiness(ctx, workspaceID, userID, document.DocumentID, document.DocumentType, document.Title)
-		if err != nil {
-			return GuidanceConfirmResponse{}, err
-		}
-		updates = append(updates, update)
+	updates, err := s.runAffectedDocumentReadiness(ctx, workspaceID, userID, affected)
+	if err != nil {
+		return GuidanceConfirmResponse{}, err
 	}
 
 	readiness, err := s.store.RecalculateKnowledgeBaseReadiness(ctx, workspaceID)
@@ -268,6 +265,31 @@ func (s *GuidanceService) runDocumentReadiness(ctx context.Context, workspaceID 
 	return DocumentReadiness{}, sql.ErrNoRows
 }
 
+func (s *GuidanceService) runAffectedDocumentReadiness(ctx context.Context, workspaceID int, userID int, affected []DocumentReadiness) ([]DocumentReadiness, error) {
+	if len(affected) == 0 {
+		return []DocumentReadiness{}, nil
+	}
+
+	updates := make([]DocumentReadiness, len(affected))
+	errs := make([]error, len(affected))
+	var wg sync.WaitGroup
+	for index, document := range affected {
+		wg.Add(1)
+		go func(index int, document DocumentReadiness) {
+			defer wg.Done()
+			updates[index], errs[index] = s.runDocumentReadiness(ctx, workspaceID, userID, document.DocumentID, document.DocumentType, document.Title)
+		}(index, document)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return updates, nil
+}
+
 func (s *GuidanceService) createNextQuestion(ctx context.Context, workspaceID int, userID int, profile CompanyProfile, readiness KnowledgeBaseReadiness, intent ConversationIntent, latestMessage string) (GuidanceQuestionBlock, error) {
 	if profile.Status != ProfileStatusGreen {
 		return s.createFirstGateQuestion(ctx, workspaceID, profile)
@@ -276,20 +298,32 @@ func (s *GuidanceService) createNextQuestion(ctx context.Context, workspaceID in
 }
 
 func (s *GuidanceService) createFirstGateQuestion(ctx context.Context, workspaceID int, profile CompanyProfile) (GuidanceQuestionBlock, error) {
+	missingAreas := firstGateMissingAreas(profile)
+	questions := firstGateQuestionsForAreas(missingAreas)
+	title := "Уточним недостающий контекст"
+	intro := firstGateIntro(profile)
+
+	if isBlankFirstGate(profile, missingAreas) {
+		title = "Давай начнём с контекста компании"
+		intro = "Ответьте свободным текстом. Я сам разложу ответ по Базе знаний и перед сохранением покажу изменения."
+		questions = []string{
+			"Чем занимается компания и что вы продаёте или делаете для клиентов?",
+			"На какой стадии сейчас бизнес и что сейчас сильнее всего болит?",
+			"Какой сейчас масштаб: команда, рынок, география? По финансам можно дать примерный диапазон, написать “не знаю” или “не хочу раскрывать”.",
+		}
+	}
+	if len(questions) == 0 {
+		questions = []string{"Что ещё важно знать о компании прямо сейчас, чтобы точнее понимать бизнес-контекст?"}
+	}
+
 	block := GuidanceQuestionBlock{
 		Source:         QuestionSourceFirstGate,
 		GuidanceStatus: GuidanceStatusAskNextQuestion,
 		QuestionType:   "new_area_opening",
-		Title:          "Давай начнём с базового знакомства с компанией",
-		Intro:          firstGateIntro(profile),
-		Questions: []string{
-			"Чем занимается компания? Что вы продаёте или делаете для клиентов?",
-			"На какой стадии сейчас бизнес: запуск, первые продажи, стабильная работа, рост, масштабирование, кризис, перезапуск, поиск модели или что-то другое?",
-			"Что сейчас сильнее всего болит в бизнесе?",
-			"Какой сейчас масштаб бизнеса: сколько лет работаете, сколько людей в команде, в каком городе/стране/рынке работаете?",
-			"Какая у компании выручка за последний месяц или год? Какая чистая прибыль? Можно диапазоном или написать, что пока не знаете/не хотите раскрывать.",
-		},
-		Confidence: ConfidenceHigh,
+		Title:          title,
+		Intro:          intro,
+		Questions:      questions,
+		Confidence:     ConfidenceHigh,
 	}
 	return s.store.CreateQuestionBlock(ctx, workspaceID, block)
 }
@@ -417,6 +451,91 @@ func firstGateIntro(profile CompanyProfile) string {
 		return "Я уже вижу часть базового контекста. Давай закроем оставшиеся пробелы, чтобы дальше задавать более точные вопросы."
 	}
 	return "Привет. Я REUP — AI-помощник по управлению целями и фокусом бизнеса. Сначала соберём базовый контекст, чтобы дальше не строить стратегию и вопросы в вакууме."
+}
+
+type baselineCoverageItem struct {
+	Area               string `json:"area"`
+	Status             string `json:"status"`
+	Summary            string `json:"summary"`
+	Missing            bool   `json:"missing"`
+	NeedsClarification bool   `json:"needs_clarification"`
+}
+
+func firstGateMissingAreas(profile CompanyProfile) []string {
+	coverage := baselineCoverageMap(profile)
+	requiredAreas := []string{
+		"business_identity",
+		"business_stage",
+		"current_pain",
+		"scale_and_team",
+		"financial_scale",
+	}
+	missing := make([]string, 0, len(requiredAreas))
+	for _, area := range requiredAreas {
+		item, ok := coverage[area]
+		if !ok || firstGateAreaMissing(area, item) {
+			missing = append(missing, area)
+		}
+	}
+	return missing
+}
+
+func baselineCoverageMap(profile CompanyProfile) map[string]baselineCoverageItem {
+	result := map[string]baselineCoverageItem{}
+	if len(profile.BaselineCoverage) == 0 {
+		return result
+	}
+	var items []baselineCoverageItem
+	if err := json.Unmarshal(profile.BaselineCoverage, &items); err != nil {
+		return result
+	}
+	for _, item := range items {
+		area := strings.TrimSpace(item.Area)
+		if area != "" {
+			result[area] = item
+		}
+	}
+	return result
+}
+
+func firstGateAreaMissing(area string, item baselineCoverageItem) bool {
+	if item.Missing || item.NeedsClarification {
+		return true
+	}
+	status := strings.TrimSpace(item.Status)
+	if area == "business_identity" {
+		return status != "answered" && status != "approximate"
+	}
+	switch status {
+	case "answered", "approximate", "unknown", "not_disclosed":
+		return false
+	default:
+		return true
+	}
+}
+
+func firstGateQuestionsForAreas(areas []string) []string {
+	questionByArea := map[string]string{
+		"business_identity": "Чем занимается компания и что вы продаёте или делаете для клиентов?",
+		"business_stage":    "На какой стадии сейчас бизнес: запуск, первые продажи, стабильная работа, рост, масштабирование, кризис, перезапуск или поиск модели?",
+		"current_pain":      "Что сейчас сильнее всего болит в бизнесе или больше всего мешает двигаться дальше?",
+		"scale_and_team":    "Какой сейчас масштаб: сколько лет работаете, какая команда, рынок, география? Можно примерно.",
+		"financial_scale":   "По финансам есть примерный порядок выручки или прибыли? Можно диапазоном, “не знаю” или “не раскрываю”.",
+	}
+	questions := make([]string, 0, len(areas))
+	for _, area := range areas {
+		if question, ok := questionByArea[area]; ok {
+			questions = append(questions, question)
+		}
+	}
+	if len(questions) > 4 {
+		return questions[:4]
+	}
+	return questions
+}
+
+func isBlankFirstGate(profile CompanyProfile, missingAreas []string) bool {
+	return strings.TrimSpace(profile.ProfileText) == "" && len(missingAreas) >= 5
 }
 
 func rawJSONOrEmptyArray(raw json.RawMessage) any {
