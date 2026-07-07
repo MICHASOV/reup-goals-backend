@@ -19,6 +19,7 @@ type Config struct {
 	OpenAIServiceModel           string
 	OpenAIIntakeModel            string
 	OpenAIServiceMaxOutputTokens int
+	OpenAIIntakeMaxOutputTokens  int
 	OpenAIProxyURL               string
 
 	JWTSecret          string
@@ -63,6 +64,7 @@ func Load() *Config {
 		intakeModel = serviceModel
 	}
 	serviceMaxOutputTokens := parseIntEnv("OPENAI_SERVICE_MAX_OUTPUT_TOKENS", 1800)
+	intakeMaxOutputTokens := parseIntEnv("OPENAI_INTAKE_MAX_OUTPUT_TOKENS", 5000)
 	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
 	if openAIProxyURL == "" {
 		openAIProxyURL = "socks5://127.0.0.1:10808"
@@ -120,6 +122,7 @@ func Load() *Config {
 		OpenAIServiceModel:           serviceModel,
 		OpenAIIntakeModel:            intakeModel,
 		OpenAIServiceMaxOutputTokens: serviceMaxOutputTokens,
+		OpenAIIntakeMaxOutputTokens:  intakeMaxOutputTokens,
 		OpenAIProxyURL:               openAIProxyURL,
 
 		JWTSecret:          jwtSecret,

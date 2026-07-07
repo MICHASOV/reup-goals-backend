@@ -551,11 +551,19 @@ func (s *Store) FinishAICallLog(ctx context.Context, id int, started time.Time, 
 		status = "error"
 		errText = err.Error()
 	}
+	outputValue := nullableJSON(output)
+	if len(output) > 0 && !json.Valid(output) {
+		status = "error"
+		if errText == "" {
+			errText = "invalid_json_output"
+		}
+		outputValue = nil
+	}
 	_, _ = s.dbx.ExecContext(ctx, `
 		UPDATE v2_ai_call_logs
 		SET output_json=$1::jsonb, status=$2, error=$3, latency_ms=$4
 		WHERE id=$5
-	`, nullableJSON(output), status, errText, int(time.Since(started).Milliseconds()), id)
+	`, outputValue, status, errText, int(time.Since(started).Milliseconds()), id)
 }
 
 func (s *Store) RecentAICallLogs(ctx context.Context, workspaceID int, limit int) ([]AICallLogItem, error) {
