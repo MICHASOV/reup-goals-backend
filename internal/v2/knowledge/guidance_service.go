@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"reup-goals-backend/internal/ai"
 )
@@ -65,7 +67,7 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 		return response, nil
 	}
 
-	profile, err := s.updateCompanyProfileIfNeeded(ctx, workspaceID, userID, rawText, response.ConversationIntent, false)
+	profile, err := s.store.CompanyProfile(ctx, workspaceID)
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
@@ -73,11 +75,12 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
-	next, err := s.createNextQuestion(ctx, workspaceID, userID, profile, readiness, response.ConversationIntent, rawText)
+	next, err := s.createFastNextQuestion(ctx, workspaceID, profile, readiness)
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
 	response.NextQuestionBlock = &next
+	s.refreshKnowledgeAsync(workspaceID, userID, rawText, response.ConversationIntent, nil, false)
 	return response, nil
 }
 
@@ -132,12 +135,7 @@ func (s *GuidanceService) Confirm(ctx context.Context, workspaceID int, userID i
 		return GuidanceConfirmResponse{}, err
 	}
 
-	profile, err := s.updateCompanyProfileIfNeeded(ctx, workspaceID, userID, rawText, intent, companyCardChanged)
-	if err != nil {
-		return GuidanceConfirmResponse{}, err
-	}
-
-	updates, err := s.runAffectedDocumentReadiness(ctx, workspaceID, userID, affected)
+	profile, err := s.store.CompanyProfile(ctx, workspaceID)
 	if err != nil {
 		return GuidanceConfirmResponse{}, err
 	}
@@ -146,17 +144,18 @@ func (s *GuidanceService) Confirm(ctx context.Context, workspaceID int, userID i
 	if err != nil {
 		return GuidanceConfirmResponse{}, err
 	}
-	next, err := s.createNextQuestion(ctx, workspaceID, userID, profile, readiness, intent, rawText)
+	next, err := s.createFastNextQuestion(ctx, workspaceID, profile, readiness)
 	if err != nil {
 		return GuidanceConfirmResponse{}, err
 	}
+	s.refreshKnowledgeAsync(workspaceID, userID, rawText, intent, affected, companyCardChanged)
 
 	return GuidanceConfirmResponse{
 		Status:                   SessionConfirmed,
 		Mode:                     guidanceMode(profile),
 		CompanyProfile:           profile,
 		KnowledgeBaseReadiness:   readiness,
-		DocumentReadinessUpdates: updates,
+		DocumentReadinessUpdates: []DocumentReadiness{},
 		NextQuestionBlock:        next,
 		AppliedChanges:           result,
 	}, nil
@@ -295,6 +294,53 @@ func (s *GuidanceService) createNextQuestion(ctx context.Context, workspaceID in
 		return s.createFirstGateQuestion(ctx, workspaceID, profile)
 	}
 	return s.runPlanner(ctx, workspaceID, userID, profile, readiness, intent, latestMessage)
+}
+
+func (s *GuidanceService) createFastNextQuestion(ctx context.Context, workspaceID int, profile CompanyProfile, readiness KnowledgeBaseReadiness) (GuidanceQuestionBlock, error) {
+	if profile.Status != ProfileStatusGreen {
+		return s.createFirstGateQuestion(ctx, workspaceID, profile)
+	}
+	if readiness.OverallStatus == KnowledgeReadinessStrategyReady || readiness.StrategyTransitionAllowed {
+		return s.store.CreateQuestionBlock(ctx, workspaceID, GuidanceQuestionBlock{
+			Source:         QuestionSourcePlanner,
+			GuidanceStatus: GuidanceStatusSuggestStrategyTransition,
+			QuestionType:   "strategy_transition",
+			Title:          "Контекст готов для стратегии",
+			Intro:          "База знаний выглядит достаточно полной, чтобы переходить к сборке стратегии. Можно двигаться дальше или добавить ещё важный контекст.",
+			Questions:      []string{"Хотите перейти к стратегии или сначала добавить ещё детали в базу знаний?"},
+			Confidence:     ConfidenceMedium,
+		})
+	}
+	return s.store.CreateQuestionBlock(ctx, workspaceID, GuidanceQuestionBlock{
+		Source:         QuestionSourcePlanner,
+		GuidanceStatus: GuidanceStatusAskNextQuestion,
+		QuestionType:   "narrow_deepening",
+		Title:          "Уточним бизнес-контекст",
+		Intro:          "Я зафиксировал изменения. Добавьте ещё один важный фрагмент о компании, клиентах, рынке, ограничениях или текущем фокусе.",
+		Questions:      []string{"Что ещё важно знать о бизнесе прямо сейчас, чтобы точнее собрать стратегию?"},
+		Confidence:     ConfidenceMedium,
+	})
+}
+
+func (s *GuidanceService) refreshKnowledgeAsync(workspaceID int, userID int, rawText string, intent ConversationIntent, affected []DocumentReadiness, companyCardChanged bool) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+
+		if _, err := s.updateCompanyProfileIfNeeded(ctx, workspaceID, userID, rawText, intent, companyCardChanged); err != nil {
+			log.Printf("[WARN] background company profile refresh failed workspace_id=%d user_id=%d: %v", workspaceID, userID, err)
+			return
+		}
+		if len(affected) > 0 {
+			if _, err := s.runAffectedDocumentReadiness(ctx, workspaceID, userID, affected); err != nil {
+				log.Printf("[WARN] background document readiness refresh failed workspace_id=%d user_id=%d: %v", workspaceID, userID, err)
+				return
+			}
+		}
+		if _, err := s.store.RecalculateKnowledgeBaseReadiness(ctx, workspaceID); err != nil {
+			log.Printf("[WARN] background knowledge readiness refresh failed workspace_id=%d user_id=%d: %v", workspaceID, userID, err)
+		}
+	}()
 }
 
 func (s *GuidanceService) createFirstGateQuestion(ctx context.Context, workspaceID int, profile CompanyProfile) (GuidanceQuestionBlock, error) {
