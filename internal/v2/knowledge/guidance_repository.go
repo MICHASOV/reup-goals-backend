@@ -517,6 +517,34 @@ func (s *Store) FinishAICallLog(ctx context.Context, id int, started time.Time, 
 	`, nullableJSON(output), status, errText, int(time.Since(started).Milliseconds()), id)
 }
 
+func (s *Store) RecentAICallLogs(ctx context.Context, workspaceID int, limit int) ([]AICallLogItem, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT id, ai_module, prompt_version, model, status, error, latency_ms, created_at
+		FROM v2_ai_call_logs
+		WHERE workspace_id=$1
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2
+	`, workspaceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []AICallLogItem{}
+	for rows.Next() {
+		var item AICallLogItem
+		if err := rows.Scan(&item.ID, &item.Module, &item.PromptVersion, &item.Model, &item.Status, &item.Error, &item.LatencyMS, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) ensureDocumentReadinessRows(ctx context.Context, workspaceID int) error {
 	documents, err := s.EnsureDocuments(ctx, workspaceID)
 	if err != nil {

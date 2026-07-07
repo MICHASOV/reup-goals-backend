@@ -1,6 +1,9 @@
 package knowledge
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 type ConversationIntent struct {
 	HasIntent    bool   `json:"has_intent"`
@@ -88,6 +91,17 @@ type GuidanceConfirmResponse struct {
 	DocumentReadinessUpdates []DocumentReadiness    `json:"document_readiness_updates"`
 	NextQuestionBlock        GuidanceQuestionBlock  `json:"next_question_block"`
 	AppliedChanges           IntakeConfirmResponse  `json:"applied_changes"`
+}
+
+type AICallLogItem struct {
+	ID            int       `json:"id"`
+	Module        string    `json:"module"`
+	PromptVersion string    `json:"prompt_version"`
+	Model         string    `json:"model"`
+	Status        string    `json:"status"`
+	Error         string    `json:"error,omitempty"`
+	LatencyMS     int       `json:"latency_ms"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type companyProfileCollectorResponse struct {

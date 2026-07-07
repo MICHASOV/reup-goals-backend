@@ -89,6 +89,16 @@ func (h *Handler) WorkspaceKnowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	workspaceID, ok := debugAICallsPath(r.URL.Path)
+	if ok {
+		if workspaceID != workspace.ID {
+			api.WriteError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		h.debugAICalls(w, r, workspace.ID)
+		return
+	}
+
 	workspaceID, action, sessionID, ok := guidancePath(r.URL.Path)
 	if ok {
 		if workspaceID != workspace.ID {
@@ -361,6 +371,34 @@ func (h *Handler) guidanceReject(w http.ResponseWriter, r *http.Request, workspa
 	})
 }
 
+func (h *Handler) debugAICalls(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	if r.Method != http.MethodGet {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+
+	limit := 30
+	if value := strings.TrimSpace(r.URL.Query().Get("limit")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			api.WriteError(w, http.StatusBadRequest, "invalid_limit")
+			return
+		}
+		limit = parsed
+	}
+
+	items, err := h.store.RecentAICallLogs(r.Context(), workspaceID, limit)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "ai_call_logs_failed")
+		return
+	}
+
+	api.WriteJSON(w, http.StatusOK, map[string]any{
+		"workspace_id": workspaceID,
+		"items":        items,
+	})
+}
+
 func (h *Handler) confirmIntake(w http.ResponseWriter, r *http.Request, workspaceID int, sessionID int) {
 	uid, ok := auth.UserIDFromContext(r.Context())
 	if !ok {
@@ -525,4 +563,20 @@ func guidancePath(path string) (workspaceID int, action string, sessionID int, o
 		return id, parts[5], sid, true
 	}
 	return 0, "", 0, false
+}
+
+func debugAICallsPath(path string) (workspaceID int, ok bool) {
+	const prefix = "/api/v2/workspaces/"
+	if !strings.HasPrefix(path, prefix) {
+		return 0, false
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(path, prefix), "/"), "/")
+	if len(parts) != 4 || parts[1] != "knowledge" || parts[2] != "debug" || parts[3] != "ai-calls" {
+		return 0, false
+	}
+	id, err := strconv.Atoi(parts[0])
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
 }
