@@ -20,9 +20,10 @@ import (
 // ---------------------------------------------------------
 
 type OpenAIClient struct {
-	APIKey   string
-	Model    string
-	ProxyURL string
+	APIKey          string
+	Model           string
+	ProxyURL        string
+	MaxOutputTokens int
 }
 
 func New(apiKey, model string, proxyURL ...string) *OpenAIClient {
@@ -35,6 +36,13 @@ func New(apiKey, model string, proxyURL ...string) *OpenAIClient {
 		Model:    model,
 		ProxyURL: selectedProxyURL,
 	}
+}
+
+func (c *OpenAIClient) WithMaxOutputTokens(maxOutputTokens int) *OpenAIClient {
+	if maxOutputTokens > 0 {
+		c.MaxOutputTokens = maxOutputTokens
+	}
+	return c
 }
 
 func (c *OpenAIClient) newHTTPClient() (*http.Client, error) {
@@ -77,10 +85,11 @@ func isDirectProxy(value string) bool {
 // ---------------------------------------------------------
 
 type responsesRequest struct {
-	Model        string                 `json:"model"`
-	Input        string                 `json:"input"`
-	Instructions string                 `json:"instructions"`
-	Text         map[string]interface{} `json:"text"`
+	Model           string                 `json:"model"`
+	Input           string                 `json:"input"`
+	Instructions    string                 `json:"instructions"`
+	Text            map[string]interface{} `json:"text"`
+	MaxOutputTokens int                    `json:"max_output_tokens,omitempty"`
 }
 
 type responsesResponse struct {
@@ -112,9 +121,10 @@ func (c *OpenAIClient) GenerateJSON(ctx context.Context, instructions string, in
 
 	// ❗ Правильный формат Responses API (Dec 2025)
 	reqBody := responsesRequest{
-		Model:        c.Model,
-		Input:        jsonInput,
-		Instructions: instructions,
+		Model:           c.Model,
+		Input:           jsonInput,
+		Instructions:    instructions,
+		MaxOutputTokens: c.MaxOutputTokens,
 		Text: map[string]interface{}{
 			"format": map[string]string{
 				"type": "json_object",

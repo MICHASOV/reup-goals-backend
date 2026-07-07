@@ -44,7 +44,8 @@ func main() {
 	}
 
 	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel, cfg.OpenAIProxyURL)
-	serviceAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIServiceModel, cfg.OpenAIProxyURL)
+	serviceAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIServiceModel, cfg.OpenAIProxyURL).
+		WithMaxOutputTokens(cfg.OpenAIServiceMaxOutputTokens)
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)
 	cloudPayments := subscriptions.NewCloudPaymentsClient(cfg)

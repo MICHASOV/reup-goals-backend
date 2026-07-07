@@ -63,6 +63,7 @@ jobs:
           OPENAI_API_KEY=
           OPENAI_MODEL=gpt-4.1
           OPENAI_SERVICE_MODEL=gpt-4.1-nano
+          OPENAI_SERVICE_MAX_OUTPUT_TOKENS=1800
           OPENAI_PROXY_URL=direct
           UNISENDER_API_KEY=
           UNISENDER_BASE_URL=https://api.unisender.com/ru/api
@@ -88,6 +89,11 @@ jobs:
             sed -i 's/^OPENAI_SERVICE_MODEL=.*/OPENAI_SERVICE_MODEL=gpt-4.1-nano/' /etc/reup-goals-staging/backend.env
           else
             printf '\nOPENAI_SERVICE_MODEL=gpt-4.1-nano\n' >> /etc/reup-goals-staging/backend.env
+          fi
+          if grep -q '^OPENAI_SERVICE_MAX_OUTPUT_TOKENS=' /etc/reup-goals-staging/backend.env; then
+            sed -i 's/^OPENAI_SERVICE_MAX_OUTPUT_TOKENS=.*/OPENAI_SERVICE_MAX_OUTPUT_TOKENS=1800/' /etc/reup-goals-staging/backend.env
+          else
+            printf '\nOPENAI_SERVICE_MAX_OUTPUT_TOKENS=1800\n' >> /etc/reup-goals-staging/backend.env
           fi
 
           cat >/etc/systemd/system/reup-goals-staging.service <<'SERVICE'

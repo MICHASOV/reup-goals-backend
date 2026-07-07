@@ -14,10 +14,11 @@ type Config struct {
 	DBPassword string
 	DBName     string
 
-	OpenAIKey          string
-	OpenAIModel        string
-	OpenAIServiceModel string
-	OpenAIProxyURL     string
+	OpenAIKey                    string
+	OpenAIModel                  string
+	OpenAIServiceModel           string
+	OpenAIServiceMaxOutputTokens int
+	OpenAIProxyURL               string
 
 	JWTSecret          string
 	CORSAllowedOrigins []string
@@ -56,6 +57,7 @@ func Load() *Config {
 	if serviceModel == "" {
 		serviceModel = "gpt-4.1-nano"
 	}
+	serviceMaxOutputTokens := parseIntEnv("OPENAI_SERVICE_MAX_OUTPUT_TOKENS", 1800)
 	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
 	if openAIProxyURL == "" {
 		openAIProxyURL = "socks5://127.0.0.1:10808"
@@ -108,10 +110,11 @@ func Load() *Config {
 		DBPassword: os.Getenv("DB_PASSWORD"),
 		DBName:     os.Getenv("DB_NAME"),
 
-		OpenAIKey:          os.Getenv("OPENAI_API_KEY"),
-		OpenAIModel:        model,
-		OpenAIServiceModel: serviceModel,
-		OpenAIProxyURL:     openAIProxyURL,
+		OpenAIKey:                    os.Getenv("OPENAI_API_KEY"),
+		OpenAIModel:                  model,
+		OpenAIServiceModel:           serviceModel,
+		OpenAIServiceMaxOutputTokens: serviceMaxOutputTokens,
+		OpenAIProxyURL:               openAIProxyURL,
 
 		JWTSecret:          jwtSecret,
 		CORSAllowedOrigins: parseCSVEnv("CORS_ALLOWED_ORIGINS"),
