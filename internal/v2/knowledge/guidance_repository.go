@@ -540,6 +540,11 @@ func (s *Store) FinishAICallLog(ctx context.Context, id int, started time.Time, 
 	if id <= 0 {
 		return
 	}
+	if ctx.Err() != nil {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		ctx = bgCtx
+	}
 	status := "ok"
 	errText := ""
 	if err != nil {
