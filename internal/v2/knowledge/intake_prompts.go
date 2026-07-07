@@ -108,6 +108,8 @@ Routing precision:
 - Statements about what the product/business intentionally is not, conscious boundaries, or refused categories -> strategic_refusals.
 - Core customer/business pain such as chaos, lack of focus, scattered tasks, wrong priorities, bottleneck, or wasted effort -> strategic_challenge.
 - Capabilities/assets/team/AI technology as internal strengths -> resources_and_competencies.
+- "Not a task manager / not CRM / not Notion" must not go to company_card. Route it to market_and_competition if it mainly compares alternatives, or strategic_refusals if it describes a conscious product boundary.
+- "Do not scatter focus / not распыляться / understand which tasks deserve attention" must not go to company_card. Route it to strategic_challenge or business_economics depending on whether the emphasis is pain or value.
 
 Allowed confidence values: "low", "medium", "high". Confidence means routing confidence, not truth confidence.
 
@@ -122,6 +124,9 @@ Extraction policy:
 - If a text lists product capabilities with semicolons or line breaks, preserve the main capabilities as separate items when they map to different business aspects.
 - If source_segments are provided, use them as extraction hints. Do not ignore a useful source_segment just because raw_text also contains a broader summary.
 - Multiple source_segments may still map to the same document, but they should remain separate items when they express different facts.
+- For each useful source_segment, create at least one item unless it is an exact duplicate of another segment.
+- If source_segments contains 8+ useful segments and you return fewer than 6 items, the extraction is incomplete.
+- Do not group a capability list into one item when individual capabilities are strategically meaningful.
 - Prefer useful decomposition over excessive conciseness.
 - Do not create tiny fragments that lose business meaning.
 - Do not create unknowns just because information is missing.

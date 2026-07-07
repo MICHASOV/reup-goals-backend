@@ -36,7 +36,7 @@ const (
 	ConflictOptionExisting = "existing"
 	ConflictOptionNew      = "new"
 
-	RouterPromptVersion     = "knowledge_intake_router_v1_1_patch"
+	RouterPromptVersion     = "knowledge_intake_router_v1_2_dense"
 	ReconcilerPromptVersion = "knowledge_document_reconciler_v1"
 
 	CompanyProfileCollectorVersion = "company_profile_collector_v1"
