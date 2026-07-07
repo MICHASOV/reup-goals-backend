@@ -81,6 +81,7 @@ type GuidancePreviewResponse struct {
 	IgnoredItems       []IntakeIgnoredItem      `json:"ignored_items"`
 	UnroutedFragments  []RouterUnroutedFragment `json:"unrouted_fragments,omitempty"`
 	NextQuestionBlock  *GuidanceQuestionBlock   `json:"next_question_block,omitempty"`
+	AppliedChanges     *IntakeConfirmResponse   `json:"applied_changes,omitempty"`
 }
 
 type GuidanceConfirmResponse struct {

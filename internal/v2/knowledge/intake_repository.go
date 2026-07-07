@@ -616,6 +616,68 @@ func (s *Store) ConfirmIntake(ctx context.Context, workspaceID int, userID int, 
 	}, nil
 }
 
+func (s *Store) AutoApplyIntake(ctx context.Context, workspaceID int, userID int, sessionID int) (IntakeConfirmResponse, error) {
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return IntakeConfirmResponse{}, err
+	}
+	defer tx.Rollback()
+
+	status, err := sessionStatusForUpdate(ctx, tx, workspaceID, sessionID)
+	if err != nil {
+		return IntakeConfirmResponse{}, err
+	}
+	if status == SessionConfirmed {
+		return IntakeConfirmResponse{SessionID: sessionID}, nil
+	}
+	if status != SessionPreviewReady {
+		return IntakeConfirmResponse{}, errors.New("session_not_ready")
+	}
+
+	acceptedSet := map[int]bool{}
+	if err := acceptAllSuggestedPatches(ctx, tx, workspaceID, sessionID, acceptedSet); err != nil {
+		return IntakeConfirmResponse{}, err
+	}
+
+	changedDocuments := map[int]bool{}
+	appliedChanges := 0
+	if err := applyPatches(ctx, tx, workspaceID, userID, sessionID, acceptedSet, changedDocuments, &appliedChanges); err != nil {
+		return IntakeConfirmResponse{}, err
+	}
+
+	for documentID := range changedDocuments {
+		if err := syncBlockFromDocumentTx(ctx, tx, workspaceID, documentID); err != nil {
+			return IntakeConfirmResponse{}, err
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE v2_proposed_document_conflicts
+		SET status=$1, resolved_at=NOW()
+		WHERE workspace_id=$2 AND session_id=$3 AND status=$4
+	`, ConflictStatusDismissed, workspaceID, sessionID, ConflictStatusActive); err != nil {
+		return IntakeConfirmResponse{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE v2_knowledge_intake_sessions
+		SET status=$1, updated_at=NOW()
+		WHERE workspace_id=$2 AND id=$3
+	`, SessionConfirmed, workspaceID, sessionID); err != nil {
+		return IntakeConfirmResponse{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return IntakeConfirmResponse{}, err
+	}
+
+	return IntakeConfirmResponse{
+		SessionID:        sessionID,
+		UpdatedDocuments: len(changedDocuments),
+		AppliedChanges:   appliedChanges,
+	}, nil
+}
+
 func sessionStatusForUpdate(ctx context.Context, tx *sql.Tx, workspaceID int, sessionID int) (string, error) {
 	var status string
 	err := tx.QueryRowContext(ctx, `

@@ -64,6 +64,38 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 		return GuidancePreviewResponse{}, err
 	}
 	if response.Status != "no_preview_needed" {
+		result, err := s.store.AutoApplyIntake(ctx, workspaceID, userID, response.SessionID)
+		if err != nil {
+			return GuidancePreviewResponse{}, err
+		}
+		if err := s.store.MarkQuestionAnsweredForSession(ctx, workspaceID, response.SessionID); err != nil {
+			return GuidancePreviewResponse{}, err
+		}
+
+		affected, err := s.store.SessionAffectedDocuments(ctx, workspaceID, response.SessionID)
+		if err != nil {
+			return GuidancePreviewResponse{}, err
+		}
+		companyCardChanged, err := s.store.SessionChangedCompanyCard(ctx, workspaceID, response.SessionID)
+		if err != nil {
+			return GuidancePreviewResponse{}, err
+		}
+		profile, err := s.refreshFirstGateProfileFromConfirmedAnswer(ctx, workspaceID, rawText, companyCardChanged)
+		if err != nil {
+			return GuidancePreviewResponse{}, err
+		}
+		readiness, err := s.store.RecalculateKnowledgeBaseReadiness(ctx, workspaceID)
+		if err != nil {
+			return GuidancePreviewResponse{}, err
+		}
+		next, err := s.nextQuestionAfterAutoApply(ctx, workspaceID, userID, profile, readiness, response.ConversationIntent, rawText, response.Conflicts)
+		if err != nil {
+			return GuidancePreviewResponse{}, err
+		}
+		response.Status = SessionConfirmed
+		response.NextQuestionBlock = &next
+		response.AppliedChanges = &result
+		s.refreshKnowledgeAsync(workspaceID, userID, rawText, response.ConversationIntent, affected, companyCardChanged)
 		return response, nil
 	}
 
@@ -329,7 +361,7 @@ func (s *GuidanceService) createNextQuestion(ctx context.Context, workspaceID in
 
 func (s *GuidanceService) refreshKnowledgeAsync(workspaceID int, userID int, rawText string, intent ConversationIntent, affected []DocumentReadiness, companyCardChanged bool) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 
 		if _, err := s.updateCompanyProfileIfNeeded(ctx, workspaceID, userID, rawText, intent, companyCardChanged); err != nil {
@@ -345,7 +377,111 @@ func (s *GuidanceService) refreshKnowledgeAsync(workspaceID int, userID int, raw
 		if _, err := s.store.RecalculateKnowledgeBaseReadiness(ctx, workspaceID); err != nil {
 			log.Printf("[WARN] background knowledge readiness refresh failed workspace_id=%d user_id=%d: %v", workspaceID, userID, err)
 		}
+		if len(affected) > 0 {
+			s.composeDocumentsInBackground(ctx, workspaceID, userID, affected)
+		}
 	}()
+}
+
+func (s *GuidanceService) nextQuestionAfterAutoApply(ctx context.Context, workspaceID int, userID int, profile CompanyProfile, readiness KnowledgeBaseReadiness, intent ConversationIntent, rawText string, conflicts []IntakeConflict) (GuidanceQuestionBlock, error) {
+	questions := conflictQuestions(conflicts)
+	if len(questions) > 0 {
+		return s.store.CreateQuestionBlock(ctx, workspaceID, GuidanceQuestionBlock{
+			Source:               QuestionSourcePlanner,
+			GuidanceStatus:       GuidanceStatusAskNextQuestion,
+			QuestionType:         "conflict_clarification",
+			IntendedFocusSummary: "Уточнить расхождения, которые нельзя безопасно применить автоматически.",
+			Title:                "Уточню пару мест, чтобы не исказить смысл",
+			Intro:                "Часть ответа я уже зафиксировал в Базе знаний. Ниже остались только места, где есть риск неверно понять или перезаписать старую формулировку.",
+			Questions:            questions,
+			Confidence:           ConfidenceHigh,
+		})
+	}
+	return s.createNextQuestion(ctx, workspaceID, userID, profile, readiness, intent, rawText)
+}
+
+func conflictQuestions(conflicts []IntakeConflict) []string {
+	questions := []string{}
+	for _, conflict := range conflicts {
+		question := strings.TrimSpace(conflict.Question)
+		if question == "" {
+			question = "Какая формулировка точнее описывает текущую реальность?"
+		}
+		existingText := strings.TrimSpace(conflict.OptionAText)
+		if existingText == "" {
+			existingText = strings.TrimSpace(conflict.ExistingText)
+		}
+		newText := strings.TrimSpace(conflict.OptionBText)
+		if newText == "" {
+			newText = strings.TrimSpace(conflict.NewText)
+		}
+		if existingText != "" && newText != "" {
+			question = fmt.Sprintf("%s Было: «%s». Сейчас прозвучало: «%s». Что верно?", question, existingText, newText)
+		}
+		questions = append(questions, question)
+		if len(questions) >= 3 {
+			break
+		}
+	}
+	return questions
+}
+
+func (s *GuidanceService) composeDocumentsInBackground(ctx context.Context, workspaceID int, userID int, affected []DocumentReadiness) {
+	for _, document := range uniqueDocuments(affected) {
+		if err := s.composeDocument(ctx, workspaceID, userID, document.DocumentID, document.DocumentType, document.Title); err != nil {
+			log.Printf("[WARN] background document compose failed workspace_id=%d user_id=%d document_type=%s: %v", workspaceID, userID, document.DocumentType, err)
+		}
+	}
+}
+
+func (s *GuidanceService) composeDocument(ctx context.Context, workspaceID int, userID int, documentID int, documentType string, title string) error {
+	entries, err := s.store.DocumentEntriesForAI(ctx, workspaceID, documentID)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	aiEntries := make([]map[string]string, 0, len(entries))
+	for _, entry := range entries {
+		aiEntries = append(aiEntries, map[string]string{
+			"entry_id":       entryIDString(entry.ID),
+			"text":           entry.Text,
+			"statement_type": entry.StatementType,
+		})
+	}
+	input := map[string]any{
+		"workspace_id":    fmt.Sprintf("%d", workspaceID),
+		"output_language": "ru",
+		"document_type":   documentType,
+		"document_title":  title,
+		"entries":         aiEntries,
+	}
+	raw, err := s.generateLoggedJSON(ctx, workspaceID, userID, "knowledge_document_composer", DocumentComposerVersion, documentComposerPrompt, input)
+	if err != nil {
+		return err
+	}
+	var response documentComposerResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return err
+	}
+	if strings.TrimSpace(response.DocumentType) == "" {
+		response.DocumentType = documentType
+	}
+	return s.store.UpsertDocumentView(ctx, workspaceID, documentID, documentType, response, raw)
+}
+
+func uniqueDocuments(documents []DocumentReadiness) []DocumentReadiness {
+	result := []DocumentReadiness{}
+	seen := map[int]bool{}
+	for _, document := range documents {
+		if document.DocumentID <= 0 || seen[document.DocumentID] {
+			continue
+		}
+		seen[document.DocumentID] = true
+		result = append(result, document)
+	}
+	return result
 }
 
 func (s *GuidanceService) createFirstGateQuestion(ctx context.Context, workspaceID int, profile CompanyProfile) (GuidanceQuestionBlock, error) {

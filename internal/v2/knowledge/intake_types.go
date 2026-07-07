@@ -127,3 +127,15 @@ type ReconcilerIgnoredItem struct {
 	CleanText     string   `json:"clean_text"`
 	Reason        string   `json:"reason"`
 }
+
+type documentComposerResponse struct {
+	DocumentType string `json:"document_type"`
+	Title        string `json:"title"`
+	RenderedText string `json:"rendered_text"`
+	Sections     []struct {
+		Title  string   `json:"title"`
+		Points []string `json:"points"`
+	} `json:"sections"`
+	SourceEntryIDs []string `json:"source_entry_ids"`
+	Confidence     string   `json:"confidence"`
+}

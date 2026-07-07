@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -451,6 +452,41 @@ func (s *Store) SessionChangedCompanyCard(ctx context.Context, workspaceID int, 
 
 func (s *Store) DocumentEntriesForAI(ctx context.Context, workspaceID int, documentID int) ([]documentEntry, error) {
 	return s.DocumentEntries(ctx, workspaceID, documentID)
+}
+
+func (s *Store) UpsertDocumentView(ctx context.Context, workspaceID int, documentID int, documentType string, response documentComposerResponse, raw json.RawMessage) error {
+	sections, err := json.Marshal(response.Sections)
+	if err != nil {
+		return err
+	}
+	sourceEntryIDs, err := json.Marshal(response.SourceEntryIDs)
+	if err != nil {
+		return err
+	}
+	title := strings.TrimSpace(response.Title)
+	if title == "" {
+		if definition, ok := documentDefinitionByType(documentType); ok {
+			title = definition.Title
+		}
+	}
+	_, err = s.dbx.ExecContext(ctx, `
+		INSERT INTO v2_knowledge_document_views (
+			workspace_id, document_id, document_type, title, rendered_text, sections_json,
+			source_entry_ids_json, composer_prompt_version, composer_raw_json, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, NOW())
+		ON CONFLICT (workspace_id, document_id) DO UPDATE SET
+			document_type=EXCLUDED.document_type,
+			title=EXCLUDED.title,
+			rendered_text=EXCLUDED.rendered_text,
+			sections_json=EXCLUDED.sections_json,
+			source_entry_ids_json=EXCLUDED.source_entry_ids_json,
+			composer_prompt_version=EXCLUDED.composer_prompt_version,
+			composer_raw_json=EXCLUDED.composer_raw_json,
+			updated_at=NOW()
+	`, workspaceID, documentID, documentType, title, strings.TrimSpace(response.RenderedText),
+		string(sections), string(sourceEntryIDs), DocumentComposerVersion, nullableJSON(raw))
+	return err
 }
 
 func (s *Store) CompanyCardEntries(ctx context.Context, workspaceID int) ([]documentEntry, error) {

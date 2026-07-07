@@ -601,6 +601,29 @@ var migrations = []Migration{
 			);
 		`,
 	},
+	{
+		ID: "20260707_009_v2_knowledge_document_views",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_knowledge_document_views (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_id INTEGER NOT NULL REFERENCES v2_knowledge_documents(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				title TEXT NOT NULL DEFAULT '',
+				rendered_text TEXT NOT NULL DEFAULT '',
+				sections_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				source_entry_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				composer_prompt_version TEXT NOT NULL DEFAULT '',
+				composer_raw_json JSONB NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id, document_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_knowledge_document_views_workspace
+				ON v2_knowledge_document_views (workspace_id, document_type);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

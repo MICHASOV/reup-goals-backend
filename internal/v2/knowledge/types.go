@@ -38,6 +38,7 @@ const (
 
 	RouterPromptVersion     = "knowledge_intake_router_v1_2_dense"
 	ReconcilerPromptVersion = "knowledge_document_reconciler_v1"
+	DocumentComposerVersion = "knowledge_document_composer_v1"
 
 	CompanyProfileCollectorVersion = "company_profile_collector_v1"
 	DocumentReadinessVersion       = "document_readiness_preflight_v1"
