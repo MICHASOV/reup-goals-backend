@@ -75,7 +75,7 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
-	next, err := s.createFastNextQuestionForIntent(ctx, workspaceID, profile, readiness, response.ConversationIntent)
+	next, err := s.createNextQuestion(ctx, workspaceID, userID, profile, readiness, response.ConversationIntent, rawText)
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
@@ -144,7 +144,7 @@ func (s *GuidanceService) Confirm(ctx context.Context, workspaceID int, userID i
 	if err != nil {
 		return GuidanceConfirmResponse{}, err
 	}
-	next, err := s.createFastNextQuestion(ctx, workspaceID, profile, readiness)
+	next, err := s.createNextQuestion(ctx, workspaceID, userID, profile, readiness, intent, rawText)
 	if err != nil {
 		return GuidanceConfirmResponse{}, err
 	}
@@ -324,100 +324,7 @@ func (s *GuidanceService) runAffectedDocumentReadiness(ctx context.Context, work
 }
 
 func (s *GuidanceService) createNextQuestion(ctx context.Context, workspaceID int, userID int, profile CompanyProfile, readiness KnowledgeBaseReadiness, intent ConversationIntent, latestMessage string) (GuidanceQuestionBlock, error) {
-	if profile.Status != ProfileStatusGreen {
-		return s.createFirstGateQuestion(ctx, workspaceID, profile)
-	}
 	return s.runPlanner(ctx, workspaceID, userID, profile, readiness, intent, latestMessage)
-}
-
-func (s *GuidanceService) createFastNextQuestion(ctx context.Context, workspaceID int, profile CompanyProfile, readiness KnowledgeBaseReadiness) (GuidanceQuestionBlock, error) {
-	if profile.Status != ProfileStatusGreen {
-		return s.createFirstGateQuestion(ctx, workspaceID, profile)
-	}
-	if readiness.OverallStatus == KnowledgeReadinessStrategyReady || readiness.StrategyTransitionAllowed {
-		return s.store.CreateQuestionBlock(ctx, workspaceID, GuidanceQuestionBlock{
-			Source:         QuestionSourcePlanner,
-			GuidanceStatus: GuidanceStatusSuggestStrategyTransition,
-			QuestionType:   "strategy_transition",
-			Title:          "Контекст готов для стратегии",
-			Intro:          "База знаний выглядит достаточно полной, чтобы переходить к сборке стратегии. Можно двигаться дальше или добавить ещё важный контекст.",
-			Questions:      []string{"Хотите перейти к стратегии или сначала добавить ещё детали в базу знаний?"},
-			Confidence:     ConfidenceMedium,
-		})
-	}
-	return s.store.CreateQuestionBlock(ctx, workspaceID, GuidanceQuestionBlock{
-		Source:         QuestionSourcePlanner,
-		GuidanceStatus: GuidanceStatusAskNextQuestion,
-		QuestionType:   "narrow_deepening",
-		Title:          "Уточним бизнес-контекст",
-		Intro:          "Я зафиксировал изменения. Добавьте ещё один важный фрагмент о компании, клиентах, рынке, ограничениях или текущем фокусе.",
-		Questions:      []string{"Что ещё важно знать о бизнесе прямо сейчас, чтобы точнее собрать стратегию?"},
-		Confidence:     ConfidenceMedium,
-	})
-}
-
-func (s *GuidanceService) createFastNextQuestionForIntent(ctx context.Context, workspaceID int, profile CompanyProfile, readiness KnowledgeBaseReadiness, intent ConversationIntent) (GuidanceQuestionBlock, error) {
-	intent = defaultConversationIntent(intent)
-	if !intent.HasIntent {
-		return s.createFastNextQuestion(ctx, workspaceID, profile, readiness)
-	}
-
-	title := "Продолжим без записи в Базу знаний"
-	intro := "Я не стал сохранять это как факт о компании."
-	questions := []string{"Можете ответить на текущий вопрос коротко или написать, какую тему разобрать вместо него."}
-
-	switch intent.IntentType {
-	case "why_question":
-		title = "Зачем я это уточняю"
-		if profile.Status == ProfileStatusGreen {
-			intro = "Базовый профиль уже собран. Дальше я уточняю отдельные слабые места Базы знаний, чтобы стратегия опиралась на факты, а не на догадки."
-			questions = []string{"Что сейчас важнее уточнить глубже: клиентов, рынок, экономику, ограничения или текущий фокус?"}
-		} else {
-			intro = "Эти вопросы закрывают базовый профиль компании. Без него следующие вопросы будут менее точными, а стратегия получится поверхностной."
-			questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
-		}
-	case "refusal":
-		title = "Можно пропустить"
-		intro = "Окей, не фиксирую это в Базе знаний. Если не хотите раскрывать часть данных, так и напишите: например, “финансы не раскрываю”. Это тоже считается ответом."
-		questions = []string{"Какую часть контекста компании готовы уточнить вместо этого: клиенты, продукт, команда, рынок или ограничения?"}
-	case "advice_request":
-		title = "Сначала соберём факты"
-		if profile.Status == ProfileStatusGreen {
-			intro = "Могу помочь с советом, но сначала лучше понять, какой слой сейчас слабее всего описан: клиенты, экономика, рынок, ограничения или текущий фокус."
-			questions = []string{"Про какую часть бизнеса хотите получить более предметный разбор?"}
-		} else {
-			intro = "Я смогу дать полезный совет точнее, когда пойму контекст компании. Сейчас лучше закрыть недостающие факты, а не гадать."
-			questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
-		}
-	case "frustration":
-		title = "Понял, упростим"
-		intro = "Не сохраняю это как данные о компании. Давайте коротко: можно ответить одной фразой, без идеальной формулировки."
-		if profile.Status == ProfileStatusGreen {
-			questions = []string{"Какой следующий участок контекста проще разобрать сейчас?"}
-		} else {
-			questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
-		}
-	case "topic_change_request":
-		title = "Сменим фокус"
-		intro = "Окей, можем перейти к другой части контекста. Я буду сохранять только факты о бизнесе."
-		questions = []string{"Что важно зафиксировать по новой теме?"}
-	}
-	if len(questions) == 0 {
-		questions = []string{"Что ещё важно знать о компании прямо сейчас?"}
-	}
-	if len(questions) > 3 {
-		questions = questions[:3]
-	}
-
-	return s.store.CreateQuestionBlock(ctx, workspaceID, GuidanceQuestionBlock{
-		Source:         QuestionSourceFirstGate,
-		GuidanceStatus: GuidanceStatusAskNextQuestion,
-		QuestionType:   intent.IntentType,
-		Title:          title,
-		Intro:          intro,
-		Questions:      questions,
-		Confidence:     ConfidenceMedium,
-	})
 }
 
 func (s *GuidanceService) refreshKnowledgeAsync(workspaceID int, userID int, rawText string, intent ConversationIntent, affected []DocumentReadiness, companyCardChanged bool) {
