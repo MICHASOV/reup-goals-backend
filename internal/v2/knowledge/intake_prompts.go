@@ -101,10 +101,14 @@ Allowed target_document values:
 Allowed confidence values: "low", "medium", "high". Confidence means routing confidence, not truth confidence.
 
 Extraction policy:
-- Do not extract everything.
-- Extract the main useful knowledge elements that should be stored in the Knowledge Base.
-- Avoid over-decomposition.
-- Short answer: 1-5 items. Normal answer: 3-10 items. Long dense answer: up to 20 items. Very long dense text: 25 items maximum.
+- Extract every strategically useful knowledge element that should be stored in the Knowledge Base.
+- Do not compress a multi-paragraph answer into one summary item.
+- Preserve distinct business facts as distinct items when they describe different aspects: product identity, customer, value proposition, workflow, monetization, differentiation, current stage, problem, constraints, resources, evidence, refusals, risks, or intended focus.
+- For bullet-like text, each meaningful bullet normally becomes its own item unless it is a duplicate.
+- A single dense paragraph can produce several items if it contains several business facts.
+- Short answer: 1-5 items. Normal answer: 4-12 items. Long dense answer: 8-20 items. Very long dense text: 15-30 items maximum.
+- Prefer useful decomposition over excessive conciseness.
+- Do not create tiny fragments that lose business meaning.
 - Do not create unknowns just because information is missing.
 
 If raw_text contains no useful business context, return:
@@ -225,6 +229,10 @@ Rules:
 - Use conflict only when existing and new information appear to refer to the same business aspect and cannot both be accepted as-is.
 - Signals for update: "сейчас", "теперь", "уже", "на данный момент", "обновилось", "стало".
 - Do not over-merge unrelated items.
+- Do not collapse several distinct new_items into one broad summary patch.
+- If new_items contain multiple distinct useful facts, create multiple add/update patches.
+- Prefer add over update when a new item adds a different business aspect rather than correcting the same exact aspect.
+- When updating, preserve important detail from both existing_text and new item. Do not replace a detailed entry with a shorter generic summary.
 - Conflict options must be only existing version and new version.
 
 Priority: JSON validity > no invention > use only provided entries/items > determinism > correct reconciliation > conciseness > style.`
