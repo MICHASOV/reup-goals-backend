@@ -14,8 +14,9 @@ type Config struct {
 	DBPassword string
 	DBName     string
 
-	OpenAIKey   string
-	OpenAIModel string
+	OpenAIKey      string
+	OpenAIModel    string
+	OpenAIProxyURL string
 
 	JWTSecret          string
 	CORSAllowedOrigins []string
@@ -49,6 +50,10 @@ func Load() *Config {
 	model := os.Getenv("OPENAI_MODEL")
 	if model == "" {
 		model = "gpt-4o-mini" // дефолтная модель (можешь заменить на нужную)
+	}
+	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
+	if openAIProxyURL == "" {
+		openAIProxyURL = "socks5://127.0.0.1:10808"
 	}
 
 	jwtSecret := os.Getenv("JWT_SECRET")
@@ -98,8 +103,9 @@ func Load() *Config {
 		DBPassword: os.Getenv("DB_PASSWORD"),
 		DBName:     os.Getenv("DB_NAME"),
 
-		OpenAIKey:   os.Getenv("OPENAI_API_KEY"),
-		OpenAIModel: model,
+		OpenAIKey:      os.Getenv("OPENAI_API_KEY"),
+		OpenAIModel:    model,
+		OpenAIProxyURL: openAIProxyURL,
 
 		JWTSecret:          jwtSecret,
 		CORSAllowedOrigins: parseCSVEnv("CORS_ALLOWED_ORIGINS"),

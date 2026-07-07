@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -18,20 +20,37 @@ import (
 // ---------------------------------------------------------
 
 type OpenAIClient struct {
-	APIKey string
-	Model  string
+	APIKey   string
+	Model    string
+	ProxyURL string
 }
 
-func New(apiKey, model string) *OpenAIClient {
+func New(apiKey, model string, proxyURL ...string) *OpenAIClient {
+	selectedProxyURL := "socks5://127.0.0.1:10808"
+	if len(proxyURL) > 0 && strings.TrimSpace(proxyURL[0]) != "" {
+		selectedProxyURL = strings.TrimSpace(proxyURL[0])
+	}
 	return &OpenAIClient{
-		APIKey: apiKey,
-		Model:  model,
+		APIKey:   apiKey,
+		Model:    model,
+		ProxyURL: selectedProxyURL,
 	}
 }
 
-// SOCKS5 proxy (как у тебя ранее)
-func newHTTPClientWithProxy() (*http.Client, error) {
-	dialer, err := proxy.SOCKS5("tcp", "127.0.0.1:10808", nil, proxy.Direct)
+func (c *OpenAIClient) newHTTPClient() (*http.Client, error) {
+	if isDirectProxy(c.ProxyURL) {
+		return &http.Client{Timeout: 120 * time.Second}, nil
+	}
+
+	proxyURL, err := url.Parse(c.ProxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("proxy url parse error: %w", err)
+	}
+	if proxyURL.Scheme != "socks5" {
+		return nil, fmt.Errorf("unsupported proxy scheme: %s", proxyURL.Scheme)
+	}
+
+	dialer, err := proxy.SOCKS5("tcp", proxyURL.Host, nil, proxy.Direct)
 	if err != nil {
 		return nil, fmt.Errorf("socks5 dialer error: %w", err)
 	}
@@ -46,6 +65,11 @@ func newHTTPClientWithProxy() (*http.Client, error) {
 		Timeout:   120 * time.Second,
 		Transport: transport,
 	}, nil
+}
+
+func isDirectProxy(value string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	return normalized == "" || normalized == "direct" || normalized == "none" || normalized == "off"
 }
 
 // ---------------------------------------------------------
@@ -79,7 +103,7 @@ func (c *OpenAIClient) EvaluateTask(
 }
 
 func (c *OpenAIClient) GenerateJSON(ctx context.Context, instructions string, input string) (json.RawMessage, error) {
-	httpClient, err := newHTTPClientWithProxy()
+	httpClient, err := c.newHTTPClient()
 	if err != nil {
 		return nil, fmt.Errorf("proxy init error: %w", err)
 	}

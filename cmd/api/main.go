@@ -43,7 +43,7 @@ func main() {
 		log.Fatal("DB migration error:", err)
 	}
 
-	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel)
+	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel, cfg.OpenAIProxyURL)
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)
 	cloudPayments := subscriptions.NewCloudPaymentsClient(cfg)

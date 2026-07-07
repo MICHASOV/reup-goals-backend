@@ -59,6 +59,7 @@ jobs:
           CORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro,http://staging.reupgoals.pro
           OPENAI_API_KEY=
           OPENAI_MODEL=gpt-4.1
+          OPENAI_PROXY_URL=direct
           UNISENDER_API_KEY=
           UNISENDER_BASE_URL=https://api.unisender.com/ru/api
           UNISENDER_SENDER_EMAIL=noreply@reupgoals.pro
