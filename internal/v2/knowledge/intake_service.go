@@ -300,8 +300,9 @@ func (s *IntakeService) reconcileDocuments(ctx context.Context, workspaceID int,
 }
 
 func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID int, rawText string) (json.RawMessage, RouterResponse, error) {
-	input, err := json.Marshal(map[string]string{
+	input, err := json.Marshal(map[string]any{
 		"raw_text":           rawText,
+		"source_segments":    sourceSegments(rawText),
 		"workspace_language": "ru",
 		"source_type":        "manual_text",
 	})
@@ -330,6 +331,31 @@ func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID 
 	}
 
 	return raw, response, nil
+}
+
+func sourceSegments(rawText string) []string {
+	normalized := strings.ReplaceAll(rawText, "\r\n", "\n")
+	segments := []string{}
+	for _, paragraph := range strings.Split(normalized, "\n") {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph == "" {
+			continue
+		}
+		if strings.Count(paragraph, ";") >= 2 {
+			for _, part := range strings.Split(paragraph, ";") {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					segments = append(segments, part)
+				}
+			}
+			continue
+		}
+		segments = append(segments, paragraph)
+	}
+	if len(segments) > 30 {
+		return segments[:30]
+	}
+	return segments
 }
 
 func classifyIntentOnlyMessage(rawText string) ConversationIntent {

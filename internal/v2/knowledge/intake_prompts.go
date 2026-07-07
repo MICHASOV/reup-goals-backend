@@ -37,6 +37,7 @@ You MUST NOT:
 INPUT FORMAT:
 {
   "raw_text": "string",
+  "source_segments": ["optional pre-split meaningful text segment"],
   "workspace_language": "ru",
   "source_type": "manual_text"
 }
@@ -119,6 +120,8 @@ Extraction policy:
 - Short answer: 1-5 items. Normal answer: 4-12 items. Long dense answer: 8-20 items. Very long dense text: 15-30 items maximum.
 - If a dense answer describes product identity, target customers, value proposition, workflow, differentiation, and core pain, extracting fewer than 6 items is usually wrong.
 - If a text lists product capabilities with semicolons or line breaks, preserve the main capabilities as separate items when they map to different business aspects.
+- If source_segments are provided, use them as extraction hints. Do not ignore a useful source_segment just because raw_text also contains a broader summary.
+- Multiple source_segments may still map to the same document, but they should remain separate items when they express different facts.
 - Prefer useful decomposition over excessive conciseness.
 - Do not create tiny fragments that lose business meaning.
 - Do not create unknowns just because information is missing.
