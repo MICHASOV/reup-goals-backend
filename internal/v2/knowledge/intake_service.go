@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"reup-goals-backend/internal/ai"
@@ -14,6 +15,20 @@ import (
 type IntakeService struct {
 	store *Store
 	ai    *ai.OpenAIClient
+}
+
+type pendingReconciliation struct {
+	documentID   int
+	documentType string
+	definition   DocumentDefinition
+	entries      []documentEntry
+	items        []proposedItemRecord
+}
+
+type reconciledDocument struct {
+	documentID   int
+	documentType string
+	response     ReconcilerResponse
 }
 
 func NewIntakeService(store *Store, aiClient *ai.OpenAIClient) *IntakeService {
@@ -54,6 +69,7 @@ func (s *IntakeService) BuildPreview(ctx context.Context, workspaceID int, userI
 		return IntakePreviewResponse{}, err
 	}
 
+	pending := []pendingReconciliation{}
 	for documentType, items := range itemsByDocument {
 		documentID := documents[documentType]
 		definition, ok := documentDefinitionByType(documentType)
@@ -76,16 +92,22 @@ func (s *IntakeService) BuildPreview(ctx context.Context, workspaceID int, userI
 			continue
 		}
 
-		_, reconcilerResponse, err := s.callReconciler(ctx, workspaceID, userID, definition, entries, items)
-		if err != nil {
-			_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
-			return IntakePreviewResponse{}, err
-		}
-		if err := validateReconcilerResponse(reconcilerResponse, documentType, entries, items); err != nil {
-			_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
-			return IntakePreviewResponse{}, err
-		}
-		if err := s.store.SaveReconcilerResponse(ctx, sessionID, workspaceID, documentID, documentType, reconcilerResponse); err != nil {
+		pending = append(pending, pendingReconciliation{
+			documentID:   documentID,
+			documentType: documentType,
+			definition:   definition,
+			entries:      entries,
+			items:        items,
+		})
+	}
+
+	reconciled, err := s.reconcileDocuments(ctx, workspaceID, userID, pending)
+	if err != nil {
+		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
+		return IntakePreviewResponse{}, err
+	}
+	for _, item := range reconciled {
+		if err := s.store.SaveReconcilerResponse(ctx, sessionID, workspaceID, item.documentID, item.documentType, item.response); err != nil {
 			return IntakePreviewResponse{}, err
 		}
 	}
@@ -162,6 +184,7 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 		return GuidancePreviewResponse{}, err
 	}
 
+	pending := []pendingReconciliation{}
 	for documentType, items := range itemsByDocument {
 		documentID := documents[documentType]
 		definition, ok := documentDefinitionByType(documentType)
@@ -184,16 +207,22 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 			continue
 		}
 
-		_, reconcilerResponse, err := s.callReconciler(ctx, workspaceID, userID, definition, entries, items)
-		if err != nil {
-			_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
-			return GuidancePreviewResponse{}, err
-		}
-		if err := validateReconcilerResponse(reconcilerResponse, documentType, entries, items); err != nil {
-			_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
-			return GuidancePreviewResponse{}, err
-		}
-		if err := s.store.SaveReconcilerResponse(ctx, sessionID, workspaceID, documentID, documentType, reconcilerResponse); err != nil {
+		pending = append(pending, pendingReconciliation{
+			documentID:   documentID,
+			documentType: documentType,
+			definition:   definition,
+			entries:      entries,
+			items:        items,
+		})
+	}
+
+	reconciled, err := s.reconcileDocuments(ctx, workspaceID, userID, pending)
+	if err != nil {
+		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
+		return GuidancePreviewResponse{}, err
+	}
+	for _, item := range reconciled {
+		if err := s.store.SaveReconcilerResponse(ctx, sessionID, workspaceID, item.documentID, item.documentType, item.response); err != nil {
 			return GuidancePreviewResponse{}, err
 		}
 	}
@@ -214,6 +243,44 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 		response.Status = "no_preview_needed"
 	}
 	return response, nil
+}
+
+func (s *IntakeService) reconcileDocuments(ctx context.Context, workspaceID int, userID int, pending []pendingReconciliation) ([]reconciledDocument, error) {
+	if len(pending) == 0 {
+		return []reconciledDocument{}, nil
+	}
+
+	result := make([]reconciledDocument, len(pending))
+	errs := make([]error, len(pending))
+	var wg sync.WaitGroup
+	for index, item := range pending {
+		wg.Add(1)
+		go func(index int, item pendingReconciliation) {
+			defer wg.Done()
+			_, response, err := s.callReconciler(ctx, workspaceID, userID, item.definition, item.entries, item.items)
+			if err != nil {
+				errs[index] = err
+				return
+			}
+			if err := validateReconcilerResponse(response, item.documentType, item.entries, item.items); err != nil {
+				errs[index] = err
+				return
+			}
+			result[index] = reconciledDocument{
+				documentID:   item.documentID,
+				documentType: item.documentType,
+				response:     response,
+			}
+		}(index, item)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID int, rawText string) (json.RawMessage, RouterResponse, error) {
