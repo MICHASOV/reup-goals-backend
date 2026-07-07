@@ -102,6 +102,7 @@ Allowed target_document values:
 Routing precision:
 - Customer segment, audience, buyer/user description, and customer situation -> clients_and_demand.
 - Product category, company identity, and high-level product/service identity -> company_card.
+- If one sentence combines product identity and target audience, split it into separate items: product identity -> company_card, target audience -> clients_and_demand.
 - How the product works, paid access model, workflow, modules, capabilities, and value delivery mechanism -> current_business_model.
 - Revenue model, pricing, paid access, subscription, monetization, economic value, or resource/time value -> business_economics.
 - Alternatives and differentiation versus CRM, task managers, Notion, spreadsheets, agencies, consultants, or other competitors -> market_and_competition.
