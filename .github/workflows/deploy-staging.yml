@@ -62,7 +62,7 @@ jobs:
           CORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro,http://staging.reupgoals.pro
           OPENAI_API_KEY=
           OPENAI_MODEL=gpt-4.1
-          OPENAI_SERVICE_MODEL=gpt-4.1-mini
+          OPENAI_SERVICE_MODEL=gpt-4.1-nano
           OPENAI_PROXY_URL=direct
           UNISENDER_API_KEY=
           UNISENDER_BASE_URL=https://api.unisender.com/ru/api
@@ -84,8 +84,10 @@ jobs:
           if ! grep -q '^OPENAI_PROXY_URL=' /etc/reup-goals-staging/backend.env; then
             printf '\nOPENAI_PROXY_URL=direct\n' >> /etc/reup-goals-staging/backend.env
           fi
-          if ! grep -q '^OPENAI_SERVICE_MODEL=' /etc/reup-goals-staging/backend.env; then
-            printf '\nOPENAI_SERVICE_MODEL=gpt-4.1-mini\n' >> /etc/reup-goals-staging/backend.env
+          if grep -q '^OPENAI_SERVICE_MODEL=' /etc/reup-goals-staging/backend.env; then
+            sed -i 's/^OPENAI_SERVICE_MODEL=.*/OPENAI_SERVICE_MODEL=gpt-4.1-nano/' /etc/reup-goals-staging/backend.env
+          else
+            printf '\nOPENAI_SERVICE_MODEL=gpt-4.1-nano\n' >> /etc/reup-goals-staging/backend.env
           fi
 
           cat >/etc/systemd/system/reup-goals-staging.service <<'SERVICE'

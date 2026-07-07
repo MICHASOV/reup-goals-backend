@@ -54,7 +54,7 @@ func Load() *Config {
 	}
 	serviceModel := os.Getenv("OPENAI_SERVICE_MODEL")
 	if serviceModel == "" {
-		serviceModel = "gpt-4.1-mini"
+		serviceModel = "gpt-4.1-nano"
 	}
 	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
 	if openAIProxyURL == "" {
