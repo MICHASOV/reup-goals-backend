@@ -75,7 +75,7 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
-	next, err := s.createFastNextQuestion(ctx, workspaceID, profile, readiness)
+	next, err := s.createFastNextQuestionForIntent(ctx, workspaceID, profile, readiness, response.ConversationIntent)
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
@@ -135,7 +135,7 @@ func (s *GuidanceService) Confirm(ctx context.Context, workspaceID int, userID i
 		return GuidanceConfirmResponse{}, err
 	}
 
-	profile, err := s.store.CompanyProfile(ctx, workspaceID)
+	profile, err := s.refreshFirstGateProfileFromConfirmedAnswer(ctx, workspaceID, rawText, companyCardChanged)
 	if err != nil {
 		return GuidanceConfirmResponse{}, err
 	}
@@ -213,6 +213,40 @@ func (s *GuidanceService) updateCompanyProfileIfNeeded(ctx context.Context, work
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return CompanyProfile{}, err
 	}
+	if err := s.store.UpsertCompanyProfile(ctx, workspaceID, response, raw); err != nil {
+		return CompanyProfile{}, err
+	}
+	return s.store.CompanyProfile(ctx, workspaceID)
+}
+
+func (s *GuidanceService) refreshFirstGateProfileFromConfirmedAnswer(ctx context.Context, workspaceID int, latestMessage string, companyCardChanged bool) (CompanyProfile, error) {
+	profile, err := s.store.CompanyProfile(ctx, workspaceID)
+	if err != nil {
+		return CompanyProfile{}, err
+	}
+	if profile.Status == ProfileStatusGreen || !companyCardChanged {
+		return profile, nil
+	}
+
+	entries, err := s.store.CompanyCardEntries(ctx, workspaceID)
+	if err != nil {
+		return CompanyProfile{}, err
+	}
+
+	textParts := []string{latestMessage, profile.ProfileText}
+	for _, entry := range entries {
+		textParts = append(textParts, entry.Text)
+	}
+	response, changed := deriveCompanyProfileCoverage(profile, strings.Join(textParts, "\n"))
+	if !changed {
+		return profile, nil
+	}
+
+	raw, _ := json.Marshal(map[string]any{
+		"source":            "deterministic_first_gate_refresh",
+		"profile_text":      response.ProfileText,
+		"baseline_coverage": rawJSONOrEmptyArray(response.BaselineCoverage),
+	})
 	if err := s.store.UpsertCompanyProfile(ctx, workspaceID, response, raw); err != nil {
 		return CompanyProfile{}, err
 	}
@@ -318,6 +352,56 @@ func (s *GuidanceService) createFastNextQuestion(ctx context.Context, workspaceI
 		Title:          "Уточним бизнес-контекст",
 		Intro:          "Я зафиксировал изменения. Добавьте ещё один важный фрагмент о компании, клиентах, рынке, ограничениях или текущем фокусе.",
 		Questions:      []string{"Что ещё важно знать о бизнесе прямо сейчас, чтобы точнее собрать стратегию?"},
+		Confidence:     ConfidenceMedium,
+	})
+}
+
+func (s *GuidanceService) createFastNextQuestionForIntent(ctx context.Context, workspaceID int, profile CompanyProfile, readiness KnowledgeBaseReadiness, intent ConversationIntent) (GuidanceQuestionBlock, error) {
+	intent = defaultConversationIntent(intent)
+	if !intent.HasIntent {
+		return s.createFastNextQuestion(ctx, workspaceID, profile, readiness)
+	}
+
+	title := "Продолжим без записи в Базу знаний"
+	intro := "Я не стал сохранять это как факт о компании."
+	questions := []string{"Можете ответить на текущий вопрос коротко или написать, какую тему разобрать вместо него."}
+
+	switch intent.IntentType {
+	case "why_question":
+		title = "Зачем я это уточняю"
+		intro = "Эти вопросы закрывают базовый профиль компании. Без него следующие вопросы будут менее точными, а стратегия получится поверхностной."
+		questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
+	case "refusal":
+		title = "Можно пропустить"
+		intro = "Окей, не фиксирую это в Базе знаний. Если не хотите раскрывать часть данных, так и напишите: например, “финансы не раскрываю”. Это тоже считается ответом."
+		questions = []string{"Какую часть контекста компании готовы уточнить вместо этого: клиенты, продукт, команда, рынок или ограничения?"}
+	case "advice_request":
+		title = "Сначала соберём факты"
+		intro = "Я смогу дать полезный совет точнее, когда пойму контекст компании. Сейчас лучше закрыть недостающие факты, а не гадать."
+		questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
+	case "frustration":
+		title = "Понял, упростим"
+		intro = "Не сохраняю это как данные о компании. Давайте коротко: можно ответить одной фразой, без идеальной формулировки."
+		questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
+	case "topic_change_request":
+		title = "Сменим фокус"
+		intro = "Окей, можем перейти к другой части контекста. Я буду сохранять только факты о бизнесе."
+		questions = []string{"Что важно зафиксировать по новой теме?"}
+	}
+	if len(questions) == 0 {
+		questions = []string{"Что ещё важно знать о компании прямо сейчас?"}
+	}
+	if len(questions) > 3 {
+		questions = questions[:3]
+	}
+
+	return s.store.CreateQuestionBlock(ctx, workspaceID, GuidanceQuestionBlock{
+		Source:         QuestionSourceFirstGate,
+		GuidanceStatus: GuidanceStatusAskNextQuestion,
+		QuestionType:   intent.IntentType,
+		Title:          title,
+		Intro:          intro,
+		Questions:      questions,
 		Confidence:     ConfidenceMedium,
 	})
 }
@@ -593,4 +677,135 @@ func rawJSONOrEmptyArray(raw json.RawMessage) any {
 		return []any{}
 	}
 	return value
+}
+
+func deriveCompanyProfileCoverage(profile CompanyProfile, sourceText string) (companyProfileCollectorResponse, bool) {
+	coverage := baselineCoverageMap(profile)
+	changed := false
+
+	for _, area := range []string{"business_identity", "business_stage", "current_pain", "scale_and_team", "financial_scale"} {
+		if _, ok := coverage[area]; !ok {
+			coverage[area] = baselineCoverageItem{
+				Area:               area,
+				Status:             "empty",
+				Summary:            "",
+				Missing:            true,
+				NeedsClarification: true,
+			}
+			changed = true
+		}
+	}
+
+	normalized := normalizeForSignalSearch(sourceText)
+	changed = markCoveredFromSignals(coverage, "business_identity", normalized, []string{
+		"компани", "бизнес", "продукт", "сервис", "платформ", "прода", "делаем", "помога",
+	}, sourceText) || changed
+	changed = markCoveredFromSignals(coverage, "business_stage", normalized, []string{
+		"первые продаж", "перв продаж", "запуск", "mvp", "продукт готов", "собран", "стабильн", "рост", "масштаб", "кризис", "перезапуск", "поиск модели", "платящих клиентов почти нет", "клиентов почти нет",
+	}, sourceText) || changed
+	changed = markCoveredFromSignals(coverage, "current_pain", normalized, []string{
+		"боль", "проблем", "хаос", "мешает", "не хватает", "недостат", "фокус", "сложно", "узкое место",
+	}, sourceText) || changed
+	changed = markCoveredFromSignals(coverage, "scale_and_team", normalized, []string{
+		"команда", "маленькая команда", "рынок", "географ", "россия", "русскоязыч", "лет работает", "сотрудник", "человек",
+	}, sourceText) || changed
+	changed = markFinancialCoverageFromSignals(coverage, normalized, sourceText) || changed
+
+	items := []baselineCoverageItem{
+		coverage["business_identity"],
+		coverage["business_stage"],
+		coverage["current_pain"],
+		coverage["scale_and_team"],
+		coverage["financial_scale"],
+	}
+	status := ProfileStatusGreen
+	for _, item := range items {
+		if firstGateAreaMissing(item.Area, item) {
+			status = ProfileStatusOrange
+			break
+		}
+	}
+	if strings.TrimSpace(profile.ProfileText) == "" && status != ProfileStatusGreen {
+		status = ProfileStatusRed
+	}
+	if status != profile.Status {
+		changed = true
+	}
+
+	coverageJSON, _ := json.Marshal(items)
+	profileText := strings.TrimSpace(profile.ProfileText)
+	if profileText == "" {
+		profileText = firstMeaningfulLine(sourceText)
+		changed = true
+	}
+
+	return companyProfileCollectorResponse{
+		CompanyGateSignal:             status,
+		CanContinueToAdaptiveGuidance: status == ProfileStatusGreen,
+		ProfileText:                   profileText,
+		BaselineCoverage:              coverageJSON,
+	}, changed
+}
+
+func markCoveredFromSignals(coverage map[string]baselineCoverageItem, area string, normalized string, signals []string, sourceText string) bool {
+	item := coverage[area]
+	if !firstGateAreaMissing(area, item) {
+		return false
+	}
+	for _, signal := range signals {
+		if strings.Contains(normalized, signal) {
+			item.Status = "approximate"
+			item.Summary = firstMeaningfulLine(sourceText)
+			item.Missing = false
+			item.NeedsClarification = false
+			coverage[area] = item
+			return true
+		}
+	}
+	return false
+}
+
+func markFinancialCoverageFromSignals(coverage map[string]baselineCoverageItem, normalized string, sourceText string) bool {
+	item := coverage["financial_scale"]
+	if !firstGateAreaMissing("financial_scale", item) {
+		return false
+	}
+	for _, signal := range []string{"не знаю", "неизвест", "не раскры", "не хочу раскры", "выруч", "прибыл", "оборот", "маржин", "₽", "руб", "млн", "тыс"} {
+		if strings.Contains(normalized, signal) {
+			if strings.Contains(normalized, "не знаю") || strings.Contains(normalized, "неизвест") {
+				item.Status = "unknown"
+			} else if strings.Contains(normalized, "не раскры") || strings.Contains(normalized, "не хочу раскры") {
+				item.Status = "not_disclosed"
+			} else {
+				item.Status = "approximate"
+			}
+			item.Summary = firstMeaningfulLine(sourceText)
+			item.Missing = false
+			item.NeedsClarification = false
+			coverage["financial_scale"] = item
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeForSignalSearch(value string) string {
+	value = strings.ToLower(value)
+	value = strings.ReplaceAll(value, "ё", "е")
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func firstMeaningfulLine(value string) string {
+	for _, line := range strings.Split(value, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len([]rune(line)) > 260 {
+			runes := []rune(line)
+			return string(runes[:260]) + "..."
+		}
+		return line
+	}
+	return ""
 }

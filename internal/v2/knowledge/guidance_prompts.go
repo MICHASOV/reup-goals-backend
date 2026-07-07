@@ -22,6 +22,10 @@ Green rules:
 - all 5 baseline areas must be covered by answered, approximate, unknown, or not_disclosed;
 - business_identity can only be answered or approximate;
 - exact financial numbers are not required; approximate, unknown, or not_disclosed are acceptable.
+- If the user says the business is at "первые продажи", launch, MVP/product ready, stable work, growth, scaling, crisis, restart, or model search, mark business_stage covered.
+- If the user gives team size/shape, market, geography, company age, or says the team is small/large, mark scale_and_team covered.
+- If the user says they do not know or do not want to disclose finance, mark financial_scale as unknown or not_disclosed, not missing.
+- Preserve previous covered areas unless new text explicitly contradicts them.
 
 If not green, ask at most 4 concrete questions and only about missing/unclear baseline areas.
 If the user asks for advice, refuses, is frustrated, or asks why, briefly handle it at service level and return to the smallest needed question block.

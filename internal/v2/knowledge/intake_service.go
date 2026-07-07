@@ -137,6 +137,22 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 		return GuidancePreviewResponse{}, err
 	}
 
+	intentOnly := classifyIntentOnlyMessage(rawText)
+	if intentOnly.HasIntent {
+		if err := s.store.MarkSessionPreviewReady(ctx, sessionID); err != nil {
+			return GuidancePreviewResponse{}, err
+		}
+		return GuidancePreviewResponse{
+			SessionID:          sessionID,
+			Status:             "no_preview_needed",
+			ConversationIntent: intentOnly,
+			UpdatedDocuments:   []IntakeDocumentPreview{},
+			Conflicts:          []IntakeConflict{},
+			IgnoredItems:       []IntakeIgnoredItem{},
+			UnroutedFragments:  []RouterUnroutedFragment{},
+		}, nil
+	}
+
 	documents, err := s.store.EnsureDocuments(ctx, workspaceID)
 	if err != nil {
 		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), nil)
@@ -314,6 +330,65 @@ func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID 
 	}
 
 	return raw, response, nil
+}
+
+func classifyIntentOnlyMessage(rawText string) ConversationIntent {
+	normalized := normalizeForSignalSearch(rawText)
+	if normalized == "" {
+		return ConversationIntent{}
+	}
+
+	intentType := ""
+	handlingNote := ""
+	switch {
+	case containsAny(normalized, []string{"почему", "зачем"}) && containsAny(normalized, []string{"спрашива", "вопрос"}):
+		intentType = "why_question"
+		handlingNote = "Пользователь спрашивает, почему задан вопрос."
+	case containsAny(normalized, []string{"не хочу отвечать", "не буду отвечать", "пропусти", "пропустить", "не готов отвечать"}):
+		intentType = "refusal"
+		handlingNote = "Пользователь не хочет отвечать на текущий вопрос."
+	case containsAny(normalized, []string{"дай совет", "посоветуй", "что мне делать", "с чего начать", "как лучше"}):
+		intentType = "advice_request"
+		handlingNote = "Пользователь просит совет вместо фактов для Базы знаний."
+	case containsAny(normalized, []string{"раздражает", "бесит", "тупо", "плохо", "не работает", "краш"}):
+		intentType = "frustration"
+		handlingNote = "Пользователь выражает недовольство процессом."
+	case containsAny(normalized, []string{"давай про", "хочу поговорить про", "перейдем к", "перейдём к"}):
+		intentType = "topic_change_request"
+		handlingNote = "Пользователь просит сменить тему."
+	}
+	if intentType == "" || looksLikeBusinessContext(normalized) {
+		return ConversationIntent{}
+	}
+	return ConversationIntent{
+		HasIntent:    true,
+		IntentType:   intentType,
+		RawText:      rawText,
+		CleanText:    rawText,
+		HandlingNote: handlingNote,
+	}
+}
+
+func containsAny(value string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeBusinessContext(value string) bool {
+	signals := []string{
+		"компани", "бизнес", "продукт", "клиент", "рынок", "команда", "выруч", "прибыл", "продаж", "географ", "россия", "платящ", "сегмент", "конкурент",
+	}
+	hits := 0
+	for _, signal := range signals {
+		if strings.Contains(value, signal) {
+			hits++
+		}
+	}
+	return hits >= 2
 }
 
 func (s *IntakeService) callReconciler(ctx context.Context, workspaceID int, userID int, definition DocumentDefinition, entries []documentEntry, items []proposedItemRecord) (json.RawMessage, ReconcilerResponse, error) {
