@@ -46,13 +46,15 @@ func main() {
 	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel, cfg.OpenAIProxyURL)
 	serviceAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIServiceModel, cfg.OpenAIProxyURL).
 		WithMaxOutputTokens(cfg.OpenAIServiceMaxOutputTokens)
+	intakeAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIIntakeModel, cfg.OpenAIProxyURL).
+		WithMaxOutputTokens(cfg.OpenAIServiceMaxOutputTokens)
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)
 	cloudPayments := subscriptions.NewCloudPaymentsClient(cfg)
 	subscriptionHandler := subscriptions.NewHandler(database, cloudPayments)
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
-	knowledgeHandler := knowledge.NewHandler(database, serviceAIClient)
+	knowledgeHandler := knowledge.NewHandler(database, intakeAIClient, serviceAIClient)
 	strategyHandler := strategy.NewHandler(database)
 	tacticsHandler := tactics.NewHandler(database)
 	tasksV2Handler := tasksv2.NewHandler(database)

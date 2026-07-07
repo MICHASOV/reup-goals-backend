@@ -17,6 +17,7 @@ type Config struct {
 	OpenAIKey                    string
 	OpenAIModel                  string
 	OpenAIServiceModel           string
+	OpenAIIntakeModel            string
 	OpenAIServiceMaxOutputTokens int
 	OpenAIProxyURL               string
 
@@ -56,6 +57,10 @@ func Load() *Config {
 	serviceModel := os.Getenv("OPENAI_SERVICE_MODEL")
 	if serviceModel == "" {
 		serviceModel = "gpt-4.1-nano"
+	}
+	intakeModel := os.Getenv("OPENAI_INTAKE_MODEL")
+	if intakeModel == "" {
+		intakeModel = serviceModel
 	}
 	serviceMaxOutputTokens := parseIntEnv("OPENAI_SERVICE_MAX_OUTPUT_TOKENS", 1800)
 	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
@@ -113,6 +118,7 @@ func Load() *Config {
 		OpenAIKey:                    os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:                  model,
 		OpenAIServiceModel:           serviceModel,
+		OpenAIIntakeModel:            intakeModel,
 		OpenAIServiceMaxOutputTokens: serviceMaxOutputTokens,
 		OpenAIProxyURL:               openAIProxyURL,
 

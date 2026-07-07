@@ -22,13 +22,13 @@ type Handler struct {
 	workspaces *workspaces.Store
 }
 
-func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient) *Handler {
+func NewHandler(dbx *sql.DB, intakeAIClient *ai.OpenAIClient, guidanceAIClient *ai.OpenAIClient) *Handler {
 	store := NewStore(dbx)
-	intake := NewIntakeService(store, aiClient)
+	intake := NewIntakeService(store, intakeAIClient)
 	return &Handler{
 		store:      store,
 		intake:     intake,
-		guidance:   NewGuidanceService(store, intake, aiClient),
+		guidance:   NewGuidanceService(store, intake, guidanceAIClient),
 		workspaces: workspaces.NewStore(dbx),
 	}
 }
