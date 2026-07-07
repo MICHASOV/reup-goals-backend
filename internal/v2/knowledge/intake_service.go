@@ -311,17 +311,25 @@ func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID 
 		return nil, RouterResponse{}, err
 	}
 
-	logID, started, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, "knowledge_intake_router", RouterPromptVersion, s.ai.Model, json.RawMessage(input))
+	routerPrompt := routerSystemPrompt
+	routerModule := "knowledge_intake_router"
+	denseInput := len(segments) >= 8
+	if denseInput {
+		routerPrompt += denseExtractionRetryInstruction
+		routerModule = "knowledge_intake_router_dense"
+	}
+
+	logID, started, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, routerModule, RouterPromptVersion, s.ai.Model, json.RawMessage(input))
 	defer func(start time.Time) { _ = start }(started)
-	raw, err := s.ai.GenerateJSON(ctx, routerSystemPrompt, string(input))
+	raw, err := s.ai.GenerateJSON(ctx, routerPrompt, string(input))
 	s.store.FinishAICallLog(ctx, logID, started, raw, err)
 	if err != nil {
 		return raw, RouterResponse{}, err
 	}
 	var response RouterResponse
 	if err := json.Unmarshal(raw, &response); err != nil {
-		retryLogID, retryStarted, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, "knowledge_intake_router_retry", RouterPromptVersion, s.ai.Model, json.RawMessage(input))
-		raw, retryErr := s.ai.GenerateJSON(ctx, routerSystemPrompt+jsonOnlyRetryInstruction, string(input))
+		retryLogID, retryStarted, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, routerModule+"_json_retry", RouterPromptVersion, s.ai.Model, json.RawMessage(input))
+		raw, retryErr := s.ai.GenerateJSON(ctx, routerPrompt+jsonOnlyRetryInstruction, string(input))
 		s.store.FinishAICallLog(ctx, retryLogID, retryStarted, raw, retryErr)
 		if retryErr != nil {
 			return raw, RouterResponse{}, err
@@ -331,7 +339,7 @@ func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID 
 		}
 	}
 
-	if routerNeedsDenseRetry(response, segments) {
+	if !denseInput && routerNeedsDenseRetry(response, segments) {
 		retryLogID, retryStarted, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, "knowledge_intake_router_dense_retry", RouterPromptVersion, s.ai.Model, json.RawMessage(input))
 		raw, retryErr := s.ai.GenerateJSON(ctx, routerSystemPrompt+denseExtractionRetryInstruction, string(input))
 		s.store.FinishAICallLog(ctx, retryLogID, retryStarted, raw, retryErr)
