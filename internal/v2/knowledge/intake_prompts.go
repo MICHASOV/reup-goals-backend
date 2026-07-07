@@ -98,6 +98,16 @@ Allowed target_document values:
 - "strategic_refusals": conscious refusals for focus; what the company chooses not to do even though it could.
 - "leader_intent_and_risk_profile": decision-maker intent, goals, risk tolerance, fears, avoided decisions, personal constraints.
 
+Routing precision:
+- Customer segment, audience, buyer/user description, and customer situation -> clients_and_demand.
+- Product category, company identity, and high-level product/service identity -> company_card.
+- How the product works, paid access model, workflow, modules, capabilities, and value delivery mechanism -> current_business_model.
+- Revenue model, pricing, paid access, subscription, monetization, economic value, or resource/time value -> business_economics.
+- Alternatives and differentiation versus CRM, task managers, Notion, spreadsheets, agencies, consultants, or other competitors -> market_and_competition.
+- Statements about what the product/business intentionally is not, conscious boundaries, or refused categories -> strategic_refusals.
+- Core customer/business pain such as chaos, lack of focus, scattered tasks, wrong priorities, bottleneck, or wasted effort -> strategic_challenge.
+- Capabilities/assets/team/AI technology as internal strengths -> resources_and_competencies.
+
 Allowed confidence values: "low", "medium", "high". Confidence means routing confidence, not truth confidence.
 
 Extraction policy:
@@ -107,6 +117,8 @@ Extraction policy:
 - For bullet-like text, each meaningful bullet normally becomes its own item unless it is a duplicate.
 - A single dense paragraph can produce several items if it contains several business facts.
 - Short answer: 1-5 items. Normal answer: 4-12 items. Long dense answer: 8-20 items. Very long dense text: 15-30 items maximum.
+- If a dense answer describes product identity, target customers, value proposition, workflow, differentiation, and core pain, extracting fewer than 6 items is usually wrong.
+- If a text lists product capabilities with semicolons or line breaks, preserve the main capabilities as separate items when they map to different business aspects.
 - Prefer useful decomposition over excessive conciseness.
 - Do not create tiny fragments that lose business meaning.
 - Do not create unknowns just because information is missing.
