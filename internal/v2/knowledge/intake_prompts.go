@@ -258,3 +258,20 @@ Rules:
 Priority: JSON validity > no invention > use only provided entries/items > determinism > correct reconciliation > conciseness > style.`
 
 const jsonOnlyRetryInstruction = "\n\nReturn valid JSON only. Do not include markdown or commentary."
+
+const denseExtractionRetryInstruction = `
+
+Your previous extraction was too compressed for a dense business text.
+This retry is valid only if you decompose the input more thoroughly.
+
+Strict retry rules:
+- Use source_segments as the primary extraction guide.
+- For each useful source_segment, create at least one item unless it is an exact duplicate.
+- Return at least 6 items when source_segments contains 8+ useful segments.
+- Prefer 8-15 items for this input if it contains product identity, customer segment, workflow, capabilities, differentiation, and core pain.
+- Route customer/audience facts to clients_and_demand.
+- Route alternatives/differentiation against task managers, CRM, Notion, or similar tools to market_and_competition or strategic_refusals.
+- Route "not распыляться", focus problems, wrong priorities, and busywork to strategic_challenge.
+- Do not collapse multiple capabilities into one broad summary item.
+
+Return valid JSON only.`

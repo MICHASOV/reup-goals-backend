@@ -300,9 +300,10 @@ func (s *IntakeService) reconcileDocuments(ctx context.Context, workspaceID int,
 }
 
 func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID int, rawText string) (json.RawMessage, RouterResponse, error) {
+	segments := sourceSegments(rawText)
 	input, err := json.Marshal(map[string]any{
 		"raw_text":           rawText,
-		"source_segments":    sourceSegments(rawText),
+		"source_segments":    segments,
 		"workspace_language": "ru",
 		"source_type":        "manual_text",
 	})
@@ -330,7 +331,37 @@ func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID 
 		}
 	}
 
+	if routerNeedsDenseRetry(response, segments) {
+		retryLogID, retryStarted, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, "knowledge_intake_router_dense_retry", RouterPromptVersion, s.ai.Model, json.RawMessage(input))
+		raw, retryErr := s.ai.GenerateJSON(ctx, routerSystemPrompt+denseExtractionRetryInstruction, string(input))
+		s.store.FinishAICallLog(ctx, retryLogID, retryStarted, raw, retryErr)
+		if retryErr != nil {
+			return raw, response, nil
+		}
+		var retryResponse RouterResponse
+		if retryJSONErr := json.Unmarshal(raw, &retryResponse); retryJSONErr != nil {
+			return raw, response, nil
+		}
+		if !routerNeedsDenseRetry(retryResponse, segments) || len(retryResponse.Items) > len(response.Items) {
+			response = retryResponse
+		}
+	}
+
 	return raw, response, nil
+}
+
+func routerNeedsDenseRetry(response RouterResponse, segments []string) bool {
+	if len(segments) < 8 {
+		return false
+	}
+	if len(response.Items) < 6 {
+		return true
+	}
+	documents := map[string]bool{}
+	for _, item := range response.Items {
+		documents[item.TargetDocument] = true
+	}
+	return len(documents) < 4
 }
 
 func sourceSegments(rawText string) []string {
