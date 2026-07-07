@@ -27,8 +27,13 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "${{ secrets.STAGING_SSH_KEY }}" > ~/.ssh/staging_key
+          if [ -n "${{ secrets.STAGING_SSH_KEY_B64 }}" ]; then
+            printf '%s' "${{ secrets.STAGING_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/staging_key
+          else
+            printf '%s\n' "${{ secrets.STAGING_SSH_KEY }}" | tr -d '\r' > ~/.ssh/staging_key
+          fi
           chmod 600 ~/.ssh/staging_key
+          ssh-keygen -y -f ~/.ssh/staging_key >/dev/null
           ssh-keyscan -H "${{ secrets.STAGING_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Prepare staging backend host
