@@ -369,20 +369,34 @@ func (s *GuidanceService) createFastNextQuestionForIntent(ctx context.Context, w
 	switch intent.IntentType {
 	case "why_question":
 		title = "Зачем я это уточняю"
-		intro = "Эти вопросы закрывают базовый профиль компании. Без него следующие вопросы будут менее точными, а стратегия получится поверхностной."
-		questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
+		if profile.Status == ProfileStatusGreen {
+			intro = "Базовый профиль уже собран. Дальше я уточняю отдельные слабые места Базы знаний, чтобы стратегия опиралась на факты, а не на догадки."
+			questions = []string{"Что сейчас важнее уточнить глубже: клиентов, рынок, экономику, ограничения или текущий фокус?"}
+		} else {
+			intro = "Эти вопросы закрывают базовый профиль компании. Без него следующие вопросы будут менее точными, а стратегия получится поверхностной."
+			questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
+		}
 	case "refusal":
 		title = "Можно пропустить"
 		intro = "Окей, не фиксирую это в Базе знаний. Если не хотите раскрывать часть данных, так и напишите: например, “финансы не раскрываю”. Это тоже считается ответом."
 		questions = []string{"Какую часть контекста компании готовы уточнить вместо этого: клиенты, продукт, команда, рынок или ограничения?"}
 	case "advice_request":
 		title = "Сначала соберём факты"
-		intro = "Я смогу дать полезный совет точнее, когда пойму контекст компании. Сейчас лучше закрыть недостающие факты, а не гадать."
-		questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
+		if profile.Status == ProfileStatusGreen {
+			intro = "Могу помочь с советом, но сначала лучше понять, какой слой сейчас слабее всего описан: клиенты, экономика, рынок, ограничения или текущий фокус."
+			questions = []string{"Про какую часть бизнеса хотите получить более предметный разбор?"}
+		} else {
+			intro = "Я смогу дать полезный совет точнее, когда пойму контекст компании. Сейчас лучше закрыть недостающие факты, а не гадать."
+			questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
+		}
 	case "frustration":
 		title = "Понял, упростим"
 		intro = "Не сохраняю это как данные о компании. Давайте коротко: можно ответить одной фразой, без идеальной формулировки."
-		questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
+		if profile.Status == ProfileStatusGreen {
+			questions = []string{"Какой следующий участок контекста проще разобрать сейчас?"}
+		} else {
+			questions = firstGateQuestionsForAreas(firstGateMissingAreas(profile))
+		}
 	case "topic_change_request":
 		title = "Сменим фокус"
 		intro = "Окей, можем перейти к другой части контекста. Я буду сохранять только факты о бизнесе."
