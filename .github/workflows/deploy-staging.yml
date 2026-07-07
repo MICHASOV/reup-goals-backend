@@ -77,6 +77,9 @@ jobs:
           ENV
             chmod 600 /etc/reup-goals-staging/backend.env
           fi
+          if ! grep -q '^OPENAI_PROXY_URL=' /etc/reup-goals-staging/backend.env; then
+            printf '\nOPENAI_PROXY_URL=direct\n' >> /etc/reup-goals-staging/backend.env
+          fi
 
           cat >/etc/systemd/system/reup-goals-staging.service <<'SERVICE'
           [Unit]
