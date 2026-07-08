@@ -40,7 +40,7 @@ const (
 	ReconcilerPromptVersion = "knowledge_document_reconciler_v1"
 	DocumentComposerVersion = "knowledge_document_composer_v1"
 
-	CompanyProfileCollectorVersion = "company_profile_collector_v1"
+	CompanyProfileCollectorVersion = "company_profile_collector_v2_compact"
 	DocumentReadinessVersion       = "document_readiness_preflight_v1"
 	GuidancePlannerVersion         = "strategic_guidance_question_planner_v3_1"
 
