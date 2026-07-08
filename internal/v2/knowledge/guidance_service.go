@@ -533,7 +533,7 @@ func conflictQuestions(conflicts []IntakeConflict) []string {
 			question = fmt.Sprintf("%s Было: «%s». Сейчас прозвучало: «%s». Что верно?", question, existingText, newText)
 		}
 		questions = append(questions, question)
-		if len(questions) >= 3 {
+		if len(questions) >= 4 {
 			break
 		}
 	}
@@ -606,11 +606,11 @@ func (s *GuidanceService) createFirstGateQuestion(ctx context.Context, workspace
 
 	if isBlankFirstGate(profile, missingAreas) {
 		title = "Давай начнём с контекста компании"
-		intro = "Ответьте свободным текстом. Я сам разложу ответ по Базе знаний и перед сохранением покажу изменения."
+		intro = "Ответьте свободным текстом. Можно одним большим сообщением: я сам разложу контекст по Базе знаний и покажу, какие документы изменились."
 		questions = []string{
-			"Чем занимается компания и что вы продаёте или делаете для клиентов?",
-			"На какой стадии сейчас бизнес и что сейчас сильнее всего болит?",
-			"Какой сейчас масштаб: команда, рынок, география? По финансам можно дать примерный диапазон, написать “не знаю” или “не хочу раскрывать”.",
+			"Чем занимается компания: какой продукт или услугу вы продаёте, кому именно и какую ценность клиент должен получить?",
+			"На какой стадии сейчас бизнес и что сейчас сильнее всего мешает движению: запуск, первые продажи, рост, хаос в операционке, поиск модели или что-то другое?",
+			"Какой сейчас масштаб: команда, рынок, география, примерный порядок выручки или прибыли? По финансам можно дать диапазон, написать “не знаю” или “не хочу раскрывать”.",
 		}
 	}
 	if len(questions) == 0 {
@@ -667,7 +667,7 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 		SelectionReasonInternal: response.IntendedFocus.SelectionReasonInternal,
 		Title:                   response.QuestionBlock.Title,
 		Intro:                   response.QuestionBlock.Intro,
-		Questions:               response.QuestionBlock.Questions,
+		Questions:               normalizeQuestionBlockQuestions(response.QuestionBlock.Questions, response.GuidanceStatus),
 		HandledUserIntent:       handledIntent,
 		Confidence:              response.Confidence,
 	}
@@ -680,10 +680,25 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 	if strings.TrimSpace(block.Title) == "" {
 		block.Title = "Уточним бизнес-контекст"
 	}
-	if len(block.Questions) == 0 && block.GuidanceStatus != GuidanceStatusSuggestStrategyTransition {
-		block.Questions = []string{"Что ещё важно знать о бизнесе прямо сейчас, чтобы лучше понимать контекст компании?"}
-	}
 	return s.store.CreateQuestionBlock(ctx, workspaceID, block)
+}
+
+func normalizeQuestionBlockQuestions(questions []string, guidanceStatus string) []string {
+	result := make([]string, 0, len(questions))
+	for _, question := range questions {
+		question = strings.TrimSpace(question)
+		if question == "" {
+			continue
+		}
+		result = append(result, question)
+		if len(result) >= 4 {
+			break
+		}
+	}
+	if len(result) == 0 && guidanceStatus != GuidanceStatusSuggestStrategyTransition {
+		return []string{"Что ещё важно знать о бизнесе прямо сейчас, чтобы лучше понимать контекст компании?"}
+	}
+	return result
 }
 
 func (s *GuidanceService) documentsForPlanner(ctx context.Context, workspaceID int) ([]map[string]any, error) {
@@ -817,11 +832,11 @@ func firstGateAreaMissing(area string, item baselineCoverageItem) bool {
 
 func firstGateQuestionsForAreas(areas []string) []string {
 	questionByArea := map[string]string{
-		"business_identity": "Чем занимается компания и что вы продаёте или делаете для клиентов?",
-		"business_stage":    "На какой стадии сейчас бизнес: запуск, первые продажи, стабильная работа, рост, масштабирование, кризис, перезапуск или поиск модели?",
-		"current_pain":      "Что сейчас сильнее всего болит в бизнесе или больше всего мешает двигаться дальше?",
-		"scale_and_team":    "Какой сейчас масштаб: сколько лет работаете, какая команда, рынок, география? Можно примерно.",
-		"financial_scale":   "По финансам есть примерный порядок выручки или прибыли? Можно диапазоном, “не знаю” или “не раскрываю”.",
+		"business_identity": "Чем занимается компания: что вы продаёте или делаете, кто основной клиент и какую ценность он получает?",
+		"business_stage":    "На какой стадии сейчас бизнес: запуск, первые продажи, стабильная работа, рост, масштабирование, кризис, перезапуск или поиск модели? Что в этой стадии самое важное?",
+		"current_pain":      "Что сейчас сильнее всего болит в бизнесе или больше всего мешает двигаться дальше? Как это проявляется в реальной работе?",
+		"scale_and_team":    "Какой сейчас масштаб: сколько лет работаете, какая команда, рынок, география, ключевые каналы? Можно примерно.",
+		"financial_scale":   "По финансам есть примерный порядок выручки, прибыли, среднего чека или бюджета? Можно диапазоном, “не знаю” или “не раскрываю”.",
 	}
 	questions := make([]string, 0, len(areas))
 	for _, area := range areas {
