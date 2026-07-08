@@ -146,7 +146,7 @@ func fallbackStrategicDocuments(workspaceID int, businessStage string, snapshot 
 		"# Текущий снимок компании",
 	}
 	if businessStage != "" && businessStage != "unknown" {
-		sections = append(sections, fmt.Sprintf("**Стадия:** %s", businessStage))
+		sections = append(sections, fmt.Sprintf("**Стадия:** %s", businessStageLabel(businessStage)))
 	}
 	appendTextSection := func(title string, key string) {
 		if value := snapshotText(snapshot, key); value != "" {
@@ -189,6 +189,29 @@ func fallbackStrategicDocuments(workspaceID int, businessStage string, snapshot 
 			Markdown:     strings.Join(sections, "\n\n"),
 			Status:       DefaultStrategicDocumentStatus,
 		},
+	}
+}
+
+func businessStageLabel(value string) string {
+	switch normalizeBusinessStage(value) {
+	case "idea":
+		return "идея / гипотеза"
+	case "launch":
+		return "запуск"
+	case "validation":
+		return "проверка спроса"
+	case "early_traction":
+		return "первые подтверждения спроса"
+	case "growth":
+		return "рост"
+	case "scale":
+		return "масштабирование"
+	case "mature":
+		return "зрелый бизнес"
+	case "turnaround":
+		return "перестройка"
+	default:
+		return "не определена"
 	}
 }
 
