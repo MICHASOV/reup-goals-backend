@@ -67,16 +67,33 @@ const (
 )
 
 type Block struct {
-	ID          int       `json:"id"`
-	WorkspaceID int       `json:"-"`
-	Type        string    `json:"type"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Content     string    `json:"content"`
-	Status      string    `json:"status"`
-	SortOrder   int       `json:"sort_order"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          int           `json:"id"`
+	WorkspaceID int           `json:"-"`
+	Type        string        `json:"type"`
+	Title       string        `json:"title"`
+	Description string        `json:"description"`
+	Content     string        `json:"content"`
+	Status      string        `json:"status"`
+	SortOrder   int           `json:"sort_order"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+	View        *DocumentView `json:"document_view,omitempty"`
+}
+
+type DocumentView struct {
+	DocumentID     int                   `json:"document_id"`
+	DocumentType   string                `json:"document_type"`
+	Title          string                `json:"title"`
+	RenderedText   string                `json:"rendered_text"`
+	Sections       []DocumentViewSection `json:"sections"`
+	SourceEntryIDs []string              `json:"source_entry_ids"`
+	PromptVersion  string                `json:"prompt_version"`
+	UpdatedAt      time.Time             `json:"updated_at"`
+}
+
+type DocumentViewSection struct {
+	Title  string   `json:"title"`
+	Points []string `json:"points"`
 }
 
 type BlockDefinition struct {

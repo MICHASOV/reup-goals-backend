@@ -3,6 +3,7 @@ package knowledge
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"strings"
 )
 
@@ -39,7 +40,14 @@ func (s *Store) List(ctx context.Context, workspaceID int) ([]Block, error) {
 		blocks = append(blocks, block)
 	}
 
-	return blocks, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachDocumentViews(ctx, workspaceID, blocks); err != nil {
+		return nil, err
+	}
+
+	return blocks, nil
 }
 
 func (s *Store) Get(ctx context.Context, workspaceID int, blockID int) (Block, error) {
@@ -53,7 +61,15 @@ func (s *Store) Get(ctx context.Context, workspaceID int, blockID int) (Block, e
 		WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL
 	`, workspaceID, blockID)
 
-	return scanBlock(row)
+	block, err := scanBlock(row)
+	if err != nil {
+		return Block{}, err
+	}
+	blocks := []Block{block}
+	if err := s.attachDocumentViews(ctx, workspaceID, blocks); err != nil {
+		return Block{}, err
+	}
+	return blocks[0], nil
 }
 
 func (s *Store) Update(ctx context.Context, workspaceID int, blockID int, content string, status string) (Block, error) {
@@ -168,4 +184,79 @@ func scanBlock(scanner blockScanner) (Block, error) {
 	}
 
 	return block, nil
+}
+
+func (s *Store) attachDocumentViews(ctx context.Context, workspaceID int, blocks []Block) error {
+	if len(blocks) == 0 {
+		return nil
+	}
+	neededBlockTypes := map[string]bool{}
+	for _, block := range blocks {
+		neededBlockTypes[block.Type] = true
+	}
+
+	documentToBlock := map[string]string{}
+	for _, definition := range documentDefinitions {
+		if neededBlockTypes[definition.BlockType] {
+			documentToBlock[definition.Type] = definition.BlockType
+		}
+	}
+	if len(documentToBlock) == 0 {
+		return nil
+	}
+
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT document_id, document_type, title, rendered_text, sections_json,
+			source_entry_ids_json, composer_prompt_version, updated_at
+		FROM v2_knowledge_document_views
+		WHERE workspace_id=$1
+	`, workspaceID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	viewsByBlockType := map[string]*DocumentView{}
+	for rows.Next() {
+		var view DocumentView
+		var sectionsRaw []byte
+		var sourceIDsRaw []byte
+		if err := rows.Scan(
+			&view.DocumentID,
+			&view.DocumentType,
+			&view.Title,
+			&view.RenderedText,
+			&sectionsRaw,
+			&sourceIDsRaw,
+			&view.PromptVersion,
+			&view.UpdatedAt,
+		); err != nil {
+			return err
+		}
+		blockType, ok := documentToBlock[view.DocumentType]
+		if !ok {
+			continue
+		}
+		if len(sectionsRaw) > 0 {
+			if err := json.Unmarshal(sectionsRaw, &view.Sections); err != nil {
+				return err
+			}
+		}
+		if len(sourceIDsRaw) > 0 {
+			if err := json.Unmarshal(sourceIDsRaw, &view.SourceEntryIDs); err != nil {
+				return err
+			}
+		}
+		viewsByBlockType[blockType] = &view
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for index := range blocks {
+		if view, ok := viewsByBlockType[blocks[index].Type]; ok {
+			blocks[index].View = view
+		}
+	}
+	return nil
 }
