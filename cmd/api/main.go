@@ -15,6 +15,7 @@ import (
 	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/tasks"
 	v2api "reup-goals-backend/internal/v2/api"
+	audioapi "reup-goals-backend/internal/v2/audio"
 	"reup-goals-backend/internal/v2/bootstrap"
 	"reup-goals-backend/internal/v2/course"
 	"reup-goals-backend/internal/v2/knowledge"
@@ -49,10 +50,12 @@ func main() {
 		WithMaxOutputTokens(cfg.OpenAIServiceMaxOutputTokens)
 	intakeAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIIntakeModel, cfg.OpenAIProxyURL).
 		WithMaxOutputTokens(cfg.OpenAIIntakeMaxOutputTokens)
+	transcriptionAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITranscriptionModel, cfg.OpenAIProxyURL)
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)
 	cloudPayments := subscriptions.NewCloudPaymentsClient(cfg)
 	subscriptionHandler := subscriptions.NewHandler(database, cloudPayments)
+	audioHandler := audioapi.NewHandler(transcriptionAIClient)
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
 	knowledgeHandler := knowledge.NewHandler(database, intakeAIClient, serviceAIClient)
@@ -100,6 +103,7 @@ func main() {
 	// V2 FOUNDATION
 	// -----------------------
 	mux.Handle("/api/v2/bootstrap", v2api.RequireAuth(jwtSecret, bootstrapHandler.Bootstrap))
+	mux.Handle("/api/v2/audio/transcriptions", v2api.RequireAuth(jwtSecret, audioHandler.Transcriptions))
 	mux.Handle("/api/v2/knowledge-base/blocks", v2api.RequireAuth(jwtSecret, knowledgeHandler.Blocks))
 	mux.Handle("/api/v2/knowledge-base/blocks/", v2api.RequireAuth(jwtSecret, knowledgeHandler.Block))
 	mux.Handle("/api/v2/workspaces/", v2api.RequireAuth(jwtSecret, knowledgeHandler.WorkspaceKnowledge))

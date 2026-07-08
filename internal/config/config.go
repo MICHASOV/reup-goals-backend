@@ -18,6 +18,7 @@ type Config struct {
 	OpenAIModel                  string
 	OpenAIServiceModel           string
 	OpenAIIntakeModel            string
+	OpenAITranscriptionModel     string
 	OpenAIServiceMaxOutputTokens int
 	OpenAIIntakeMaxOutputTokens  int
 	OpenAIProxyURL               string
@@ -62,6 +63,10 @@ func Load() *Config {
 	intakeModel := os.Getenv("OPENAI_INTAKE_MODEL")
 	if intakeModel == "" {
 		intakeModel = serviceModel
+	}
+	transcriptionModel := os.Getenv("OPENAI_TRANSCRIPTION_MODEL")
+	if transcriptionModel == "" {
+		transcriptionModel = "gpt-4o-transcribe"
 	}
 	serviceMaxOutputTokens := parseIntEnv("OPENAI_SERVICE_MAX_OUTPUT_TOKENS", 1800)
 	intakeMaxOutputTokens := parseIntEnv("OPENAI_INTAKE_MAX_OUTPUT_TOKENS", 5000)
@@ -121,6 +126,7 @@ func Load() *Config {
 		OpenAIModel:                  model,
 		OpenAIServiceModel:           serviceModel,
 		OpenAIIntakeModel:            intakeModel,
+		OpenAITranscriptionModel:     transcriptionModel,
 		OpenAIServiceMaxOutputTokens: serviceMaxOutputTokens,
 		OpenAIIntakeMaxOutputTokens:  intakeMaxOutputTokens,
 		OpenAIProxyURL:               openAIProxyURL,

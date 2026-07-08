@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -100,6 +101,10 @@ type responsesResponse struct {
 	} `json:"output"`
 }
 
+type transcriptionResponse struct {
+	Text string `json:"text"`
+}
+
 // ---------------------------------------------------------
 // EvaluateTask — Path B
 // ---------------------------------------------------------
@@ -125,6 +130,85 @@ func (c *OpenAIClient) GenerateJSON(ctx context.Context, instructions string, in
 
 func (c *OpenAIClient) GenerateText(ctx context.Context, instructions string, input string) (string, error) {
 	return c.generateResponseText(ctx, instructions, input, nil)
+}
+
+func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, language string, audio io.Reader) (string, error) {
+	httpClient, err := c.newHTTPClient()
+	if err != nil {
+		return "", fmt.Errorf("proxy init error: %w", err)
+	}
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	fileWriter, err := writer.CreateFormFile("file", safeAudioFilename(filename))
+	if err != nil {
+		return "", fmt.Errorf("multipart file error: %w", err)
+	}
+	if _, err := io.Copy(fileWriter, audio); err != nil {
+		return "", fmt.Errorf("audio copy error: %w", err)
+	}
+
+	model := strings.TrimSpace(c.Model)
+	if model == "" {
+		model = "gpt-4o-transcribe"
+	}
+	_ = writer.WriteField("model", model)
+	_ = writer.WriteField("response_format", "json")
+	if strings.TrimSpace(language) != "" {
+		_ = writer.WriteField("language", strings.TrimSpace(language))
+	}
+	_ = writer.WriteField("prompt", "Речь пользователя о бизнесе, стратегии, целях, клиентах, продажах, метриках, проблемах и ограничениях. Сохраняй смысл, термины и стиль речи.")
+
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("multipart close error: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		"https://api.openai.com/v1/audio/transcriptions",
+		body,
+	)
+	if err != nil {
+		return "", fmt.Errorf("request error: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("http error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("openai transcription error (%d): %s", resp.StatusCode, string(raw))
+	}
+
+	var parsed transcriptionResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return "", fmt.Errorf("transcription json decode error: %w | body: %s", err, string(raw))
+	}
+
+	text := strings.TrimSpace(parsed.Text)
+	if text == "" {
+		return "", fmt.Errorf("empty transcription")
+	}
+	return text, nil
+}
+
+func safeAudioFilename(filename string) string {
+	name := strings.TrimSpace(filename)
+	if name == "" {
+		return "voice.webm"
+	}
+	name = strings.ReplaceAll(name, "\\", "_")
+	name = strings.ReplaceAll(name, "/", "_")
+	return name
 }
 
 func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions string, input string, textFormat map[string]interface{}) (string, error) {
