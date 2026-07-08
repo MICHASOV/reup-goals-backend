@@ -169,7 +169,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		return MessageResponse{}, err
 	}
 
-	assistantMessage := strings.TrimSpace(aiResponse.AssistantMessage)
+	assistantMessage := cleanAssistantMessage(aiResponse.AssistantMessage)
 	if assistantMessage == "" {
 		assistantMessage = "Понял. Я зафиксировал контекст и продолжу собирать бизнес-память. Что ещё важно знать о текущей ситуации?"
 	}

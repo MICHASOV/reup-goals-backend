@@ -6,6 +6,18 @@ func cleanText(value string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
+func cleanAssistantMessage(value string) string {
+	value = strings.TrimSpace(value)
+	replacer := strings.NewReplacer(
+		"właśnie", "именно",
+		"і", "и",
+		"ї", "и",
+		"є", "е",
+		"ł", "л",
+	)
+	return replacer.Replace(value)
+}
+
 func defaultString(value string, fallback string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
