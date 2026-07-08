@@ -501,17 +501,28 @@ func (s *Store) UpsertDocuments(ctx context.Context, workspaceID int, docs []Str
 }
 
 func (s *Store) Reset(ctx context.Context, workspaceID int) error {
-	_, err := s.dbx.ExecContext(ctx, `
-		DELETE FROM strategic_ai_runs WHERE workspace_id=$1;
-		DELETE FROM strategic_documents WHERE workspace_id=$1;
-		DELETE FROM strategic_dialogue_focus WHERE workspace_id=$1;
-		DELETE FROM strategic_research_agenda_items WHERE workspace_id=$1;
-		DELETE FROM strategic_memory_snapshots WHERE workspace_id=$1;
-		DELETE FROM strategic_claims WHERE workspace_id=$1;
-		DELETE FROM strategic_communication_profiles WHERE workspace_id=$1;
-		DELETE FROM strategic_raw_sources WHERE workspace_id=$1;
-	`, workspaceID)
-	return err
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	tables := []string{
+		"strategic_ai_runs",
+		"strategic_documents",
+		"strategic_dialogue_focus",
+		"strategic_research_agenda_items",
+		"strategic_memory_snapshots",
+		"strategic_claims",
+		"strategic_communication_profiles",
+		"strategic_raw_sources",
+	}
+	for _, table := range tables {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE workspace_id=$1", workspaceID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) LogAIRun(ctx context.Context, workspaceID int, scenario string, model string, promptVersion string, durationMs int64, status string, errorText string) {
