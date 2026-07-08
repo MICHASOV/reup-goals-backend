@@ -644,6 +644,118 @@ var migrations = []Migration{
 				ON v2_knowledge_intake_progress_events (workspace_id, session_id, id);
 		`,
 	},
+	{
+		ID: "20260708_011_strategic_memory_v1",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS strategic_raw_sources (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				source_type TEXT NOT NULL,
+				content TEXT NOT NULL DEFAULT '',
+				metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_raw_sources_workspace
+				ON strategic_raw_sources (workspace_id, created_at DESC, id DESC);
+
+			CREATE TABLE IF NOT EXISTS strategic_claims (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				claim_text TEXT NOT NULL,
+				claim_type TEXT NOT NULL DEFAULT 'self_reported_fact',
+				topic_key TEXT NOT NULL DEFAULT 'general',
+				evidence_level TEXT NOT NULL DEFAULT 'self_reported',
+				confidence TEXT NOT NULL DEFAULT 'medium',
+				source_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				status TEXT NOT NULL DEFAULT 'active',
+				superseded_by INTEGER NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_claims_workspace
+				ON strategic_claims (workspace_id, status, topic_key, updated_at DESC);
+
+			CREATE TABLE IF NOT EXISTS strategic_memory_snapshots (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				business_stage TEXT NOT NULL DEFAULT 'unknown',
+				version INTEGER NOT NULL DEFAULT 1,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_memory_snapshots_workspace
+				ON strategic_memory_snapshots (workspace_id, version DESC, id DESC);
+
+			CREATE TABLE IF NOT EXISTS strategic_research_agenda_items (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				topic_key TEXT NOT NULL DEFAULT 'general',
+				question_goal TEXT NOT NULL DEFAULT '',
+				why_it_matters TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'open',
+				priority TEXT NOT NULL DEFAULT 'medium',
+				linked_claim_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				last_asked_at TIMESTAMPTZ NULL,
+				times_asked INTEGER NOT NULL DEFAULT 0,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id, topic_key, question_goal)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_research_agenda_workspace
+				ON strategic_research_agenda_items (workspace_id, status, priority, updated_at DESC);
+
+			CREATE TABLE IF NOT EXISTS strategic_communication_profiles (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				tone TEXT NOT NULL DEFAULT 'direct',
+				address_style TEXT NOT NULL DEFAULT 'ты',
+				detail_level TEXT NOT NULL DEFAULT 'normal',
+				structure_preference TEXT NOT NULL DEFAULT 'free_dialogue',
+				frustration_sensitivity TEXT NOT NULL DEFAULT 'medium',
+				known_preferences_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id)
+			);
+
+			CREATE TABLE IF NOT EXISTS strategic_documents (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				title TEXT NOT NULL DEFAULT '',
+				markdown TEXT NOT NULL DEFAULT '',
+				source_claim_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				status TEXT NOT NULL DEFAULT 'draft',
+				version INTEGER NOT NULL DEFAULT 1,
+				generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id, document_type)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_documents_workspace
+				ON strategic_documents (workspace_id, document_type);
+
+			CREATE TABLE IF NOT EXISTS strategic_ai_runs (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				scenario TEXT NOT NULL,
+				model TEXT NOT NULL DEFAULT '',
+				prompt_version TEXT NOT NULL DEFAULT '',
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				duration_ms INTEGER NOT NULL DEFAULT 0,
+				status TEXT NOT NULL DEFAULT 'success',
+				error TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_ai_runs_workspace
+				ON strategic_ai_runs (workspace_id, created_at DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

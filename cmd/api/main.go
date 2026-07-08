@@ -18,6 +18,7 @@ import (
 	"reup-goals-backend/internal/v2/bootstrap"
 	"reup-goals-backend/internal/v2/course"
 	"reup-goals-backend/internal/v2/knowledge"
+	"reup-goals-backend/internal/v2/strategicmemory"
 	"reup-goals-backend/internal/v2/strategy"
 	"reup-goals-backend/internal/v2/tactics"
 	tasksv2 "reup-goals-backend/internal/v2/tasks"
@@ -55,6 +56,7 @@ func main() {
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
 	knowledgeHandler := knowledge.NewHandler(database, intakeAIClient, serviceAIClient)
+	strategicMemoryHandler := strategicmemory.NewHandler(database, serviceAIClient)
 	strategyHandler := strategy.NewHandler(database)
 	tacticsHandler := tactics.NewHandler(database)
 	tasksV2Handler := tasksv2.NewHandler(database)
@@ -101,6 +103,13 @@ func main() {
 	mux.Handle("/api/v2/knowledge-base/blocks", v2api.RequireAuth(jwtSecret, knowledgeHandler.Blocks))
 	mux.Handle("/api/v2/knowledge-base/blocks/", v2api.RequireAuth(jwtSecret, knowledgeHandler.Block))
 	mux.Handle("/api/v2/workspaces/", v2api.RequireAuth(jwtSecret, knowledgeHandler.WorkspaceKnowledge))
+	mux.Handle("/api/v2/strategic-director/messages", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/strategic-director/state", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/strategic-memory/snapshot", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/claims", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/agenda", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/documents", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/reset", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategy/current", v2api.RequireAuth(jwtSecret, strategyHandler.Current))
 	mux.Handle("/api/v2/strategy/artifacts/", v2api.RequireAuth(jwtSecret, strategyHandler.Artifacts))
 	mux.Handle("/api/v2/strategy/", v2api.RequireAuth(jwtSecret, strategyHandler.Strategy))
