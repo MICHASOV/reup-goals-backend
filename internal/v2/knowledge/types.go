@@ -42,7 +42,7 @@ const (
 
 	CompanyProfileCollectorVersion = "company_profile_collector_v1"
 	DocumentReadinessVersion       = "document_readiness_preflight_v1"
-	GuidancePlannerVersion         = "strategic_guidance_question_planner_v2"
+	GuidancePlannerVersion         = "strategic_guidance_question_planner_v3"
 
 	ProfileStatusRed    = "red"
 	ProfileStatusOrange = "orange"
