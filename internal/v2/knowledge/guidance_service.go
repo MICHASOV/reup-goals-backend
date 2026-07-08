@@ -636,15 +636,17 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 		return GuidanceQuestionBlock{}, err
 	}
 	input := map[string]any{
-		"workspace_id":                           fmt.Sprintf("%d", workspaceID),
-		"output_language":                        "ru",
-		"company_profile":                        profile,
-		"knowledge_base_readiness":               readiness,
-		"documents":                              documents,
-		"latest_user_message":                    latestMessage,
-		"conversation_intent":                    defaultConversationIntent(intent),
-		"user_requested_full_question_checklist": messageRequestsFullQuestionChecklist(latestMessage, intent),
-		"recent_question_history":                history,
+		"workspace_id":        fmt.Sprintf("%d", workspaceID),
+		"output_language":     "ru",
+		"latest_user_message": latestMessage,
+		"conversation_intent": defaultConversationIntent(intent),
+		"diagnostic_report": map[string]any{
+			"company_profile":                        profile,
+			"knowledge_base_readiness":               readiness,
+			"documents":                              documents,
+			"recent_question_history":                history,
+			"user_requested_full_question_checklist": messageRequestsFullQuestionChecklist(latestMessage, intent),
+		},
 	}
 	raw, err := s.generateLoggedJSON(ctx, workspaceID, userID, "strategic_guidance_question_planner", GuidancePlannerVersion, strategicGuidanceQuestionPlannerPrompt, input)
 	if err != nil {
@@ -654,19 +656,19 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return GuidanceQuestionBlock{}, err
 	}
-	intendedDocuments, _ := json.Marshal(response.IntendedFocus.IntendedDocuments)
+	intendedDocuments, _ := json.Marshal(response.ResearchMove.TargetDocuments)
 	handledIntent, _ := json.Marshal(response.HandledUserIntent)
 	guidanceStatus := normalizeGuidanceStatus(response.GuidanceStatus)
 	block := GuidanceQuestionBlock{
 		Source:                  QuestionSourcePlanner,
 		GuidanceStatus:          guidanceStatus,
-		QuestionType:            response.QuestionType,
-		IntendedFocusSummary:    response.IntendedFocus.FocusSummary,
+		QuestionType:            normalizeResearchMoveMode(response.ResearchMove.Mode),
+		IntendedFocusSummary:    response.ResearchMove.Name,
 		IntendedDocuments:       intendedDocuments,
-		SelectionReasonInternal: response.IntendedFocus.SelectionReasonInternal,
-		Title:                   normalizeQuestionBlockTitle(response.QuestionBlock.Title, latestMessage, intent),
-		Intro:                   normalizeQuestionBlockIntro(response.QuestionBlock.Intro, latestMessage, intent),
-		Questions:               normalizeQuestionBlockQuestions(response.QuestionBlock.Questions, guidanceStatus),
+		SelectionReasonInternal: response.ResearchMove.PriorityReason,
+		Title:                   "",
+		Intro:                   normalizeAssistantMessage(response.AssistantMessageMarkdown, latestMessage, intent),
+		Questions:               nil,
 		HandledUserIntent:       handledIntent,
 		Confidence:              response.Confidence,
 	}
@@ -677,6 +679,21 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 		block.Title = "Уточним бизнес-контекст"
 	}
 	return s.store.CreateQuestionBlock(ctx, workspaceID, block)
+}
+
+func normalizeResearchMoveMode(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "first_gate":
+		return "first_gate_completion"
+	case "clarify_contradiction":
+		return "single_clarification"
+	case "suggest_strategy_transition":
+		return "transition"
+	case "full_checklist", "continue_current_thread", "switch_to_priority_gap":
+		return "narrow_deepening"
+	default:
+		return "narrow_deepening"
+	}
 }
 
 func normalizeGuidanceStatus(status string) string {
@@ -703,6 +720,17 @@ func normalizeQuestionBlockQuestions(questions []string, guidanceStatus string) 
 		return []string{"Что ещё важно знать о бизнесе прямо сейчас, чтобы лучше понимать контекст компании?"}
 	}
 	return result
+}
+
+func normalizeAssistantMessage(message string, latestMessage string, intent ConversationIntent) string {
+	message = strings.TrimSpace(message)
+	if message != "" {
+		return message
+	}
+	if looksLikeStartSignal(normalizeForSignalSearch(latestMessage)) || intent.IntentType == "conversation_start" {
+		return "Привет. Да, давай начнём спокойно: сначала соберём базовый контекст компании, а дальше я буду уточнять только то, что реально влияет на стратегию."
+	}
+	return "Давай уточним следующий важный кусок реальности бизнеса: что прямо сейчас сильнее всего влияет на движение компании и где больше всего неясности?"
 }
 
 func normalizeQuestionBlockTitle(title string, latestMessage string, intent ConversationIntent) string {

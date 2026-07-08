@@ -151,18 +151,20 @@ type readinessPreflightResponse struct {
 }
 
 type guidancePlannerResponse struct {
-	GuidanceStatus string `json:"guidance_status"`
-	QuestionType   string `json:"question_type"`
-	IntendedFocus  struct {
-		FocusSummary            string   `json:"focus_summary"`
-		IntendedDocuments       []string `json:"intended_documents"`
-		SelectionReasonInternal string   `json:"selection_reason_internal"`
-	} `json:"intended_focus"`
-	QuestionBlock struct {
-		Title     string   `json:"title"`
-		Intro     string   `json:"intro"`
-		Questions []string `json:"questions"`
-	} `json:"question_block"`
+	GuidanceStatus           string `json:"guidance_status"`
+	AssistantMessageMarkdown string `json:"assistant_message_markdown"`
+	ResearchMove             struct {
+		Mode              string   `json:"mode"`
+		Name              string   `json:"name"`
+		TargetDocuments   []string `json:"target_documents"`
+		Depth             string   `json:"depth"`
+		QuestionVolume    string   `json:"question_volume"`
+		PriorityReason    string   `json:"priority_reason"`
+		KnownContextUsed  []string `json:"known_context_used"`
+		UnknownsToResolve []string `json:"unknowns_to_resolve"`
+		MustAskAbout      []string `json:"must_ask_about"`
+		MustNotAsk        []string `json:"must_not_ask"`
+	} `json:"research_move"`
 	HandledUserIntent struct {
 		IntentType      string `json:"intent_type"`
 		HandlingSummary string `json:"handling_summary"`
