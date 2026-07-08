@@ -47,7 +47,7 @@ func (c *OpenAIClient) WithMaxOutputTokens(maxOutputTokens int) *OpenAIClient {
 
 func (c *OpenAIClient) newHTTPClient() (*http.Client, error) {
 	if isDirectProxy(c.ProxyURL) {
-		return &http.Client{Timeout: 120 * time.Second}, nil
+		return &http.Client{Timeout: 75 * time.Second}, nil
 	}
 
 	proxyURL, err := url.Parse(c.ProxyURL)
@@ -70,7 +70,7 @@ func (c *OpenAIClient) newHTTPClient() (*http.Client, error) {
 	}
 
 	return &http.Client{
-		Timeout:   120 * time.Second,
+		Timeout:   75 * time.Second,
 		Transport: transport,
 	}, nil
 }

@@ -20,6 +20,8 @@ func cleanAssistantMessage(value string) string {
 		"ї", "и",
 		"є", "е",
 		"ł", "л",
+		".DEFINE_", " ",
+		"DEFINE_", " ",
 	)
 	value = replacer.Replace(value)
 	return stripInternalAssistantSections(value)
@@ -58,6 +60,13 @@ func fallbackAssistantReply(value string) string {
 		return value
 	}
 	return "Понял. Давайте продолжим разбирать бизнес-контекст с того места, где остановились."
+}
+
+func unavailableAssistantReply(state StateResponse) string {
+	if strings.TrimSpace(state.DialogueFocus.CurrentTopic) != "" {
+		return "Принял сообщение, но подробный разбор сейчас занял слишком много времени. Чтобы не подвешивать диалог, продолжим проще: по текущей теме мне важнее всего понять, что уже подтверждено фактами, а что пока остается гипотезой."
+	}
+	return "Принял сообщение, но подробный разбор сейчас занял слишком много времени. Давай продолжим с основы: что уже существует в бизнесе сейчас, а что пока только гипотеза или план?"
 }
 
 func dialogueHintsFromUserMessage(message string) dialogueHints {

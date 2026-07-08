@@ -88,13 +88,14 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
 		s.store.LogAIRun(ctx, workspaceID, "strategic_memory_message", s.ai.Model, StrategicMemoryPromptVersion, duration, "failed", err.Error())
-		return MessageResponse{}, err
+		return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
 	}
 	s.store.LogAIRun(ctx, workspaceID, "strategic_memory_message", s.ai.Model, StrategicMemoryPromptVersion, duration, "success", "")
 
 	var aiResponse aiMemoryResponse
 	if err := json.Unmarshal(raw, &aiResponse); err != nil {
-		return MessageResponse{}, err
+		s.store.LogAIRun(ctx, workspaceID, "strategic_memory_message_parse", s.ai.Model, StrategicMemoryPromptVersion, duration, "failed", err.Error())
+		return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
 	}
 
 	claimInputs := make([]aiMemoryResponseClaim, 0, len(aiResponse.Claims))
@@ -222,6 +223,27 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		CommunicationProfile: profile,
 		DialogueFocus:        dialogueFocus,
 	}, nil
+}
+
+func (s *Service) fallbackMessageResponse(ctx context.Context, workspaceID int, state StateResponse, assistantMessage string) MessageResponse {
+	assistantMessage = cleanAssistantMessage(fallbackAssistantReply(assistantMessage))
+	_, _ = s.store.CreateRawSource(ctx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
+		"prompt_version": StrategicMemoryPromptVersion,
+		"fallback":       true,
+	})
+
+	return MessageResponse{
+		WorkspaceID:          workspaceID,
+		AssistantMessage:     assistantMessage,
+		ConversationState:    ConversationStateCollectingContext,
+		MemoryUpdates:        MemoryUpdates{},
+		Snapshot:             state.Snapshot,
+		Documents:            state.Documents,
+		Agenda:               state.Agenda,
+		Claims:               state.Claims,
+		CommunicationProfile: state.CommunicationProfile,
+		DialogueFocus:        state.DialogueFocus,
+	}
 }
 
 func buildContextPack(workspaceID int, message string, state StateResponse) map[string]any {
