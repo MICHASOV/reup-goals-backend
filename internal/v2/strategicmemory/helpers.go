@@ -43,6 +43,24 @@ func stripInternalAssistantSections(value string) string {
 	return strings.TrimSpace(strings.Join(kept, "\n\n"))
 }
 
+func ensureAssistantQuestion(value string, snapshot map[string]any) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "?") {
+		return value
+	}
+	focus := strings.ToLower(snapshotText(snapshot, "next_research_focus"))
+	if strings.Contains(focus, "спрос") || strings.Contains(focus, "аудитор") || strings.Contains(focus, "клиент") {
+		return value + "\n\nРасскажите, какие конкретные гипотезы спроса вы хотите проверить первыми: кто должен почувствовать эту боль, в какой ситуации она возникает, и какой сигнал покажет, что проблема действительно острая?"
+	}
+	if strings.Contains(focus, "эконом") || strings.Contains(focus, "модель") || strings.Contains(focus, "выруч") {
+		return value + "\n\nРасскажите, как сейчас выглядит предполагаемая экономика: за что пользователь будет платить, какой ценовой диапазон кажется реалистичным, и на чём держится эта гипотеза?"
+	}
+	if strings.Contains(focus, "огранич") || strings.Contains(focus, "ресурс") || strings.Contains(focus, "команд") {
+		return value + "\n\nРасскажите, какие ограничения сильнее всего влияют на запуск прямо сейчас: время, команда, деньги, доступ к аудитории, скорость разработки или что-то другое?"
+	}
+	return value + "\n\nРасскажите подробнее о текущей реальности: что уже существует, что проверено хотя бы частично, и какие ключевые неизвестности сейчас мешают двигаться увереннее?"
+}
+
 func defaultString(value string, fallback string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
