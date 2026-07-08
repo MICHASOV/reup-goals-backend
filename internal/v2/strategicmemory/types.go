@@ -18,7 +18,7 @@ const (
 	DefaultDetailLevel             = "normal"
 	DefaultStructurePreference     = "free_dialogue"
 	DefaultFrustrationSensitivity  = "medium"
-	StrategicMemoryPromptVersion   = "strategic_memory_v0_1_single_pass"
+	StrategicMemoryPromptVersion   = "strategic_memory_v0_1_6_context_pack"
 	DefaultStrategicDocumentStatus = "draft"
 )
 
@@ -73,6 +73,19 @@ type CommunicationProfile struct {
 	UpdatedAt              time.Time       `json:"updated_at"`
 }
 
+type DialogueFocus struct {
+	ID                 int             `json:"id"`
+	WorkspaceID        int             `json:"workspace_id"`
+	CurrentTopic       string          `json:"current_topic"`
+	ResearchGoal       string          `json:"research_goal"`
+	LastQuestion       string          `json:"last_question"`
+	ExpectedAnswerType string          `json:"expected_answer_type"`
+	AnswerStatus       string          `json:"answer_status"`
+	DoNotRepeat        json.RawMessage `json:"do_not_repeat_json,omitempty"`
+	NextAngles         json.RawMessage `json:"next_angles_json,omitempty"`
+	UpdatedAt          time.Time       `json:"updated_at"`
+}
+
 type MemorySnapshot struct {
 	ID            int             `json:"id"`
 	WorkspaceID   int             `json:"workspace_id"`
@@ -100,6 +113,7 @@ type StateResponse struct {
 	Claims               []Claim               `json:"claims"`
 	Agenda               []ResearchAgendaItem  `json:"agenda"`
 	CommunicationProfile CommunicationProfile  `json:"communication_profile"`
+	DialogueFocus        DialogueFocus         `json:"dialogue_focus"`
 	Documents            []StrategicDocument   `json:"documents"`
 	RecentMessages       []ConversationMessage `json:"recent_messages"`
 }
@@ -126,6 +140,7 @@ type MessageResponse struct {
 	Agenda               []ResearchAgendaItem `json:"agenda"`
 	Claims               []Claim              `json:"claims"`
 	CommunicationProfile CommunicationProfile `json:"communication_profile"`
+	DialogueFocus        DialogueFocus        `json:"dialogue_focus"`
 }
 
 type MemoryUpdates struct {
@@ -146,7 +161,16 @@ type aiMemoryResponse struct {
 		EvidenceLevel string `json:"evidence_level"`
 		Confidence    string `json:"confidence"`
 	} `json:"claims"`
-	Snapshot       map[string]any `json:"snapshot"`
+	Snapshot      map[string]any `json:"snapshot"`
+	DialogueFocus struct {
+		CurrentTopic       string   `json:"current_topic"`
+		ResearchGoal       string   `json:"research_goal"`
+		LastQuestion       string   `json:"last_question"`
+		ExpectedAnswerType string   `json:"expected_answer_type"`
+		AnswerStatus       string   `json:"answer_status"`
+		DoNotRepeat        []string `json:"do_not_repeat"`
+		NextAngles         []string `json:"next_angles"`
+	} `json:"dialogue_focus"`
 	ResearchAgenda []struct {
 		TopicKey     string `json:"topic_key"`
 		QuestionGoal string `json:"question_goal"`

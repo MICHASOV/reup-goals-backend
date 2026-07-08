@@ -756,6 +756,24 @@ var migrations = []Migration{
 				ON strategic_ai_runs (workspace_id, created_at DESC);
 		`,
 	},
+	{
+		ID: "20260708_012_strategic_dialogue_focus",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS strategic_dialogue_focus (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				current_topic TEXT NOT NULL DEFAULT '',
+				research_goal TEXT NOT NULL DEFAULT '',
+				last_question TEXT NOT NULL DEFAULT '',
+				expected_answer_type TEXT NOT NULL DEFAULT '',
+				answer_status TEXT NOT NULL DEFAULT 'not_started',
+				do_not_repeat_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				next_angles_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id)
+			);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

@@ -36,6 +36,10 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 	if err != nil {
 		return StateResponse{}, err
 	}
+	focus, err := s.store.DialogueFocus(ctx, workspaceID)
+	if err != nil {
+		return StateResponse{}, err
+	}
 	documents, err := s.store.ListDocuments(ctx, workspaceID)
 	if err != nil {
 		return StateResponse{}, err
@@ -51,6 +55,7 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 		Claims:               claims,
 		Agenda:               agenda,
 		CommunicationProfile: profile,
+		DialogueFocus:        focus,
 		Documents:            documents,
 		RecentMessages:       messages,
 	}, nil
@@ -75,19 +80,9 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		return MessageResponse{}, err
 	}
 
-	input := map[string]any{
-		"workspace_id":          workspaceID,
-		"latest_user_message":   message,
-		"recent_dialogue":       state.RecentMessages,
-		"business_snapshot":     state.Snapshot,
-		"active_claims":         limitClaimsForContext(state.Claims, 90),
-		"research_agenda":       limitAgendaForContext(state.Agenda, 40),
-		"communication_profile": state.CommunicationProfile,
-		"current_documents":     limitDocumentsForContext(state.Documents, 12),
-		"system_goal":           "Collect the complete business context before strategy work. Build memory, not a questionnaire.",
-	}
+	contextPack := buildContextPack(workspaceID, message, state)
 
-	rawInput, _ := json.Marshal(input)
+	rawInput, _ := json.Marshal(contextPack)
 	started := time.Now()
 	raw, err := s.ai.GenerateJSON(ctx, strategicMemoryPrompt, string(rawInput))
 	duration := time.Since(started).Milliseconds()
@@ -136,6 +131,22 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		return MessageResponse{}, err
 	}
 
+	dialogueFocus := mergeDialogueFocus(state.DialogueFocus, DialogueFocus{
+		WorkspaceID:        workspaceID,
+		CurrentTopic:       aiResponse.DialogueFocus.CurrentTopic,
+		ResearchGoal:       aiResponse.DialogueFocus.ResearchGoal,
+		LastQuestion:       aiResponse.DialogueFocus.LastQuestion,
+		ExpectedAnswerType: aiResponse.DialogueFocus.ExpectedAnswerType,
+		AnswerStatus:       aiResponse.DialogueFocus.AnswerStatus,
+		DoNotRepeat:        mustJSON(mergeStringSlices(rawStringSlice(state.DialogueFocus.DoNotRepeat), aiResponse.DialogueFocus.DoNotRepeat)),
+		NextAngles:         mustJSON(mergeStringSlices(rawStringSlice(state.DialogueFocus.NextAngles), aiResponse.DialogueFocus.NextAngles)),
+	})
+	dialogueFocus = enrichDialogueFocusFromUserMessage(dialogueFocus, message)
+	dialogueFocus, err = s.store.UpsertDialogueFocus(ctx, workspaceID, dialogueFocus)
+	if err != nil {
+		return MessageResponse{}, err
+	}
+
 	agendaInputs := make([]ResearchAgendaItem, 0, len(aiResponse.ResearchAgenda))
 	for _, item := range aiResponse.ResearchAgenda {
 		agendaInputs = append(agendaInputs, ResearchAgendaItem{
@@ -176,7 +187,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	}
 
 	assistantMessage := cleanAssistantMessage(aiResponse.AssistantMessage)
-	assistantMessage = shapeAssistantReply(assistantMessage, aiResponse.Snapshot, message)
+	assistantMessage = fallbackAssistantReply(assistantMessage)
 	_, _ = s.store.CreateRawSource(ctx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
 		"prompt_version": StrategicMemoryPromptVersion,
 	})
@@ -209,7 +220,34 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		Agenda:               agenda,
 		Claims:               claims,
 		CommunicationProfile: profile,
+		DialogueFocus:        dialogueFocus,
 	}, nil
+}
+
+func buildContextPack(workspaceID int, message string, state StateResponse) map[string]any {
+	hints := dialogueHintsFromUserMessage(message)
+	doNotRepeat := mergeStringSlices(rawStringSlice(state.DialogueFocus.DoNotRepeat), hints.DoNotRepeat)
+	nextAngles := mergeStringSlices(rawStringSlice(state.DialogueFocus.NextAngles), hints.NextAngles)
+
+	return map[string]any{
+		"workspace_id":        workspaceID,
+		"latest_user_message": message,
+		"recent_dialogue":     state.RecentMessages,
+		"business_context": map[string]any{
+			"snapshot":          state.Snapshot,
+			"active_claims":     limitClaimsForContext(state.Claims, 90),
+			"current_documents": limitDocumentsForContext(state.Documents, 12),
+			"research_agenda":   limitAgendaForContext(state.Agenda, 40),
+		},
+		"dialogue_state": map[string]any{
+			"current_focus":         state.DialogueFocus,
+			"derived_do_not_repeat": doNotRepeat,
+			"derived_next_angles":   nextAngles,
+			"latest_message_hints":  hints,
+		},
+		"communication_style": state.CommunicationProfile,
+		"product_goal":        "Understand the business deeply enough to later build strategy, course, tactics, and execution on facts, hypotheses, unknowns, and constraints.",
+	}
 }
 
 func (s *Service) Reset(ctx context.Context, workspaceID int) error {

@@ -243,6 +243,79 @@ func (s *Store) CommunicationProfile(ctx context.Context, workspaceID int) (Comm
 	return item, err
 }
 
+func (s *Store) DialogueFocus(ctx context.Context, workspaceID int) (DialogueFocus, error) {
+	var item DialogueFocus
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, current_topic, research_goal, last_question,
+			expected_answer_type, answer_status, do_not_repeat_json, next_angles_json, updated_at
+		FROM strategic_dialogue_focus
+		WHERE workspace_id=$1
+	`, workspaceID).Scan(
+		&item.ID,
+		&item.WorkspaceID,
+		&item.CurrentTopic,
+		&item.ResearchGoal,
+		&item.LastQuestion,
+		&item.ExpectedAnswerType,
+		&item.AnswerStatus,
+		&item.DoNotRepeat,
+		&item.NextAngles,
+		&item.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return DialogueFocus{
+			WorkspaceID:  workspaceID,
+			AnswerStatus: "not_started",
+			DoNotRepeat:  mustJSON([]string{}),
+			NextAngles:   mustJSON([]string{}),
+		}, nil
+	}
+	return item, err
+}
+
+func (s *Store) UpsertDialogueFocus(ctx context.Context, workspaceID int, focus DialogueFocus) (DialogueFocus, error) {
+	var item DialogueFocus
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO strategic_dialogue_focus (
+			workspace_id, current_topic, research_goal, last_question, expected_answer_type,
+			answer_status, do_not_repeat_json, next_angles_json
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			current_topic=EXCLUDED.current_topic,
+			research_goal=EXCLUDED.research_goal,
+			last_question=EXCLUDED.last_question,
+			expected_answer_type=EXCLUDED.expected_answer_type,
+			answer_status=EXCLUDED.answer_status,
+			do_not_repeat_json=EXCLUDED.do_not_repeat_json,
+			next_angles_json=EXCLUDED.next_angles_json,
+			updated_at=NOW()
+		RETURNING id, workspace_id, current_topic, research_goal, last_question,
+			expected_answer_type, answer_status, do_not_repeat_json, next_angles_json, updated_at
+	`,
+		workspaceID,
+		strings.TrimSpace(focus.CurrentTopic),
+		strings.TrimSpace(focus.ResearchGoal),
+		strings.TrimSpace(focus.LastQuestion),
+		strings.TrimSpace(focus.ExpectedAnswerType),
+		defaultString(focus.AnswerStatus, "open"),
+		defaultRawJSON(focus.DoNotRepeat),
+		defaultRawJSON(focus.NextAngles),
+	).Scan(
+		&item.ID,
+		&item.WorkspaceID,
+		&item.CurrentTopic,
+		&item.ResearchGoal,
+		&item.LastQuestion,
+		&item.ExpectedAnswerType,
+		&item.AnswerStatus,
+		&item.DoNotRepeat,
+		&item.NextAngles,
+		&item.UpdatedAt,
+	)
+	return item, err
+}
+
 func (s *Store) UpsertCommunicationProfile(ctx context.Context, workspaceID int, profile CommunicationProfile) (CommunicationProfile, error) {
 	var item CommunicationProfile
 	err := s.dbx.QueryRowContext(ctx, `
@@ -431,6 +504,7 @@ func (s *Store) Reset(ctx context.Context, workspaceID int) error {
 	_, err := s.dbx.ExecContext(ctx, `
 		DELETE FROM strategic_ai_runs WHERE workspace_id=$1;
 		DELETE FROM strategic_documents WHERE workspace_id=$1;
+		DELETE FROM strategic_dialogue_focus WHERE workspace_id=$1;
 		DELETE FROM strategic_research_agenda_items WHERE workspace_id=$1;
 		DELETE FROM strategic_memory_snapshots WHERE workspace_id=$1;
 		DELETE FROM strategic_claims WHERE workspace_id=$1;

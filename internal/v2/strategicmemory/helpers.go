@@ -1,6 +1,7 @@
 package strategicmemory
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -45,85 +46,125 @@ func stripInternalAssistantSections(value string) string {
 	return strings.TrimSpace(strings.Join(kept, "\n\n"))
 }
 
-func shapeAssistantReply(value string, snapshot map[string]any, latestUserMessage string) string {
+type dialogueHints struct {
+	DoNotRepeat []string `json:"do_not_repeat"`
+	NextAngles  []string `json:"next_angles"`
+	TurnSignals []string `json:"turn_signals"`
+}
+
+func fallbackAssistantReply(value string) string {
 	value = strings.TrimSpace(value)
-	latest := strings.ToLower(latestUserMessage)
-	if asksForQuestionChecklist(latest) && !hasNumberedList(value) {
-		return questionChecklistReply()
-	}
-	if isFrustratedByRepetition(latest) && isGenericAssistantReply(value) {
-		return repetitionCorrectionReply()
-	}
-	if value == "" {
-		value = defaultAssistantReply(latest)
-	}
-	if strings.Contains(value, "?") {
+	if value != "" {
 		return value
 	}
-	focus := strings.ToLower(snapshotText(snapshot, "next_research_focus"))
-	if strings.Contains(focus, "спрос") || strings.Contains(focus, "аудитор") || strings.Contains(focus, "клиент") {
-		return value + "\n\n**Следующий вопрос**\n\nРасскажите, какие конкретные гипотезы спроса вы хотите проверить первыми: кто должен почувствовать эту боль, в какой ситуации она возникает, и какой сигнал покажет, что проблема действительно острая?"
-	}
-	if strings.Contains(focus, "эконом") || strings.Contains(focus, "модель") || strings.Contains(focus, "выруч") {
-		return value + "\n\n**Следующий вопрос**\n\nРасскажите, как сейчас выглядит предполагаемая экономика: за что пользователь будет платить, какой ценовой диапазон кажется реалистичным, и на чём держится эта гипотеза?"
-	}
-	if strings.Contains(focus, "огранич") || strings.Contains(focus, "ресурс") || strings.Contains(focus, "команд") {
-		return value + "\n\n**Следующий вопрос**\n\nРасскажите, какие ограничения сильнее всего влияют на запуск прямо сейчас: время, команда, деньги, доступ к аудитории, скорость разработки или что-то другое?"
-	}
-	return value + "\n\n**Следующий вопрос**\n\nРасскажите подробнее о текущей реальности: что уже существует, что проверено хотя бы частично, и какие ключевые неизвестности сейчас мешают двигаться увереннее?"
+	return "Понял. Давайте продолжим разбирать бизнес-контекст с того места, где остановились."
 }
 
-func asksForQuestionChecklist(value string) bool {
-	return strings.Contains(value, "список вопросов") ||
-		strings.Contains(value, "все вопросы") ||
-		strings.Contains(value, "вопросы списком") ||
-		strings.Contains(value, "одним большим сообщением") ||
-		strings.Contains(value, "чеклист")
+func dialogueHintsFromUserMessage(message string) dialogueHints {
+	normalized := strings.ToLower(message)
+	hints := dialogueHints{}
+
+	if containsAny(normalized, "нет данных", "нет никакой информации", "нет информации", "нет отзыв", "нет клиентов", "нет оплат", "нет подтвержден") {
+		hints.DoNotRepeat = append(hints.DoNotRepeat, "Не спрашивать снова, есть ли клиенты, оплаты, отзывы или подтверждение спроса; это уже отмечено как отсутствующее на текущей стадии.")
+		hints.NextAngles = append(hints.NextAngles, "Перейти от вопроса наличия доказательств к дизайну проверки гипотезы спроса.")
+		hints.TurnSignals = append(hints.TurnSignals, "user_says_data_unavailable_now")
+	}
+	if containsAny(normalized, "маркетингов", "агентств", "20 ", "двадцать", "технократич", "пробный период", "циклы обратной связи") {
+		hints.NextAngles = append(hints.NextAngles,
+			"Уточнить дизайн пилота: критерии отбора тестовой группы, сценарий пробного периода, формат обратной связи.",
+			"Уточнить, какие события продукта будут считаться признаками ценности во время теста.",
+		)
+		hints.TurnSignals = append(hints.TurnSignals, "user_describes_validation_plan")
+	}
+	if containsAny(normalized, "ретенш", "retention", "возвращаем", "40%", "40 %", "2 месяц", "второй месяц") {
+		hints.DoNotRepeat = append(hints.DoNotRepeat, "Не спрашивать снова, какая метрика успеха; целевой ориентир уже назван как возвращаемость/retention на второй месяц около 40%.")
+		hints.NextAngles = append(hints.NextAngles,
+			"Уточнить механику измерения возвращаемости на второй месяц.",
+			"Уточнить, какое поведение пользователя считается реальным возвращением, а не случайным визитом.",
+		)
+		hints.TurnSignals = append(hints.TurnSignals, "user_names_success_metric")
+	}
+	if containsAny(normalized, "по кругу", "я же", "уже написал", "уже сказал", "не спрашивай", "блять", "блядь") {
+		hints.DoNotRepeat = append(hints.DoNotRepeat, "Пользователь раздражён повтором; признать коррекцию и сменить угол вместо повторения старого вопроса.")
+		hints.TurnSignals = append(hints.TurnSignals, "user_frustrated_by_repetition")
+	}
+	if containsAny(normalized, "список вопросов", "все вопросы", "вопросы списком", "одним большим сообщением", "чеклист") {
+		hints.TurnSignals = append(hints.TurnSignals, "user_requests_question_list")
+	}
+	return hints
 }
 
-func hasNumberedList(value string) bool {
-	lines := strings.Split(value, "\n")
-	count := 0
-	for _, line := range lines {
-		if matched := strings.HasPrefix(strings.TrimSpace(line), "1.") ||
-			strings.HasPrefix(strings.TrimSpace(line), "1)"); matched {
-			count++
+func enrichDialogueFocusFromUserMessage(focus DialogueFocus, message string) DialogueFocus {
+	hints := dialogueHintsFromUserMessage(message)
+	focus.DoNotRepeat = mustJSON(mergeStringSlices(rawStringSlice(focus.DoNotRepeat), hints.DoNotRepeat))
+	focus.NextAngles = mustJSON(mergeStringSlices(rawStringSlice(focus.NextAngles), hints.NextAngles))
+	if focus.AnswerStatus == "" {
+		focus.AnswerStatus = "open"
+	}
+	if containsAny(strings.ToLower(message), "нет данных", "нет никакой информации", "нет информации", "нет подтвержден") {
+		focus.AnswerStatus = "unavailable_now"
+	}
+	if containsAny(strings.ToLower(message), "ретенш", "retention", "возвращаем", "40%") {
+		focus.AnswerStatus = "answered"
+	}
+	return focus
+}
+
+func mergeDialogueFocus(previous DialogueFocus, next DialogueFocus) DialogueFocus {
+	if strings.TrimSpace(next.CurrentTopic) == "" {
+		next.CurrentTopic = previous.CurrentTopic
+	}
+	if strings.TrimSpace(next.ResearchGoal) == "" {
+		next.ResearchGoal = previous.ResearchGoal
+	}
+	if strings.TrimSpace(next.LastQuestion) == "" {
+		next.LastQuestion = previous.LastQuestion
+	}
+	if strings.TrimSpace(next.ExpectedAnswerType) == "" {
+		next.ExpectedAnswerType = previous.ExpectedAnswerType
+	}
+	if strings.TrimSpace(next.AnswerStatus) == "" {
+		next.AnswerStatus = previous.AnswerStatus
+	}
+	next.DoNotRepeat = mustJSON(mergeStringSlices(rawStringSlice(previous.DoNotRepeat), rawStringSlice(next.DoNotRepeat)))
+	next.NextAngles = mustJSON(mergeStringSlices(rawStringSlice(previous.NextAngles), rawStringSlice(next.NextAngles)))
+	return next
+}
+
+func rawStringSlice(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil
+	}
+	return compactStrings(values)
+}
+
+func mergeStringSlices(groups ...[]string) []string {
+	result := []string{}
+	seen := map[string]bool{}
+	for _, group := range groups {
+		for _, item := range compactStrings(group) {
+			key := strings.ToLower(item)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			result = append(result, item)
 		}
-		if count > 0 && (strings.HasPrefix(strings.TrimSpace(line), "2.") ||
-			strings.HasPrefix(strings.TrimSpace(line), "2)")) {
+	}
+	return result
+}
+
+func containsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
 			return true
 		}
 	}
 	return false
-}
-
-func isFrustratedByRepetition(value string) bool {
-	return strings.Contains(value, "по кругу") ||
-		strings.Contains(value, "повтор") ||
-		strings.Contains(value, "не спрашивай") ||
-		strings.Contains(value, "уже сказал")
-}
-
-func isGenericAssistantReply(value string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	return value == "" ||
-		strings.Contains(value, "что ещё важно знать") ||
-		strings.Contains(value, "продолжу собирать бизнес-память")
-}
-
-func defaultAssistantReply(latestUserMessage string) string {
-	if isFrustratedByRepetition(latestUserMessage) {
-		return repetitionCorrectionReply()
-	}
-	return "**Следующий вопрос**\n\nРасскажите подробнее о текущей реальности: что уже существует, что проверено хотя бы частично, и какие ключевые неизвестности сейчас мешают двигаться увереннее?"
-}
-
-func repetitionCorrectionReply() string {
-	return "Понял, ты прав: к вопросу клиентов и оплат сейчас не возвращаюсь.\n\n**Следующий вопрос**\n\nДавай зайдём с другой стороны: какой сегмент тебе кажется самым вероятным первым пользователем REUP.goals, в какой конкретной ситуации у него возникает хаос с задачами, и почему именно в этот момент он должен почувствовать ценность стратегического кабинета?"
-}
-
-func questionChecklistReply() string {
-	return "Да, так будет быстрее: можно ответить одним большим сообщением, а я разложу это в стратегическую память.\n\n**Список вопросов**\n\n1. Что именно представляет собой продукт сейчас: прототип, сервис, консультационная услуга, приложение или связка нескольких форматов?\n2. Для кого он в первую очередь: какой самый вероятный первый сегмент пользователей?\n3. В какой конкретной ситуации у этого сегмента возникает боль, которую решает продукт?\n4. Как пользователь сейчас решает эту проблему без вас?\n5. Почему текущие альтернативы для него недостаточны или неудобны?\n6. Какая главная гипотеза спроса у вас есть сейчас?\n7. Что уже проверено хотя бы частично, даже если это только разговоры, наблюдения или личный опыт?\n8. Что пока является чистой гипотезой без подтверждений?\n9. Какой минимальный тест спроса можно провести в ближайшее время?\n10. Какие сигналы будут означать, что гипотеза сильная: заявки, оплаты, интервью, повторяющаяся боль, готовность попробовать продукт?\n11. Какие ограничения сейчас сильнее всего мешают проверке: время, команда, деньги, доступ к аудитории, скорость разработки?\n12. Что точно не стоит делать или проверять сейчас, чтобы не распыляться?"
 }
 
 func defaultString(value string, fallback string) string {
