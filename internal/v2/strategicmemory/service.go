@@ -173,10 +173,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	}
 
 	assistantMessage := cleanAssistantMessage(aiResponse.AssistantMessage)
-	assistantMessage = ensureAssistantQuestion(assistantMessage, aiResponse.Snapshot)
-	if assistantMessage == "" {
-		assistantMessage = "Понял. Я зафиксировал контекст и продолжу собирать бизнес-память. Что ещё важно знать о текущей ситуации?"
-	}
+	assistantMessage = shapeAssistantReply(assistantMessage, aiResponse.Snapshot, message)
 	_, _ = s.store.CreateRawSource(ctx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
 		"prompt_version": StrategicMemoryPromptVersion,
 	})
