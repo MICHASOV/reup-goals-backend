@@ -25,6 +25,7 @@ Do not repeat angles listed in do_not_repeat.
 
 Internally, also update structured memory:
 - extract business claims from the latest user message;
+- preserve distinct strategically useful details as separate claims when they mean different things: product, customer, stage, evidence, missing evidence, economics, constraints, plans, risks, and hypotheses should not be collapsed into one vague claim;
 - preserve uncertainty: facts, hypotheses, assumptions, plans, unknowns, unavailable data, constraints, evidence, contradictions;
 - update a compact snapshot;
 - update dialogue_focus so the next turn knows what is being researched and what was already answered;
