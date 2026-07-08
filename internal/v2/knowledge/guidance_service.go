@@ -665,7 +665,7 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 		IntendedDocuments:       intendedDocuments,
 		SelectionReasonInternal: response.IntendedFocus.SelectionReasonInternal,
 		Title:                   response.QuestionBlock.Title,
-		Intro:                   response.QuestionBlock.Intro,
+		Intro:                   normalizeQuestionBlockIntro(response.QuestionBlock.Intro),
 		Questions:               normalizeQuestionBlockQuestions(response.QuestionBlock.Questions, guidanceStatus),
 		HandledUserIntent:       handledIntent,
 		Confidence:              response.Confidence,
@@ -701,6 +701,46 @@ func normalizeQuestionBlockQuestions(questions []string, guidanceStatus string) 
 	}
 	if len(result) == 0 && guidanceStatus != GuidanceStatusSuggestStrategyTransition {
 		return []string{"Что ещё важно знать о бизнесе прямо сейчас, чтобы лучше понимать контекст компании?"}
+	}
+	return result
+}
+
+func normalizeQuestionBlockIntro(intro string) string {
+	intro = strings.TrimSpace(intro)
+	if intro == "" || !strings.Contains(intro, "?") {
+		return intro
+	}
+
+	parts := splitSentences(intro)
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.Contains(part, "?") {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	return strings.Join(kept, " ")
+}
+
+func splitSentences(text string) []string {
+	result := []string{}
+	start := 0
+	for index, char := range text {
+		if char != '.' && char != '!' && char != '?' {
+			continue
+		}
+		end := index + len(string(char))
+		part := strings.TrimSpace(text[start:end])
+		if part != "" {
+			result = append(result, part)
+		}
+		start = end
+	}
+	if tail := strings.TrimSpace(text[start:]); tail != "" {
+		result = append(result, tail)
 	}
 	return result
 }
