@@ -338,6 +338,7 @@ func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID 
 			return raw, RouterResponse{}, retryJSONErr
 		}
 	}
+	normalizeRouterResponse(&response, segments)
 
 	if !denseInput && routerNeedsDenseRetry(response, segments) {
 		retryLogID, retryStarted, _ := s.store.CreateAICallLog(ctx, workspaceID, userID, "knowledge_intake_router_dense_retry", RouterPromptVersion, s.ai.Model, json.RawMessage(input))
@@ -350,12 +351,70 @@ func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID 
 		if retryJSONErr := json.Unmarshal(raw, &retryResponse); retryJSONErr != nil {
 			return raw, response, nil
 		}
+		normalizeRouterResponse(&retryResponse, segments)
 		if !routerNeedsDenseRetry(retryResponse, segments) || len(retryResponse.Items) > len(response.Items) {
 			response = retryResponse
 		}
 	}
 
 	return raw, response, nil
+}
+
+func normalizeRouterResponse(response *RouterResponse, segments []string) {
+	if response == nil {
+		return
+	}
+	if len(response.Items) == 0 && len(response.Documents) > 0 {
+		items := []RouterItem{}
+		itemIndex := 1
+		for _, definition := range documentDefinitions {
+			facts := response.Documents[definition.Type]
+			for _, fact := range facts {
+				text := strings.TrimSpace(fact.Text)
+				if text == "" {
+					continue
+				}
+				statementType := strings.TrimSpace(fact.StatementType)
+				if statementType == "" {
+					statementType = StatementTypeStatement
+				}
+				confidence := strings.TrimSpace(fact.Confidence)
+				if confidence == "" {
+					confidence = ConfidenceHigh
+				}
+				sourceQuote := text
+				if fact.SourceSegmentIndex > 0 && fact.SourceSegmentIndex <= len(segments) {
+					sourceQuote = segments[fact.SourceSegmentIndex-1]
+				}
+				items = append(items, RouterItem{
+					ClientItemID:   fmt.Sprintf("item_%03d", itemIndex),
+					SourceQuote:    strings.TrimSpace(sourceQuote),
+					CleanText:      text,
+					StatementType:  statementType,
+					TargetDocument: definition.Type,
+					RoutingReason:  "",
+					Confidence:     confidence,
+				})
+				itemIndex++
+			}
+		}
+		response.Items = items
+	}
+	for index := range response.Items {
+		item := &response.Items[index]
+		if strings.TrimSpace(item.ClientItemID) == "" {
+			item.ClientItemID = fmt.Sprintf("item_%03d", index+1)
+		}
+		if strings.TrimSpace(item.SourceQuote) == "" {
+			item.SourceQuote = item.CleanText
+		}
+		if strings.TrimSpace(item.Confidence) == "" {
+			item.Confidence = ConfidenceHigh
+		}
+		if strings.TrimSpace(item.StatementType) == "" {
+			item.StatementType = StatementTypeStatement
+		}
+	}
 }
 
 func routerNeedsDenseRetry(response RouterResponse, segments []string) bool {

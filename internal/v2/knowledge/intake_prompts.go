@@ -37,17 +37,26 @@ OUTPUT FORMAT:
     "clean_text": "",
     "handling_note": ""
   },
-  "items": [
-    {
-      "client_item_id": "item_001",
-      "source_quote": "",
-      "clean_text": "",
-      "statement_type": "statement",
-      "target_document": "company_card",
-      "routing_reason": "",
-      "confidence": "high"
-    }
-  ],
+  "documents": {
+    "company_card": [
+      {
+        "text": "",
+        "statement_type": "statement",
+        "source_segment_index": 1
+      }
+    ],
+    "current_business_model": [],
+    "clients_and_demand": [],
+    "market_and_competition": [],
+    "business_economics": [],
+    "resources_and_competencies": [],
+    "past_experience_and_evidence": [],
+    "strategic_challenge": [],
+    "opportunities_and_distractions": [],
+    "constraints_and_non_negotiables": [],
+    "strategic_refusals": [],
+    "leader_intent_and_risk_profile": []
+  },
   "unrouted_fragments": [
     {
       "source_quote": "",
@@ -59,7 +68,7 @@ OUTPUT FORMAT:
 Conversation intent:
 - Detect user intent addressed to the AI interface and do not store it as business knowledge.
 - Examples: "хочу поговорить про маркетинг", "почему ты это спрашиваешь?", "не хочу отвечать", "это раздражает", "дай совет", "давай про команду".
-- If the message contains both intent and business knowledge, split them: intent goes to conversation_intent, business knowledge goes to items.
+- If the message contains both intent and business knowledge, split them: intent goes to conversation_intent, business knowledge goes to documents.
 - Allowed intent_type values: "business_context", "topic_change_request", "advice_request", "clarification_request", "refusal", "frustration", "why_question", "unknown", "other".
 
 Allowed statement_type values: "statement", "hypothesis", "unknown".
@@ -94,7 +103,12 @@ Routing precision:
 - "Not a task manager / not CRM / not Notion" must not go to company_card. Route it to market_and_competition if it mainly compares alternatives, or strategic_refusals if it describes a conscious product boundary.
 - "Do not scatter focus / not распыляться / understand which tasks deserve attention" must not go to company_card. Route it to strategic_challenge or business_economics depending on whether the emphasis is pain or value.
 
-Allowed confidence values: "low", "medium", "high". Confidence means routing confidence, not truth confidence.
+Fact object rules:
+- text: one clear reusable business knowledge element in Russian.
+- statement_type: "statement", "hypothesis", or "unknown".
+- source_segment_index: optional 1-based index from source_segments when the fact mainly comes from one segment. Omit if unclear.
+- confidence is optional. Use it only when routing confidence is low or medium. Omit it for normal high-confidence facts.
+- Do not output client_item_id, source_quote, target_document, routing_reason, or high confidence for every fact.
 
 Extraction quality:
 - Extract all distinct strategically useful information from the current input that belongs in the Knowledge Base.
@@ -120,7 +134,20 @@ If raw_text contains no useful business context, return:
     "clean_text": "",
     "handling_note": ""
   },
-  "items": [],
+  "documents": {
+    "company_card": [],
+    "current_business_model": [],
+    "clients_and_demand": [],
+    "market_and_competition": [],
+    "business_economics": [],
+    "resources_and_competencies": [],
+    "past_experience_and_evidence": [],
+    "strategic_challenge": [],
+    "opportunities_and_distractions": [],
+    "constraints_and_non_negotiables": [],
+    "strategic_refusals": [],
+    "leader_intent_and_risk_profile": []
+  },
   "unrouted_fragments": []
 }
 

@@ -73,8 +73,16 @@ type IntakeConfirmResponse struct {
 type RouterResponse struct {
 	InputSummary       string                   `json:"input_summary"`
 	ConversationIntent ConversationIntent       `json:"conversation_intent"`
-	Items              []RouterItem             `json:"items"`
+	Documents          map[string][]RouterFact  `json:"documents,omitempty"`
+	Items              []RouterItem             `json:"items,omitempty"`
 	UnroutedFragments  []RouterUnroutedFragment `json:"unrouted_fragments"`
+}
+
+type RouterFact struct {
+	Text               string `json:"text"`
+	StatementType      string `json:"statement_type"`
+	SourceSegmentIndex int    `json:"source_segment_index,omitempty"`
+	Confidence         string `json:"confidence,omitempty"`
 }
 
 type RouterItem struct {
