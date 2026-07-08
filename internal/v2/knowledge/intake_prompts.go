@@ -81,13 +81,14 @@ Target documents:
 Routing precision:
 - Customer segment, audience, buyer/user description, and customer situation -> clients_and_demand.
 - Product category, company identity, and high-level product/service identity -> company_card.
+- Keep company_card narrow: company identity, product identity, stage, size, geography, current state. Do not put product workflow, modules, value delivery, customer pain, or internal resources into company_card.
 - If one sentence combines product identity and target audience, split it into separate items: product identity -> company_card, target audience -> clients_and_demand.
-- How the product works, paid access model, workflow, modules, capabilities, and value delivery mechanism -> current_business_model.
+- How the product works, paid access model, workflow, modules, cabinet/screens/features, AI chat, knowledge base, tasks, capabilities, and value delivery mechanism -> current_business_model.
 - Revenue model, pricing, paid access, subscription, monetization, economic value, or resource/time value -> business_economics.
 - Alternatives and differentiation versus CRM, task managers, Notion, spreadsheets, agencies, consultants, or other competitors -> market_and_competition.
 - Statements about what the product/business intentionally is not, conscious boundaries, or refused categories -> strategic_refusals.
 - Core customer/business pain such as chaos, lack of focus, scattered tasks, wrong priorities, bottleneck, or wasted effort -> strategic_challenge.
-- Capabilities/assets/team/AI technology as internal strengths -> resources_and_competencies.
+- Capabilities, assets, team, small team, speed of development, product expertise, AI technology, and understanding of customer pain as internal strengths -> resources_and_competencies.
 - "Not a task manager / not CRM / not Notion" must not go to company_card. Route it to market_and_competition if it mainly compares alternatives, or strategic_refusals if it describes a conscious product boundary.
 - "Do not scatter focus / not распыляться / understand which tasks deserve attention" must not go to company_card. Route it to strategic_challenge or business_economics depending on whether the emphasis is pain or value.
 
