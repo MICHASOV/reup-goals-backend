@@ -18,7 +18,7 @@ const (
 	DefaultDetailLevel             = "normal"
 	DefaultStructurePreference     = "free_dialogue"
 	DefaultFrustrationSensitivity  = "medium"
-	StrategicMemoryPromptVersion   = "strategic_director_test3_one_prompt_v0_2_0"
+	StrategicMemoryPromptVersion   = "strategic_director_test3_one_prompt_v0_2_1"
 	DefaultStrategicDocumentStatus = "draft"
 )
 
