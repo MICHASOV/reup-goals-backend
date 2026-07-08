@@ -84,17 +84,17 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		return MessageResponse{}, err
 	}
 
-	contextPack := buildDirectorConversationInput(workspaceID, message, state, relevantMessages)
+	contextPack := buildAuditorConversationInput(workspaceID, message, state, relevantMessages)
 
 	rawInput, _ := json.Marshal(contextPack)
 	started := time.Now()
-	assistantMessage, err := s.ai.GenerateText(ctx, strategicDirectorPrompt, "Контекст для ответа в формате JSON:\n"+string(rawInput))
+	assistantMessage, err := s.ai.GenerateText(ctx, businessAuditorPrompt, "Контекст для ответа в формате JSON:\n"+string(rawInput))
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.store.LogAIRun(ctx, workspaceID, "strategic_director_one_prompt", s.ai.Model, StrategicMemoryPromptVersion, duration, "failed", err.Error())
+		s.store.LogAIRun(ctx, workspaceID, "business_auditor_one_prompt", s.ai.Model, StrategicMemoryPromptVersion, duration, "failed", err.Error())
 		return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
 	}
-	s.store.LogAIRun(ctx, workspaceID, "strategic_director_one_prompt", s.ai.Model, StrategicMemoryPromptVersion, duration, "success", "")
+	s.store.LogAIRun(ctx, workspaceID, "business_auditor_one_prompt", s.ai.Model, StrategicMemoryPromptVersion, duration, "success", "")
 
 	assistantMessage = cleanAssistantMessage(assistantMessage)
 	assistantMessage = fallbackAssistantReply(assistantMessage)
@@ -156,7 +156,7 @@ func (s *Service) fallbackMessageResponse(ctx context.Context, workspaceID int, 
 	}
 }
 
-func buildDirectorConversationInput(workspaceID int, message string, state StateResponse, relevantMessages []ConversationMessage) map[string]any {
+func buildAuditorConversationInput(workspaceID int, message string, state StateResponse, relevantMessages []ConversationMessage) map[string]any {
 	return map[string]any{
 		"workspace_id":            workspaceID,
 		"latest_user_message":     message,
@@ -170,7 +170,7 @@ func buildDirectorConversationInput(workspaceID int, message string, state State
 			"current_dialogue_focus": state.DialogueFocus,
 		},
 		"communication_style": state.CommunicationProfile,
-		"answer_goal":         "Reply to the latest user message as the AI strategic director responsible for collecting and updating business context. Use the known context as memory, not as a questionnaire.",
+		"answer_goal":         "Reply to the latest user message as the AI business auditor responsible for collecting, clarifying, checking, and updating business context. Use the known context as memory, not as a questionnaire.",
 	}
 }
 
