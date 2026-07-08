@@ -332,11 +332,13 @@ func (s *IntakeService) reconcileDocuments(ctx context.Context, workspaceID int,
 
 func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID int, rawText string) (json.RawMessage, RouterResponse, error) {
 	segments := sourceSegments(rawText)
+	inputMode := intakeInputMode(rawText, segments)
 	input, err := json.Marshal(map[string]any{
 		"raw_text":           rawText,
 		"source_segments":    segments,
 		"workspace_language": "ru",
-		"source_type":        "manual_text",
+		"source_type":        inputMode,
+		"input_mode":         inputMode,
 	})
 	if err != nil {
 		return nil, RouterResponse{}, err
@@ -344,7 +346,7 @@ func (s *IntakeService) callRouter(ctx context.Context, workspaceID int, userID 
 
 	routerPrompt := routerSystemPrompt
 	routerModule := "knowledge_intake_router"
-	denseInput := len(segments) >= 8
+	denseInput := inputMode == "large_document" || len(segments) >= 8
 	if denseInput {
 		routerPrompt += denseExtractionRetryInstruction
 		routerModule = "knowledge_intake_router_dense"
@@ -487,6 +489,13 @@ func sourceSegments(rawText string) []string {
 	return segments
 }
 
+func intakeInputMode(rawText string, segments []string) string {
+	if len([]rune(rawText)) >= 6000 || len(segments) >= 12 {
+		return "large_document"
+	}
+	return "chat_message"
+}
+
 func classifyIntentOnlyMessage(rawText string) ConversationIntent {
 	normalized := normalizeForSignalSearch(rawText)
 	if normalized == "" {
@@ -496,6 +505,9 @@ func classifyIntentOnlyMessage(rawText string) ConversationIntent {
 	intentType := ""
 	handlingNote := ""
 	switch {
+	case messageRequestsFullQuestionChecklist(rawText, ConversationIntent{}):
+		intentType = "full_question_checklist_request"
+		handlingNote = "Пользователь просит полный список вопросов, чтобы ответить отдельным документом."
 	case containsAny(normalized, []string{"почему", "зачем"}) && containsAny(normalized, []string{"спрашива", "вопрос"}):
 		intentType = "why_question"
 		handlingNote = "Пользователь спрашивает, почему задан вопрос."

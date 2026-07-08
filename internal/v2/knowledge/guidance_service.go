@@ -167,7 +167,7 @@ func (s *GuidanceService) finalizeGuidanceResponse(ctx context.Context, workspac
 		if err != nil {
 			return GuidancePreviewResponse{}, err
 		}
-		reportGuidanceProgress(report, "profile_refresh", "Обновил документы. Теперь пересобираю короткий профиль компании и проверяю, достаточно ли контекста для следующего шага.", map[string]any{
+		reportGuidanceProgress(report, "profile_refresh", "Обновил документы. Сейчас подготовлю следующий вопрос, а пересчёт готовности и красивые документы обновлю фоном.", map[string]any{
 			"applied_changes":   result.AppliedChanges,
 			"updated_documents": result.UpdatedDocuments,
 		})
@@ -175,7 +175,7 @@ func (s *GuidanceService) finalizeGuidanceResponse(ctx context.Context, workspac
 		if err != nil {
 			return GuidancePreviewResponse{}, err
 		}
-		readiness, err := s.store.RecalculateKnowledgeBaseReadiness(ctx, workspaceID)
+		readiness, err := s.store.KnowledgeBaseReadiness(ctx, workspaceID)
 		if err != nil {
 			return GuidancePreviewResponse{}, err
 		}
@@ -202,7 +202,7 @@ func (s *GuidanceService) finalizeGuidanceResponse(ctx context.Context, workspac
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
-	readiness, err := s.store.RecalculateKnowledgeBaseReadiness(ctx, workspaceID)
+	readiness, err := s.store.KnowledgeBaseReadiness(ctx, workspaceID)
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
@@ -286,7 +286,7 @@ func (s *GuidanceService) Confirm(ctx context.Context, workspaceID int, userID i
 		return GuidanceConfirmResponse{}, err
 	}
 
-	readiness, err := s.store.RecalculateKnowledgeBaseReadiness(ctx, workspaceID)
+	readiness, err := s.store.KnowledgeBaseReadiness(ctx, workspaceID)
 	if err != nil {
 		return GuidanceConfirmResponse{}, err
 	}
@@ -643,7 +643,7 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 		"documents":                              documents,
 		"latest_user_message":                    latestMessage,
 		"conversation_intent":                    defaultConversationIntent(intent),
-		"user_requested_full_question_checklist": userRequestedFullQuestionChecklist(latestMessage, intent),
+		"user_requested_full_question_checklist": messageRequestsFullQuestionChecklist(latestMessage, intent),
 		"recent_question_history":                history,
 	}
 	raw, err := s.generateLoggedJSON(ctx, workspaceID, userID, "strategic_guidance_question_planner", GuidancePlannerVersion, strategicGuidanceQuestionPlannerPrompt, input)
@@ -703,55 +703,6 @@ func normalizeQuestionBlockQuestions(questions []string, guidanceStatus string) 
 		return []string{"Что ещё важно знать о бизнесе прямо сейчас, чтобы лучше понимать контекст компании?"}
 	}
 	return result
-}
-
-func userRequestedFullQuestionChecklist(latestMessage string, intent ConversationIntent) bool {
-	text := strings.ToLower(strings.Join([]string{
-		latestMessage,
-		intent.RawText,
-		intent.CleanText,
-		intent.HandlingNote,
-	}, " "))
-	if strings.TrimSpace(text) == "" {
-		return false
-	}
-	fullListSignals := []string{
-		"полный список",
-		"весь список",
-		"список всех",
-		"все вопросы",
-		"всех вопросов",
-		"чеклист",
-		"checklist",
-		"опросник",
-		"анкета",
-	}
-	scopeSignals := []string{
-		"по всем блокам",
-		"по всем документам",
-		"базы знаний",
-		"базе знаний",
-		"все блоки",
-		"все документы",
-		"одним документом",
-		"одним большим сообщением",
-	}
-	hasFullListSignal := false
-	for _, signal := range fullListSignals {
-		if strings.Contains(text, signal) {
-			hasFullListSignal = true
-			break
-		}
-	}
-	if !hasFullListSignal {
-		return false
-	}
-	for _, signal := range scopeSignals {
-		if strings.Contains(text, signal) {
-			return true
-		}
-	}
-	return strings.Contains(text, "сразу") || strings.Contains(text, "загруз")
 }
 
 func (s *GuidanceService) documentsForPlanner(ctx context.Context, workspaceID int) ([]map[string]any, error) {

@@ -36,7 +36,7 @@ const (
 	ConflictOptionExisting = "existing"
 	ConflictOptionNew      = "new"
 
-	RouterPromptVersion     = "knowledge_intake_router_v1_6_sparse_routing"
+	RouterPromptVersion     = "knowledge_intake_router_v1_7_pipeline_modes"
 	ReconcilerPromptVersion = "knowledge_document_reconciler_v1"
 	DocumentComposerVersion = "knowledge_document_composer_v1"
 
