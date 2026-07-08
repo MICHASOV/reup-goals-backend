@@ -167,6 +167,9 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	if len(documentInputs) == 0 && (len(aiResponse.Claims) > 0 || len(aiResponse.Snapshot) > 0) {
 		documentInputs = fallbackStrategicDocuments(workspaceID, aiResponse.BusinessStage, aiResponse.Snapshot)
 	}
+	if len(documentInputs) == 0 && len([]rune(message)) >= 120 {
+		documentInputs = fallbackStrategicDocumentFromMessage(workspaceID, message)
+	}
 	documentsUpdated, err := s.store.UpsertDocuments(ctx, workspaceID, documentInputs)
 	if err != nil {
 		return MessageResponse{}, err

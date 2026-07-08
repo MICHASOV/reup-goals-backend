@@ -275,6 +275,28 @@ func fallbackStrategicDocuments(workspaceID int, businessStage string, snapshot 
 	}
 }
 
+func fallbackStrategicDocumentFromMessage(workspaceID int, message string) []StrategicDocument {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+	return []StrategicDocument{
+		{
+			WorkspaceID:  workspaceID,
+			DocumentType: "company_snapshot",
+			Title:        "Первичный контекст компании",
+			Markdown: strings.Join([]string{
+				"# Первичный контекст компании",
+				"## Исходное описание",
+				message,
+				"## Статус",
+				"Этот документ создан как первичная фиксация бизнес-контекста. Его нужно уточнять через дальнейший диалог со стратегическим директором.",
+			}, "\n\n"),
+			Status: DefaultStrategicDocumentStatus,
+		},
+	}
+}
+
 func businessStageLabel(value string) string {
 	switch normalizeBusinessStage(value) {
 	case "idea":
