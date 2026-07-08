@@ -41,21 +41,9 @@ OUTPUT FORMAT:
     "company_card": [
       {
         "text": "",
-        "statement_type": "statement",
-        "source_segment_index": 1
+        "statement_type": "statement"
       }
-    ],
-    "current_business_model": [],
-    "clients_and_demand": [],
-    "market_and_competition": [],
-    "business_economics": [],
-    "resources_and_competencies": [],
-    "past_experience_and_evidence": [],
-    "strategic_challenge": [],
-    "opportunities_and_distractions": [],
-    "constraints_and_non_negotiables": [],
-    "strategic_refusals": [],
-    "leader_intent_and_risk_profile": []
+    ]
   },
   "unrouted_fragments": [
     {
@@ -106,9 +94,10 @@ Routing precision:
 Fact object rules:
 - text: one clear reusable business knowledge element in Russian.
 - statement_type: "statement", "hypothesis", or "unknown".
-- source_segment_index: optional 1-based index from source_segments when the fact mainly comes from one segment. Omit if unclear.
+- source_segment_index is optional. Omit it in normal cases. Use it only when one short source segment is the exact origin and the index is obvious.
 - confidence is optional. Use it only when routing confidence is low or medium. Omit it for normal high-confidence facts.
 - Do not output client_item_id, source_quote, target_document, routing_reason, or high confidence for every fact.
+- In documents, include only document keys that contain at least one fact. Do not output empty arrays for documents without facts.
 
 Extraction quality:
 - Extract all distinct strategically useful information from the current input that belongs in the Knowledge Base.
@@ -134,20 +123,7 @@ If raw_text contains no useful business context, return:
     "clean_text": "",
     "handling_note": ""
   },
-  "documents": {
-    "company_card": [],
-    "current_business_model": [],
-    "clients_and_demand": [],
-    "market_and_competition": [],
-    "business_economics": [],
-    "resources_and_competencies": [],
-    "past_experience_and_evidence": [],
-    "strategic_challenge": [],
-    "opportunities_and_distractions": [],
-    "constraints_and_non_negotiables": [],
-    "strategic_refusals": [],
-    "leader_intent_and_risk_profile": []
-  },
+  "documents": {},
   "unrouted_fragments": []
 }
 
