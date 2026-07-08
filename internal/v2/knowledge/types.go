@@ -36,13 +36,13 @@ const (
 	ConflictOptionExisting = "existing"
 	ConflictOptionNew      = "new"
 
-	RouterPromptVersion     = "knowledge_intake_router_v1_7_pipeline_modes"
+	RouterPromptVersion     = "knowledge_intake_router_v1_8_attached_context"
 	ReconcilerPromptVersion = "knowledge_document_reconciler_v1"
-	DocumentComposerVersion = "knowledge_document_composer_v2_structured_detail_preserving"
+	DocumentComposerVersion = "knowledge_document_composer_v2_1_internal_voice"
 
 	CompanyProfileCollectorVersion = "company_profile_collector_v2_compact"
 	DocumentReadinessVersion       = "document_readiness_preflight_v1"
-	GuidancePlannerVersion         = "strategic_guidance_question_planner_v3_4_full_checklist_intent"
+	GuidancePlannerVersion         = "strategic_guidance_question_planner_v3_5_conversational"
 
 	ProfileStatusRed    = "red"
 	ProfileStatusOrange = "orange"

@@ -27,6 +27,9 @@ INPUT FORMAT:
   "source_type": "manual_text"
 }
 
+If raw_text contains service context blocks such as "Контекст выбранного документа (не сохранять как новые факты)" and "Сообщение пользователя", treat the context block only as background for understanding the user's edit or question.
+Never extract new document items from service context blocks. Extract business knowledge only from the actual user message and from explicit user-provided edits.
+
 OUTPUT FORMAT:
 {
   "input_summary": "",
@@ -274,7 +277,10 @@ Core rules:
 - Keep statements, hypotheses, plans, and unknowns clearly distinguishable.
 - Merge repeated meaning, but do not remove distinct details just to make the document shorter.
 - If facts conflict, keep both versions and mark the uncertainty instead of choosing one.
-- Write like an internal strategic memo: clear, calm, practical, not marketing copy.
+- Write like an internal company document created inside the company, not like an outside consultant describing the company from the side.
+- Use internal wording when natural: "мы", "наш продукт", "наша команда", "сейчас мы", "для нас важно".
+- Avoid detached third-person phrasing like "компания разрабатывает", "компания продаёт", "для компании важно" when the same meaning can be written internally.
+- Keep the tone clear, calm, practical, and working, not marketing copy.
 - Output JSON only.
 
 Input:
@@ -313,13 +319,14 @@ Document structure guide:
 - leader_intent_and_risk_profile: leader intent, desired future, motivation, risk tolerance, fears, personal constraints.
 
 Writing rules:
-- rendered_text is a connected working memo that summarizes the document without repeating every section verbatim.
+- rendered_text is a connected internal working memo that summarizes the document without repeating every section verbatim.
 - sections contain the detailed structured material. Preserve all useful distinct entries in sections.
 - Use as many sections and points as needed to keep distinct business meaning. Do not apply artificial limits.
 - Prefer compact points, but keep concrete details: numbers, examples, named segments, exact constraints, evidence, and important wording from the user.
 - If entries are sparse, write a short memo and one or two sections. Do not fill gaps.
 - If entries are dense, group them by meaning and keep enough detail for a reader to reconstruct the business context without opening raw entries.
 - Mention uncertainty explicitly with phrases like "гипотеза", "план", "неизвестно", "пока не подтверждено" when statement_type requires it.
+- If the company/product name is known, use it naturally, but keep the voice internal: "REUP.goals — наш AI-native SaaS..." is better than "REUP.goals — компания, которая...".
 - source_entry_ids must include every entry_id whose meaning appears in the output.
 - Do not mention entry ids inside rendered_text or section points.
 - Do not output markdown tables or text outside JSON.
