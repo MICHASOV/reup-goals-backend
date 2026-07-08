@@ -658,21 +658,19 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 	}
 	intendedDocuments, _ := json.Marshal(response.IntendedFocus.IntendedDocuments)
 	handledIntent, _ := json.Marshal(response.HandledUserIntent)
+	guidanceStatus := normalizeGuidanceStatus(response.GuidanceStatus)
 	block := GuidanceQuestionBlock{
 		Source:                  QuestionSourcePlanner,
-		GuidanceStatus:          response.GuidanceStatus,
+		GuidanceStatus:          guidanceStatus,
 		QuestionType:            response.QuestionType,
 		IntendedFocusSummary:    response.IntendedFocus.FocusSummary,
 		IntendedDocuments:       intendedDocuments,
 		SelectionReasonInternal: response.IntendedFocus.SelectionReasonInternal,
 		Title:                   response.QuestionBlock.Title,
 		Intro:                   response.QuestionBlock.Intro,
-		Questions:               normalizeQuestionBlockQuestions(response.QuestionBlock.Questions, response.GuidanceStatus),
+		Questions:               normalizeQuestionBlockQuestions(response.QuestionBlock.Questions, guidanceStatus),
 		HandledUserIntent:       handledIntent,
 		Confidence:              response.Confidence,
-	}
-	if block.GuidanceStatus == "" {
-		block.GuidanceStatus = GuidanceStatusAskNextQuestion
 	}
 	if block.QuestionType == "" {
 		block.QuestionType = "narrow_deepening"
@@ -681,6 +679,17 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 		block.Title = "Уточним бизнес-контекст"
 	}
 	return s.store.CreateQuestionBlock(ctx, workspaceID, block)
+}
+
+func normalizeGuidanceStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case GuidanceStatusAskNextQuestion:
+		return GuidanceStatusAskNextQuestion
+	case GuidanceStatusSuggestStrategyTransition:
+		return GuidanceStatusSuggestStrategyTransition
+	default:
+		return GuidanceStatusAskNextQuestion
+	}
 }
 
 func normalizeQuestionBlockQuestions(questions []string, guidanceStatus string) []string {
