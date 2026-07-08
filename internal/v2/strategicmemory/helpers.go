@@ -15,7 +15,29 @@ func cleanAssistantMessage(value string) string {
 		"є", "е",
 		"ł", "л",
 	)
-	return replacer.Replace(value)
+	value = replacer.Replace(value)
+	return stripInternalAssistantSections(value)
+}
+
+func stripInternalAssistantSections(value string) string {
+	paragraphs := strings.Split(value, "\n\n")
+	kept := make([]string, 0, len(paragraphs))
+	for _, paragraph := range paragraphs {
+		trimmed := strings.TrimSpace(paragraph)
+		lower := strings.ToLower(trimmed)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(lower, "обновляю ") ||
+			strings.Contains(lower, "обновляю бизнес snapshot") ||
+			strings.Contains(lower, "обновляю исследовательский план") ||
+			strings.Contains(lower, "обновляю профиль коммуникации") ||
+			strings.Contains(lower, "обновляю стратегическую память") {
+			continue
+		}
+		kept = append(kept, trimmed)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n\n"))
 }
 
 func defaultString(value string, fallback string) string {
