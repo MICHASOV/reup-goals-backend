@@ -66,6 +66,88 @@ func (s *Store) IntakeSessionStatus(ctx context.Context, workspaceID int, sessio
 	return status, err
 }
 
+func (s *Store) IntakeSessionState(ctx context.Context, workspaceID int, sessionID int) (status string, errorMessage string, result *GuidancePreviewResponse, err error) {
+	var resultRaw []byte
+	err = s.dbx.QueryRowContext(ctx, `
+		SELECT status, error_message, COALESCE(guidance_result_json, 'null'::jsonb)
+		FROM v2_knowledge_intake_sessions
+		WHERE workspace_id=$1 AND id=$2
+	`, workspaceID, sessionID).Scan(&status, &errorMessage, &resultRaw)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if len(resultRaw) > 0 && string(resultRaw) != "null" {
+		var parsed GuidancePreviewResponse
+		if err := json.Unmarshal(resultRaw, &parsed); err != nil {
+			return "", "", nil, err
+		}
+		result = &parsed
+	}
+	return status, errorMessage, result, nil
+}
+
+func (s *Store) SaveGuidanceResult(ctx context.Context, workspaceID int, sessionID int, response GuidancePreviewResponse) error {
+	raw, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	_, err = s.dbx.ExecContext(ctx, `
+		UPDATE v2_knowledge_intake_sessions
+		SET guidance_result_json=$1::jsonb, updated_at=NOW()
+		WHERE workspace_id=$2 AND id=$3
+	`, string(raw), workspaceID, sessionID)
+	return err
+}
+
+func (s *Store) AddProgressEvent(ctx context.Context, workspaceID int, sessionID int, stage string, message string, details any) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+	detailsRaw := []byte("{}")
+	if details != nil {
+		raw, err := json.Marshal(details)
+		if err != nil {
+			return err
+		}
+		detailsRaw = raw
+	}
+	_, err := s.dbx.ExecContext(ctx, `
+		INSERT INTO v2_knowledge_intake_progress_events (
+			session_id, workspace_id, stage, message, details_json
+		)
+		VALUES ($1, $2, $3, $4, $5::jsonb)
+	`, sessionID, workspaceID, strings.TrimSpace(stage), message, string(detailsRaw))
+	return err
+}
+
+func (s *Store) ProgressEvents(ctx context.Context, workspaceID int, sessionID int) ([]IntakeProgressEvent, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT id, stage, message, details_json, created_at
+		FROM v2_knowledge_intake_progress_events
+		WHERE workspace_id=$1 AND session_id=$2
+		ORDER BY id ASC
+	`, workspaceID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := []IntakeProgressEvent{}
+	for rows.Next() {
+		var event IntakeProgressEvent
+		var details []byte
+		if err := rows.Scan(&event.ID, &event.Stage, &event.Message, &details, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		if len(details) > 0 && string(details) != "{}" {
+			event.Details = json.RawMessage(details)
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
 func (s *Store) MarkSessionFailed(ctx context.Context, sessionID int, message string, raw json.RawMessage) error {
 	_, err := s.dbx.ExecContext(ctx, `
 		UPDATE v2_knowledge_intake_sessions

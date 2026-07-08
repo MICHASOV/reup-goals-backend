@@ -624,6 +624,26 @@ var migrations = []Migration{
 				ON v2_knowledge_document_views (workspace_id, document_type);
 		`,
 	},
+	{
+		ID: "20260708_010_v2_knowledge_intake_progress",
+		SQL: `
+			ALTER TABLE v2_knowledge_intake_sessions
+				ADD COLUMN IF NOT EXISTS guidance_result_json JSONB NULL;
+
+			CREATE TABLE IF NOT EXISTS v2_knowledge_intake_progress_events (
+				id SERIAL PRIMARY KEY,
+				session_id INTEGER NOT NULL REFERENCES v2_knowledge_intake_sessions(id) ON DELETE CASCADE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				stage TEXT NOT NULL,
+				message TEXT NOT NULL,
+				details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_knowledge_intake_progress_session
+				ON v2_knowledge_intake_progress_events (workspace_id, session_id, id);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

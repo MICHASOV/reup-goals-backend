@@ -84,6 +84,28 @@ type GuidancePreviewResponse struct {
 	AppliedChanges     *IntakeConfirmResponse   `json:"applied_changes,omitempty"`
 }
 
+type IntakeProgressEvent struct {
+	ID        int             `json:"id"`
+	Stage     string          `json:"stage"`
+	Message   string          `json:"message"`
+	Details   json.RawMessage `json:"details,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+type GuidanceAnswerStartResponse struct {
+	SessionID int                   `json:"session_id"`
+	Status    string                `json:"status"`
+	Events    []IntakeProgressEvent `json:"events"`
+}
+
+type GuidanceSessionStatusResponse struct {
+	SessionID int                      `json:"session_id"`
+	Status    string                   `json:"status"`
+	Error     string                   `json:"error,omitempty"`
+	Events    []IntakeProgressEvent    `json:"events"`
+	Result    *GuidancePreviewResponse `json:"result,omitempty"`
+}
+
 type GuidanceConfirmResponse struct {
 	Status                   string                 `json:"status"`
 	Mode                     string                 `json:"mode"`

@@ -17,6 +17,8 @@ type IntakeService struct {
 	ai    *ai.OpenAIClient
 }
 
+type IntakeProgressReporter func(stage string, message string, details any)
+
 type pendingReconciliation struct {
 	documentID   int
 	documentType string
@@ -137,8 +139,15 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 		return GuidancePreviewResponse{}, err
 	}
 
+	return s.BuildGuidancePreviewForSession(ctx, workspaceID, userID, sessionID, rawText, nil)
+}
+
+func (s *IntakeService) BuildGuidancePreviewForSession(ctx context.Context, workspaceID int, userID int, sessionID int, rawText string, report IntakeProgressReporter) (GuidancePreviewResponse, error) {
 	intentOnly := classifyIntentOnlyMessage(rawText)
 	if intentOnly.HasIntent {
+		emitIntakeProgress(report, "conversation_intent", "Понял, здесь скорее реплика по ходу разговора, а не новые факты для документов. Сразу подберу следующий вопрос.", map[string]any{
+			"intent_type": intentOnly.IntentType,
+		})
 		if err := s.store.MarkSessionPreviewReady(ctx, sessionID); err != nil {
 			return GuidancePreviewResponse{}, err
 		}
@@ -153,11 +162,15 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 		}, nil
 	}
 
+	emitIntakeProgress(report, "input_reading", initialIntakeProgressMessage(rawText), nil)
+
 	documents, err := s.store.EnsureDocuments(ctx, workspaceID)
 	if err != nil {
 		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), nil)
 		return GuidancePreviewResponse{}, err
 	}
+
+	emitIntakeProgress(report, "fact_extraction", "Отделяю факты от комментариев и смотрю, в какие разделы Базы знаний их лучше положить.", nil)
 
 	routerRaw, routerResponse, err := s.callRouter(ctx, workspaceID, userID, rawText)
 	if err != nil {
@@ -171,6 +184,7 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 	if err := s.store.SaveRouterResponse(ctx, sessionID, routerResponse, routerRaw); err != nil {
 		return GuidancePreviewResponse{}, err
 	}
+	emitIntakeProgress(report, "fact_extraction_done", routerProgressMessage(routerResponse), routerProgressDetails(routerResponse))
 
 	intent := defaultConversationIntent(routerResponse.ConversationIntent)
 	response := GuidancePreviewResponse{
@@ -184,6 +198,7 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 	}
 
 	if len(routerResponse.Items) == 0 {
+		emitIntakeProgress(report, "no_document_updates", "Не вижу новых безопасных фактов для записи. Сохраню ход разговора и перейду к следующему уточнению.", nil)
 		if err := s.store.MarkSessionPreviewReady(ctx, sessionID); err != nil {
 			return GuidancePreviewResponse{}, err
 		}
@@ -199,6 +214,8 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
 		return GuidancePreviewResponse{}, err
 	}
+
+	emitIntakeProgress(report, "document_routing", documentRoutingProgressMessage(itemsByDocument), documentRoutingDetails(itemsByDocument))
 
 	pending := []pendingReconciliation{}
 	for documentType, items := range itemsByDocument {
@@ -232,6 +249,12 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 		})
 	}
 
+	if len(pending) > 0 {
+		emitIntakeProgress(report, "document_reconciliation", "Сверяю новые факты с тем, что уже записано, чтобы не плодить дубли и не потерять важные уточнения.", map[string]any{
+			"documents": len(pending),
+		})
+	}
+
 	reconciled, err := s.reconcileDocuments(ctx, workspaceID, userID, pending)
 	if err != nil {
 		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), routerRaw)
@@ -258,7 +281,15 @@ func (s *IntakeService) BuildGuidancePreview(ctx context.Context, workspaceID in
 	if len(response.UpdatedDocuments) == 0 && len(response.Conflicts) == 0 {
 		response.Status = "no_preview_needed"
 	}
+	emitIntakeProgress(report, "document_updates_ready", previewProgressMessage(response), nil)
 	return response, nil
+}
+
+func emitIntakeProgress(report IntakeProgressReporter, stage string, message string, details any) {
+	if report == nil {
+		return
+	}
+	report(stage, message, details)
 }
 
 func (s *IntakeService) reconcileDocuments(ctx context.Context, workspaceID int, userID int, pending []pendingReconciliation) ([]reconciledDocument, error) {

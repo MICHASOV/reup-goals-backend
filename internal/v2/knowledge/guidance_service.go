@@ -63,7 +63,94 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
+	return s.finalizeGuidanceResponse(ctx, workspaceID, userID, rawText, response, nil)
+}
+
+func (s *GuidanceService) StartAnswer(ctx context.Context, workspaceID int, userID int, questionBlockID int, rawText string) (GuidanceAnswerStartResponse, error) {
+	if err := s.store.ValidateActiveQuestionBlock(ctx, workspaceID, questionBlockID); err != nil {
+		return GuidanceAnswerStartResponse{}, err
+	}
+	sessionID, err := s.store.CreateIntakeSession(ctx, workspaceID, userID, rawText)
+	if err != nil {
+		return GuidanceAnswerStartResponse{}, err
+	}
+	if err := s.store.AttachQuestionBlockToSession(ctx, sessionID, questionBlockID); err != nil {
+		return GuidanceAnswerStartResponse{}, err
+	}
+	if err := s.store.AddProgressEvent(ctx, workspaceID, sessionID, "accepted", "Принял ответ. Сейчас разберу его как стратегический контекст, а не как анкету по полям.", nil); err != nil {
+		return GuidanceAnswerStartResponse{}, err
+	}
+
+	go s.processGuidanceSession(workspaceID, userID, sessionID, rawText)
+
+	events, err := s.store.ProgressEvents(ctx, workspaceID, sessionID)
+	if err != nil {
+		return GuidanceAnswerStartResponse{}, err
+	}
+	return GuidanceAnswerStartResponse{
+		SessionID: sessionID,
+		Status:    SessionProcessing,
+		Events:    events,
+	}, nil
+}
+
+func (s *GuidanceService) SessionStatus(ctx context.Context, workspaceID int, sessionID int) (GuidanceSessionStatusResponse, error) {
+	status, errorMessage, result, err := s.store.IntakeSessionState(ctx, workspaceID, sessionID)
+	if err != nil {
+		return GuidanceSessionStatusResponse{}, err
+	}
+	events, err := s.store.ProgressEvents(ctx, workspaceID, sessionID)
+	if err != nil {
+		return GuidanceSessionStatusResponse{}, err
+	}
+	if status == SessionFailed && strings.TrimSpace(errorMessage) == "" {
+		errorMessage = "processing_failed"
+	}
+	return GuidanceSessionStatusResponse{
+		SessionID: sessionID,
+		Status:    status,
+		Error:     errorMessage,
+		Events:    events,
+		Result:    result,
+	}, nil
+}
+
+func (s *GuidanceService) processGuidanceSession(workspaceID int, userID int, sessionID int, rawText string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	report := func(stage string, message string, details any) {
+		if err := s.store.AddProgressEvent(ctx, workspaceID, sessionID, stage, message, details); err != nil {
+			log.Printf("[WARN] knowledge guidance progress failed workspace_id=%d session_id=%d stage=%s: %v", workspaceID, sessionID, stage, err)
+		}
+	}
+
+	response, err := s.intake.BuildGuidancePreviewForSession(ctx, workspaceID, userID, sessionID, rawText, report)
+	if err == nil {
+		response, err = s.finalizeGuidanceResponse(ctx, workspaceID, userID, rawText, response, report)
+	}
+	if err != nil {
+		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), nil)
+		report("failed", "Не смог безопасно завершить разбор. Лучше повторить ответ чуть короче или отправить его частями.", map[string]any{
+			"error": err.Error(),
+		})
+		log.Printf("[WARN] async knowledge guidance failed workspace_id=%d user_id=%d session_id=%d: %v", workspaceID, userID, sessionID, err)
+		return
+	}
+	if err := s.store.SaveGuidanceResult(ctx, workspaceID, sessionID, response); err != nil {
+		_ = s.store.MarkSessionFailed(ctx, sessionID, err.Error(), nil)
+		report("failed", "Разбор завершился, но не удалось сохранить результат сессии. Повторите запрос.", map[string]any{
+			"error": err.Error(),
+		})
+		log.Printf("[WARN] async knowledge guidance result save failed workspace_id=%d user_id=%d session_id=%d: %v", workspaceID, userID, sessionID, err)
+		return
+	}
+	report("completed", "Готово. Я обновил документы и подготовил следующий вопрос.", nil)
+}
+
+func (s *GuidanceService) finalizeGuidanceResponse(ctx context.Context, workspaceID int, userID int, rawText string, response GuidancePreviewResponse, report IntakeProgressReporter) (GuidancePreviewResponse, error) {
 	if response.Status != "no_preview_needed" {
+		reportGuidanceProgress(report, "applying_updates", "Фиксирую безопасные изменения в Базе знаний. Спорные места не буду записывать как факт без уточнения.", nil)
 		result, err := s.store.AutoApplyIntake(ctx, workspaceID, userID, response.SessionID)
 		if err != nil {
 			return GuidancePreviewResponse{}, err
@@ -80,6 +167,10 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 		if err != nil {
 			return GuidancePreviewResponse{}, err
 		}
+		reportGuidanceProgress(report, "profile_refresh", "Обновил документы. Теперь пересобираю короткий профиль компании и проверяю, достаточно ли контекста для следующего шага.", map[string]any{
+			"applied_changes":   result.AppliedChanges,
+			"updated_documents": result.UpdatedDocuments,
+		})
 		profile, err := s.refreshFirstGateProfileFromConfirmedAnswer(ctx, workspaceID, rawText, companyCardChanged)
 		if err != nil {
 			return GuidancePreviewResponse{}, err
@@ -88,6 +179,10 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 		if err != nil {
 			return GuidancePreviewResponse{}, err
 		}
+		reportGuidanceProgress(report, "question_planning", "Смотрю на обновлённый контекст и выбираю следующий вопрос там, где сейчас больше всего неопределённости.", map[string]any{
+			"readiness_score":  readiness.OverallScore,
+			"readiness_status": readiness.OverallStatus,
+		})
 		next, err := s.nextQuestionAfterAutoApply(ctx, workspaceID, userID, profile, readiness, response.ConversationIntent, rawText, response.Conflicts)
 		if err != nil {
 			return GuidancePreviewResponse{}, err
@@ -95,6 +190,10 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 		response.Status = SessionConfirmed
 		response.NextQuestionBlock = &next
 		response.AppliedChanges = &result
+		reportGuidanceProgress(report, "question_ready", nextQuestionProgressMessage(next), map[string]any{
+			"question_block_id": next.ID,
+			"question_type":     next.QuestionType,
+		})
 		s.refreshKnowledgeAsync(workspaceID, userID, rawText, response.ConversationIntent, affected, companyCardChanged)
 		return response, nil
 	}
@@ -107,13 +206,28 @@ func (s *GuidanceService) PreviewAnswer(ctx context.Context, workspaceID int, us
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
+	reportGuidanceProgress(report, "question_planning", "В этом ответе нет новых документов для обновления, поэтому сразу выбираю следующий полезный вопрос.", map[string]any{
+		"readiness_score":  readiness.OverallScore,
+		"readiness_status": readiness.OverallStatus,
+	})
 	next, err := s.createNextQuestion(ctx, workspaceID, userID, profile, readiness, response.ConversationIntent, rawText)
 	if err != nil {
 		return GuidancePreviewResponse{}, err
 	}
 	response.NextQuestionBlock = &next
+	reportGuidanceProgress(report, "question_ready", nextQuestionProgressMessage(next), map[string]any{
+		"question_block_id": next.ID,
+		"question_type":     next.QuestionType,
+	})
 	s.refreshKnowledgeAsync(workspaceID, userID, rawText, response.ConversationIntent, nil, false)
 	return response, nil
+}
+
+func reportGuidanceProgress(report IntakeProgressReporter, stage string, message string, details any) {
+	if report == nil {
+		return
+	}
+	report(stage, message, details)
 }
 
 func (s *GuidanceService) Confirm(ctx context.Context, workspaceID int, userID int, sessionID int, acceptedPatchIDs []int, resolutions []conflictResolution) (GuidanceConfirmResponse, error) {

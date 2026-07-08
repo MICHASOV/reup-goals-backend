@@ -157,6 +157,18 @@ func (h *Handler) handleGuidance(w http.ResponseWriter, r *http.Request, workspa
 			return
 		}
 		h.guidancePreview(w, r, workspaceID)
+	case "start":
+		if r.Method != http.MethodPost {
+			api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		h.guidanceStart(w, r, workspaceID)
+	case "status":
+		if r.Method != http.MethodGet {
+			api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		h.guidanceSessionStatus(w, r, workspaceID, sessionID)
 	case "confirm":
 		if r.Method != http.MethodPost {
 			api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -300,6 +312,58 @@ func (h *Handler) guidancePreview(w http.ResponseWriter, r *http.Request, worksp
 		}
 		log.Printf("[WARN] knowledge guidance preview failed workspace_id=%d user_id=%d: %v", workspaceID, uid, err)
 		api.WriteError(w, http.StatusBadGateway, "knowledge_guidance_preview_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) guidanceStart(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	uid, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		api.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var body struct {
+		QuestionBlockID int    `json:"question_block_id"`
+		RawText         string `json:"raw_text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	rawText := strings.TrimSpace(body.RawText)
+	if len([]rune(rawText)) < 2 {
+		api.WriteError(w, http.StatusUnprocessableEntity, "raw_text_too_short")
+		return
+	}
+	if len([]rune(rawText)) > 50000 {
+		api.WriteError(w, http.StatusRequestEntityTooLarge, "raw_text_too_long")
+		return
+	}
+
+	response, err := h.guidance.StartAnswer(r.Context(), workspaceID, uid, body.QuestionBlockID, rawText)
+	if err != nil {
+		if err.Error() == "invalid_question_block" {
+			api.WriteError(w, http.StatusConflict, "invalid_question_block")
+			return
+		}
+		log.Printf("[WARN] knowledge guidance start failed workspace_id=%d user_id=%d: %v", workspaceID, uid, err)
+		api.WriteError(w, http.StatusBadGateway, "knowledge_guidance_start_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusAccepted, response)
+}
+
+func (h *Handler) guidanceSessionStatus(w http.ResponseWriter, r *http.Request, workspaceID int, sessionID int) {
+	response, err := h.guidance.SessionStatus(r.Context(), workspaceID, sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusNotFound, "session_not_found")
+		return
+	}
+	if err != nil {
+		log.Printf("[WARN] knowledge guidance status failed workspace_id=%d session_id=%d: %v", workspaceID, sessionID, err)
+		api.WriteError(w, http.StatusInternalServerError, "knowledge_guidance_status_failed")
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, response)
@@ -547,6 +611,24 @@ func guidancePath(path string) (workspaceID int, action string, sessionID int, o
 			return 0, "", 0, false
 		}
 		return id, "preview", 0, true
+	}
+	if len(parts) == 5 && parts[1] == "knowledge" && parts[2] == "guidance" && parts[3] == "answer" && parts[4] == "start" {
+		id, err := strconv.Atoi(parts[0])
+		if err != nil || id <= 0 {
+			return 0, "", 0, false
+		}
+		return id, "start", 0, true
+	}
+	if len(parts) == 5 && parts[1] == "knowledge" && parts[2] == "guidance" && parts[3] == "sessions" {
+		id, err := strconv.Atoi(parts[0])
+		if err != nil || id <= 0 {
+			return 0, "", 0, false
+		}
+		sid, err := strconv.Atoi(parts[4])
+		if err != nil || sid <= 0 {
+			return 0, "", 0, false
+		}
+		return id, "status", sid, true
 	}
 	if len(parts) == 6 && parts[1] == "knowledge" && parts[2] == "guidance" && parts[3] == "sessions" {
 		id, err := strconv.Atoi(parts[0])
