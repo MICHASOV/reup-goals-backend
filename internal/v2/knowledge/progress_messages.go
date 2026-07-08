@@ -102,7 +102,7 @@ func previewProgressMessage(response GuidancePreviewResponse) string {
 }
 
 func nextQuestionProgressMessage(block GuidanceQuestionBlock) string {
-	focus := strings.TrimSpace(block.IntendedFocusSummary)
+	focus := strings.TrimRight(strings.TrimSpace(block.IntendedFocusSummary), ".!?")
 	if focus != "" {
 		return fmt.Sprintf("Следующий вопрос строю вокруг зоны: %s.", focus)
 	}
