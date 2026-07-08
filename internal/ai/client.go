@@ -158,7 +158,7 @@ func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, lan
 	if strings.TrimSpace(language) != "" {
 		_ = writer.WriteField("language", strings.TrimSpace(language))
 	}
-	_ = writer.WriteField("prompt", "Речь пользователя о бизнесе, стратегии, целях, клиентах, продажах, метриках, проблемах и ограничениях. Сохраняй смысл, термины и стиль речи.")
+	_ = writer.WriteField("prompt", "Русская разговорная речь пользователя о бизнесе, продукте, стратегии, целях, клиентах, продажах, маркетинге, CRM, SaaS, метриках, LTV, CAC, юнит-экономике, проблемах и ограничениях. Сохраняй смысл, термины, названия компаний и стиль речи.")
 
 	if err := writer.Close(); err != nil {
 		return "", fmt.Errorf("multipart close error: %w", err)
