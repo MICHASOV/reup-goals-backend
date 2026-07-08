@@ -164,6 +164,9 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 			SourceClaimIDs: json.RawMessage(`[]`),
 		})
 	}
+	if len(documentInputs) == 0 && (len(aiResponse.Claims) > 0 || len(aiResponse.Snapshot) > 0) {
+		documentInputs = fallbackStrategicDocuments(workspaceID, aiResponse.BusinessStage, aiResponse.Snapshot)
+	}
 	documentsUpdated, err := s.store.UpsertDocuments(ctx, workspaceID, documentInputs)
 	if err != nil {
 		return MessageResponse{}, err

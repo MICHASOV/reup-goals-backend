@@ -1,6 +1,9 @@
 package strategicmemory
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 func cleanText(value string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
@@ -132,4 +135,111 @@ func documentTitle(documentType string) string {
 	default:
 		return "Стратегическая память"
 	}
+}
+
+func fallbackStrategicDocuments(workspaceID int, businessStage string, snapshot map[string]any) []StrategicDocument {
+	if len(snapshot) == 0 {
+		return nil
+	}
+
+	sections := []string{
+		"# Текущий снимок компании",
+	}
+	if businessStage != "" && businessStage != "unknown" {
+		sections = append(sections, fmt.Sprintf("**Стадия:** %s", businessStage))
+	}
+	appendTextSection := func(title string, key string) {
+		if value := snapshotText(snapshot, key); value != "" {
+			sections = append(sections, fmt.Sprintf("## %s\n%s", title, value))
+		}
+	}
+	appendListSection := func(title string, key string) {
+		items := snapshotList(snapshot, key)
+		if len(items) == 0 {
+			return
+		}
+		lines := make([]string, 0, len(items))
+		for _, item := range items {
+			lines = append(lines, "- "+item)
+		}
+		sections = append(sections, fmt.Sprintf("## %s\n%s", title, strings.Join(lines, "\n")))
+	}
+
+	appendTextSection("Короткое описание", "short_summary")
+	appendTextSection("Продукт", "product")
+	appendTextSection("Клиент", "customer")
+	appendTextSection("Спрос", "demand")
+	appendTextSection("Рынок", "market")
+	appendTextSection("Экономика", "economics")
+	appendTextSection("Команда", "team")
+	appendListSection("Ограничения", "constraints")
+	appendListSection("Доказательства", "evidence")
+	appendListSection("Гипотезы", "hypotheses")
+	appendListSection("Неизвестности", "unknowns")
+	appendTextSection("Следующий фокус исследования", "next_research_focus")
+
+	if len(sections) <= 1 {
+		return nil
+	}
+	return []StrategicDocument{
+		{
+			WorkspaceID:  workspaceID,
+			DocumentType: "company_snapshot",
+			Title:        "Текущий снимок компании",
+			Markdown:     strings.Join(sections, "\n\n"),
+			Status:       DefaultStrategicDocumentStatus,
+		},
+	}
+}
+
+func snapshotText(snapshot map[string]any, key string) string {
+	value, ok := snapshot[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+func snapshotList(snapshot map[string]any, key string) []string {
+	value, ok := snapshot[key]
+	if !ok || value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case []string:
+		return compactStrings(typed)
+	case []any:
+		items := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text := strings.TrimSpace(fmt.Sprint(item))
+			if text != "" && text != "<nil>" {
+				items = append(items, text)
+			}
+		}
+		return items
+	default:
+		text := strings.TrimSpace(fmt.Sprint(typed))
+		if text == "" || text == "<nil>" {
+			return nil
+		}
+		return []string{text}
+	}
+}
+
+func compactStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
 }
