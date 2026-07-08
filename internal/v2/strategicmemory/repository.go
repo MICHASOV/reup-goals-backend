@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"unicode"
 )
 
 type Store struct {
@@ -40,6 +42,49 @@ func (s *Store) RecentMessages(ctx context.Context, workspaceID int, limit int) 
 		ORDER BY created_at DESC, id DESC
 		LIMIT $4
 	`, workspaceID, SourceTypeAssistantMessage, SourceTypeUserMessage, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	messages := []ConversationMessage{}
+	for rows.Next() {
+		var item ConversationMessage
+		if err := rows.Scan(&item.ID, &item.Role, &item.Content, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, item)
+	}
+	reverseMessages(messages)
+	return messages, rows.Err()
+}
+
+func (s *Store) RelevantMessages(ctx context.Context, workspaceID int, query string, limit int) ([]ConversationMessage, error) {
+	terms := searchTerms(query, 8)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+
+	args := []any{workspaceID, SourceTypeAssistantMessage, SourceTypeUserMessage}
+	clauses := make([]string, 0, len(terms))
+	for _, term := range terms {
+		args = append(args, "%"+strings.ToLower(term)+"%")
+		clauses = append(clauses, fmt.Sprintf("LOWER(content) LIKE $%d", len(args)))
+	}
+	args = append(args, limit)
+
+	rows, err := s.dbx.QueryContext(ctx, fmt.Sprintf(`
+		SELECT id,
+			CASE WHEN source_type=$2 THEN 'assistant' ELSE 'user' END AS role,
+			content,
+			created_at
+		FROM strategic_raw_sources
+		WHERE workspace_id=$1
+			AND source_type IN ($2, $3)
+			AND (%s)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $%d
+	`, strings.Join(clauses, " OR "), len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -551,6 +596,31 @@ func reverseMessages(items []ConversationMessage) {
 	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
 		items[i], items[j] = items[j], items[i]
 	}
+}
+
+func searchTerms(value string, limit int) []string {
+	stop := map[string]bool{
+		"что": true, "как": true, "это": true, "или": true, "для": true, "про": true,
+		"там": true, "тут": true, "уже": true, "пока": true, "если": true, "надо": true,
+		"нужно": true, "есть": true, "нет": true, "мне": true, "тебе": true, "меня": true,
+		"your": true, "with": true, "from": true, "this": true, "that": true,
+	}
+	seen := map[string]bool{}
+	result := []string{}
+	for _, raw := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		word := strings.TrimSpace(raw)
+		if len([]rune(word)) < 4 || stop[word] || seen[word] {
+			continue
+		}
+		seen[word] = true
+		result = append(result, word)
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result
 }
 
 func claimKey(value string) string {

@@ -88,7 +88,7 @@ type responsesRequest struct {
 	Model           string                 `json:"model"`
 	Input           string                 `json:"input"`
 	Instructions    string                 `json:"instructions"`
-	Text            map[string]interface{} `json:"text"`
+	Text            map[string]interface{} `json:"text,omitempty"`
 	MaxOutputTokens int                    `json:"max_output_tokens,omitempty"`
 }
 
@@ -112,29 +112,38 @@ func (c *OpenAIClient) EvaluateTask(
 }
 
 func (c *OpenAIClient) GenerateJSON(ctx context.Context, instructions string, input string) (json.RawMessage, error) {
+	text, err := c.generateResponseText(ctx, instructions, "Return valid JSON only.\n\nInput JSON:\n"+input, map[string]interface{}{
+		"format": map[string]string{
+			"type": "json_object",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(text), nil
+}
+
+func (c *OpenAIClient) GenerateText(ctx context.Context, instructions string, input string) (string, error) {
+	return c.generateResponseText(ctx, instructions, input, nil)
+}
+
+func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions string, input string, textFormat map[string]interface{}) (string, error) {
 	httpClient, err := c.newHTTPClient()
 	if err != nil {
-		return nil, fmt.Errorf("proxy init error: %w", err)
+		return "", fmt.Errorf("proxy init error: %w", err)
 	}
 
-	jsonInput := "Return valid JSON only.\n\nInput JSON:\n" + input
-
-	// ❗ Правильный формат Responses API (Dec 2025)
 	reqBody := responsesRequest{
 		Model:           c.Model,
-		Input:           jsonInput,
+		Input:           input,
 		Instructions:    instructions,
 		MaxOutputTokens: c.MaxOutputTokens,
-		Text: map[string]interface{}{
-			"format": map[string]string{
-				"type": "json_object",
-			},
-		},
+		Text:            textFormat,
 	}
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshal error: %w", err)
+		return "", fmt.Errorf("marshal error: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(
@@ -144,7 +153,7 @@ func (c *OpenAIClient) GenerateJSON(ctx context.Context, instructions string, in
 		bytes.NewBuffer(body),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("request error: %w", err)
+		return "", fmt.Errorf("request error: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
@@ -152,27 +161,27 @@ func (c *OpenAIClient) GenerateJSON(ctx context.Context, instructions string, in
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http error: %w", err)
+		return "", fmt.Errorf("http error: %w", err)
 	}
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
+		return "", fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
 	}
 
 	var parsed responsesResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
+		return "", fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
 	}
 
 	if len(parsed.Output) == 0 ||
 		len(parsed.Output[0].Content) == 0 ||
 		parsed.Output[0].Content[0].Text == "" {
 
-		return nil, fmt.Errorf("empty model output")
+		return "", fmt.Errorf("empty model output")
 	}
 
-	return json.RawMessage(parsed.Output[0].Content[0].Text), nil
+	return strings.TrimSpace(parsed.Output[0].Content[0].Text), nil
 }
