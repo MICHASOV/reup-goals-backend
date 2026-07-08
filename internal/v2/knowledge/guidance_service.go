@@ -636,14 +636,15 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 		return GuidanceQuestionBlock{}, err
 	}
 	input := map[string]any{
-		"workspace_id":             fmt.Sprintf("%d", workspaceID),
-		"output_language":          "ru",
-		"company_profile":          profile,
-		"knowledge_base_readiness": readiness,
-		"documents":                documents,
-		"latest_user_message":      latestMessage,
-		"conversation_intent":      defaultConversationIntent(intent),
-		"recent_question_history":  history,
+		"workspace_id":                           fmt.Sprintf("%d", workspaceID),
+		"output_language":                        "ru",
+		"company_profile":                        profile,
+		"knowledge_base_readiness":               readiness,
+		"documents":                              documents,
+		"latest_user_message":                    latestMessage,
+		"conversation_intent":                    defaultConversationIntent(intent),
+		"user_requested_full_question_checklist": userRequestedFullQuestionChecklist(latestMessage, intent),
+		"recent_question_history":                history,
 	}
 	raw, err := s.generateLoggedJSON(ctx, workspaceID, userID, "strategic_guidance_question_planner", GuidancePlannerVersion, strategicGuidanceQuestionPlannerPrompt, input)
 	if err != nil {
@@ -702,6 +703,55 @@ func normalizeQuestionBlockQuestions(questions []string, guidanceStatus string) 
 		return []string{"Что ещё важно знать о бизнесе прямо сейчас, чтобы лучше понимать контекст компании?"}
 	}
 	return result
+}
+
+func userRequestedFullQuestionChecklist(latestMessage string, intent ConversationIntent) bool {
+	text := strings.ToLower(strings.Join([]string{
+		latestMessage,
+		intent.RawText,
+		intent.CleanText,
+		intent.HandlingNote,
+	}, " "))
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	fullListSignals := []string{
+		"полный список",
+		"весь список",
+		"список всех",
+		"все вопросы",
+		"всех вопросов",
+		"чеклист",
+		"checklist",
+		"опросник",
+		"анкета",
+	}
+	scopeSignals := []string{
+		"по всем блокам",
+		"по всем документам",
+		"базы знаний",
+		"базе знаний",
+		"все блоки",
+		"все документы",
+		"одним документом",
+		"одним большим сообщением",
+	}
+	hasFullListSignal := false
+	for _, signal := range fullListSignals {
+		if strings.Contains(text, signal) {
+			hasFullListSignal = true
+			break
+		}
+	}
+	if !hasFullListSignal {
+		return false
+	}
+	for _, signal := range scopeSignals {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	return strings.Contains(text, "сразу") || strings.Contains(text, "загруз")
 }
 
 func (s *GuidanceService) documentsForPlanner(ctx context.Context, workspaceID int) ([]map[string]any, error) {
