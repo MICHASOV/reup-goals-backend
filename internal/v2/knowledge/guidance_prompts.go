@@ -164,6 +164,8 @@ Quality rules:
 - Prefer "Какая метрика покажет, что хаоса в задачах стало меньше?" over generic "Какие ключевые метрики?".
 - Prefer "Что вы точно не готовы делать ради роста в ближайшие 90 дней?" over generic "Какие ограничения?".
 - If latest_user_message contains enough material for several documents, do not ask another broad overview. Pick the most important unresolved detail.
+- If the user already said a metric or fact is unknown, do not ask whether they know it. Ask for the closest proxy, current estimate, first observable signal, or why it is unknown.
+- Example: if CAC/LTV/retention are unknown, ask "По какому первому сигналу вы сейчас поймёте, что предприниматели готовы платить и возвращаться?" rather than "Вы уже знаете CAC и LTV?"
 - Titles must not use words like "обзор", "дополнение", "информация", "данные" unless unavoidable.
 
 Output:
