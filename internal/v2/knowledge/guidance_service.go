@@ -533,9 +533,6 @@ func conflictQuestions(conflicts []IntakeConflict) []string {
 			question = fmt.Sprintf("%s Было: «%s». Сейчас прозвучало: «%s». Что верно?", question, existingText, newText)
 		}
 		questions = append(questions, question)
-		if len(questions) >= 4 {
-			break
-		}
 	}
 	return questions
 }
@@ -700,9 +697,6 @@ func normalizeQuestionBlockQuestions(questions []string, guidanceStatus string) 
 			continue
 		}
 		result = append(result, question)
-		if len(result) >= 4 {
-			break
-		}
 	}
 	if len(result) == 0 && guidanceStatus != GuidanceStatusSuggestStrategyTransition {
 		return []string{"Что ещё важно знать о бизнесе прямо сейчас, чтобы лучше понимать контекст компании?"}
@@ -852,9 +846,6 @@ func firstGateQuestionsForAreas(areas []string) []string {
 		if question, ok := questionByArea[area]; ok {
 			questions = append(questions, question)
 		}
-	}
-	if len(questions) > 4 {
-		return questions[:4]
 	}
 	return questions
 }
