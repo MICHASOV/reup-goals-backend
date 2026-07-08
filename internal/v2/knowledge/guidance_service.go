@@ -664,8 +664,8 @@ func (s *GuidanceService) runPlanner(ctx context.Context, workspaceID int, userI
 		IntendedFocusSummary:    response.IntendedFocus.FocusSummary,
 		IntendedDocuments:       intendedDocuments,
 		SelectionReasonInternal: response.IntendedFocus.SelectionReasonInternal,
-		Title:                   response.QuestionBlock.Title,
-		Intro:                   normalizeQuestionBlockIntro(response.QuestionBlock.Intro),
+		Title:                   normalizeQuestionBlockTitle(response.QuestionBlock.Title, latestMessage, intent),
+		Intro:                   normalizeQuestionBlockIntro(response.QuestionBlock.Intro, latestMessage, intent),
 		Questions:               normalizeQuestionBlockQuestions(response.QuestionBlock.Questions, guidanceStatus),
 		HandledUserIntent:       handledIntent,
 		Confidence:              response.Confidence,
@@ -705,8 +705,33 @@ func normalizeQuestionBlockQuestions(questions []string, guidanceStatus string) 
 	return result
 }
 
-func normalizeQuestionBlockIntro(intro string) string {
+func normalizeQuestionBlockTitle(title string, latestMessage string, intent ConversationIntent) string {
+	title = strings.TrimSpace(title)
+	normalizedTitle := normalizeForSignalSearch(title)
+	if looksLikeStartSignal(normalizeForSignalSearch(latestMessage)) || intent.IntentType == "conversation_start" {
+		return "Да, начнём"
+	}
+	if title == "" || containsAny(normalizedTitle, []string{
+		"понимание",
+		"уточнение",
+		"запрос",
+		"информация",
+		"данные",
+		"текущее состояние",
+	}) {
+		return "Двигаемся дальше"
+	}
+	if len([]rune(title)) > 48 {
+		return "Двигаемся дальше"
+	}
+	return title
+}
+
+func normalizeQuestionBlockIntro(intro string, latestMessage string, intent ConversationIntent) string {
 	intro = strings.TrimSpace(intro)
+	if looksLikeStartSignal(normalizeForSignalSearch(latestMessage)) || intent.IntentType == "conversation_start" {
+		return "Привет. Да, давай начнём спокойно: сначала соберём базовый контекст компании, а дальше я буду уточнять только то, что реально влияет на стратегию."
+	}
 	if intro == "" || !strings.Contains(intro, "?") {
 		return intro
 	}

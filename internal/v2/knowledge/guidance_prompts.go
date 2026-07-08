@@ -206,7 +206,7 @@ Output:
     "questions": []
   },
   "handled_user_intent": {
-    "intent_type": "business_context | topic_change_request | advice_request | clarification_request | refusal | frustration | why_question | full_question_checklist_request | unknown | other",
+    "intent_type": "business_context | conversation_start | topic_change_request | advice_request | clarification_request | refusal | frustration | why_question | full_question_checklist_request | unknown | other",
     "handling_summary": ""
   },
   "confidence": "low | medium | high"

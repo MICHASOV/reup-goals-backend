@@ -508,6 +508,9 @@ func classifyIntentOnlyMessage(rawText string) ConversationIntent {
 	case messageRequestsFullQuestionChecklist(rawText, ConversationIntent{}):
 		intentType = "full_question_checklist_request"
 		handlingNote = "Пользователь просит полный список вопросов, чтобы ответить отдельным документом."
+	case looksLikeStartSignal(normalized):
+		intentType = "conversation_start"
+		handlingNote = "Пользователь здоровается или предлагает начать рабочую сессию."
 	case containsAny(normalized, []string{"почему", "зачем"}) && containsAny(normalized, []string{"спрашива", "вопрос"}):
 		intentType = "why_question"
 		handlingNote = "Пользователь спрашивает, почему задан вопрос."
@@ -556,6 +559,19 @@ func looksLikeBusinessContext(value string) bool {
 		}
 	}
 	return hits >= 2
+}
+
+func looksLikeStartSignal(value string) bool {
+	if value == "" {
+		return false
+	}
+	if containsAny(value, []string{"начнем", "начнём", "погнали", "стартуем", "давай начнем", "давай начнём"}) {
+		return true
+	}
+	if containsAny(value, []string{"привет", "халоу", "hello", "hi", "здарова", "здравствуй"}) && len([]rune(value)) <= 80 {
+		return true
+	}
+	return false
 }
 
 func (s *IntakeService) callReconciler(ctx context.Context, workspaceID int, userID int, definition DocumentDefinition, entries []documentEntry, items []proposedItemRecord) (json.RawMessage, ReconcilerResponse, error) {
