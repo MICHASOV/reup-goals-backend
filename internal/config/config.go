@@ -22,6 +22,7 @@ type Config struct {
 	OpenAIServiceMaxOutputTokens int
 	OpenAIIntakeMaxOutputTokens  int
 	OpenAIProxyURL               string
+	EnableAIBenchmark            bool
 
 	JWTSecret          string
 	CORSAllowedOrigins []string
@@ -130,6 +131,7 @@ func Load() *Config {
 		OpenAIServiceMaxOutputTokens: serviceMaxOutputTokens,
 		OpenAIIntakeMaxOutputTokens:  intakeMaxOutputTokens,
 		OpenAIProxyURL:               openAIProxyURL,
+		EnableAIBenchmark:            parseBoolEnv("ENABLE_AI_BENCHMARK"),
 
 		JWTSecret:          jwtSecret,
 		CORSAllowedOrigins: parseCSVEnv("CORS_ALLOWED_ORIGINS"),
@@ -196,6 +198,11 @@ func parseFloatEnv(key string, fallback float64) float64 {
 	}
 
 	return parsed
+}
+
+func parseBoolEnv(key string) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
 func (c *Config) ConnString() string {

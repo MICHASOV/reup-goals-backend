@@ -109,6 +109,9 @@ func main() {
 	mux.Handle("/api/v2/workspaces/", v2api.RequireAuth(jwtSecret, knowledgeHandler.WorkspaceKnowledge))
 	mux.Handle("/api/v2/strategic-director/messages", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/state", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
+	if cfg.EnableAIBenchmark {
+		mux.Handle("/api/v2/strategic-director/model-benchmark", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.ModelBenchmark))
+	}
 	mux.Handle("/api/v2/strategic-memory/snapshot", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/claims", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/agenda", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))

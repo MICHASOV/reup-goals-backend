@@ -65,6 +65,7 @@ jobs:
           OPENAI_SERVICE_MODEL=gpt-4.1-nano
           OPENAI_INTAKE_MODEL=gpt-4.1-mini
           OPENAI_SERVICE_MAX_OUTPUT_TOKENS=1800
+          ENABLE_AI_BENCHMARK=true
           OPENAI_PROXY_URL=direct
           UNISENDER_API_KEY=
           UNISENDER_BASE_URL=https://api.unisender.com/ru/api
@@ -100,6 +101,11 @@ jobs:
             sed -i 's/^OPENAI_SERVICE_MAX_OUTPUT_TOKENS=.*/OPENAI_SERVICE_MAX_OUTPUT_TOKENS=1800/' /etc/reup-goals-staging/backend.env
           else
             printf '\nOPENAI_SERVICE_MAX_OUTPUT_TOKENS=1800\n' >> /etc/reup-goals-staging/backend.env
+          fi
+          if grep -q '^ENABLE_AI_BENCHMARK=' /etc/reup-goals-staging/backend.env; then
+            sed -i 's/^ENABLE_AI_BENCHMARK=.*/ENABLE_AI_BENCHMARK=true/' /etc/reup-goals-staging/backend.env
+          else
+            printf '\nENABLE_AI_BENCHMARK=true\n' >> /etc/reup-goals-staging/backend.env
           fi
 
           cat >/etc/systemd/system/reup-goals-staging.service <<'SERVICE'

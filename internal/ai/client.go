@@ -99,10 +99,22 @@ type responsesResponse struct {
 			Text string `json:"text"`
 		} `json:"content"`
 	} `json:"output"`
+	Usage Usage `json:"usage"`
 }
 
 type transcriptionResponse struct {
 	Text string `json:"text"`
+}
+
+type Usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+type TextResult struct {
+	Text  string
+	Usage Usage
 }
 
 // ---------------------------------------------------------
@@ -117,7 +129,7 @@ func (c *OpenAIClient) EvaluateTask(
 }
 
 func (c *OpenAIClient) GenerateJSON(ctx context.Context, instructions string, input string) (json.RawMessage, error) {
-	text, err := c.generateResponseText(ctx, instructions, "Return valid JSON only.\n\nInput JSON:\n"+input, map[string]interface{}{
+	result, err := c.generateResponseText(ctx, instructions, "Return valid JSON only.\n\nInput JSON:\n"+input, map[string]interface{}{
 		"format": map[string]string{
 			"type": "json_object",
 		},
@@ -125,10 +137,18 @@ func (c *OpenAIClient) GenerateJSON(ctx context.Context, instructions string, in
 	if err != nil {
 		return nil, err
 	}
-	return json.RawMessage(text), nil
+	return json.RawMessage(result.Text), nil
 }
 
 func (c *OpenAIClient) GenerateText(ctx context.Context, instructions string, input string) (string, error) {
+	result, err := c.GenerateTextDetailed(ctx, instructions, input)
+	if err != nil {
+		return "", err
+	}
+	return result.Text, nil
+}
+
+func (c *OpenAIClient) GenerateTextDetailed(ctx context.Context, instructions string, input string) (TextResult, error) {
 	return c.generateResponseText(ctx, instructions, input, nil)
 }
 
@@ -211,10 +231,10 @@ func safeAudioFilename(filename string) string {
 	return name
 }
 
-func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions string, input string, textFormat map[string]interface{}) (string, error) {
+func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions string, input string, textFormat map[string]interface{}) (TextResult, error) {
 	httpClient, err := c.newHTTPClient()
 	if err != nil {
-		return "", fmt.Errorf("proxy init error: %w", err)
+		return TextResult{}, fmt.Errorf("proxy init error: %w", err)
 	}
 
 	reqBody := responsesRequest{
@@ -227,7 +247,7 @@ func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions st
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("marshal error: %w", err)
+		return TextResult{}, fmt.Errorf("marshal error: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(
@@ -237,7 +257,7 @@ func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions st
 		bytes.NewBuffer(body),
 	)
 	if err != nil {
-		return "", fmt.Errorf("request error: %w", err)
+		return TextResult{}, fmt.Errorf("request error: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
@@ -245,27 +265,30 @@ func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions st
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("http error: %w", err)
+		return TextResult{}, fmt.Errorf("http error: %w", err)
 	}
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
+		return TextResult{}, fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
 	}
 
 	var parsed responsesResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
+		return TextResult{}, fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
 	}
 
 	if len(parsed.Output) == 0 ||
 		len(parsed.Output[0].Content) == 0 ||
 		parsed.Output[0].Content[0].Text == "" {
 
-		return "", fmt.Errorf("empty model output")
+		return TextResult{}, fmt.Errorf("empty model output")
 	}
 
-	return strings.TrimSpace(parsed.Output[0].Content[0].Text), nil
+	return TextResult{
+		Text:  strings.TrimSpace(parsed.Output[0].Content[0].Text),
+		Usage: parsed.Usage,
+	}, nil
 }
