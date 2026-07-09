@@ -8,6 +8,7 @@ import (
 const (
 	SourceTypeUserMessage      = "user_message"
 	SourceTypeAssistantMessage = "assistant_message"
+	SourceTypeFileUpload       = "file_upload"
 
 	ConversationStateCollectingContext = "collecting_context"
 
@@ -18,7 +19,7 @@ const (
 	DefaultDetailLevel             = "normal"
 	DefaultStructurePreference     = "free_dialogue"
 	DefaultFrustrationSensitivity  = "medium"
-	StrategicMemoryPromptVersion   = "business_auditor_test3_one_prompt_v0_3_0"
+	StrategicMemoryPromptVersion   = "business_auditor_openai_native_v0_4_0"
 	DefaultStrategicDocumentStatus = "draft"
 )
 
@@ -107,6 +108,32 @@ type StrategicDocument struct {
 	GeneratedAt    time.Time       `json:"generated_at"`
 }
 
+type OpenAISession struct {
+	ID                 int       `json:"id"`
+	WorkspaceID        int       `json:"workspace_id"`
+	PreviousResponseID string    `json:"previous_response_id,omitempty"`
+	VectorStoreID      string    `json:"vector_store_id,omitempty"`
+	CompactThreshold   int       `json:"compact_threshold"`
+	PromptCacheKey     string    `json:"prompt_cache_key,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type StrategicFile struct {
+	ID            int       `json:"id"`
+	WorkspaceID   int       `json:"workspace_id"`
+	RawSourceID   *int      `json:"raw_source_id,omitempty"`
+	OpenAIFileID  string    `json:"openai_file_id"`
+	VectorStoreID string    `json:"vector_store_id"`
+	Filename      string    `json:"filename"`
+	ContentType   string    `json:"content_type"`
+	SizeBytes     int64     `json:"size_bytes"`
+	Status        string    `json:"status"`
+	Error         string    `json:"error,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 type StateResponse struct {
 	WorkspaceID          int                   `json:"workspace_id"`
 	Snapshot             *MemorySnapshot       `json:"snapshot,omitempty"`
@@ -116,6 +143,7 @@ type StateResponse struct {
 	DialogueFocus        DialogueFocus         `json:"dialogue_focus"`
 	Documents            []StrategicDocument   `json:"documents"`
 	RecentMessages       []ConversationMessage `json:"recent_messages"`
+	Files                []StrategicFile       `json:"files,omitempty"`
 }
 
 type ConversationMessage struct {
@@ -141,6 +169,12 @@ type MessageResponse struct {
 	Claims               []Claim              `json:"claims"`
 	CommunicationProfile CommunicationProfile `json:"communication_profile"`
 	DialogueFocus        DialogueFocus        `json:"dialogue_focus"`
+	OpenAIResponseID     string               `json:"openai_response_id,omitempty"`
+}
+
+type FileUploadResponse struct {
+	WorkspaceID int           `json:"workspace_id"`
+	File        StrategicFile `json:"file"`
 }
 
 type MemoryUpdates struct {

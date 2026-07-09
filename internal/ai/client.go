@@ -86,14 +86,19 @@ func isDirectProxy(value string) bool {
 // ---------------------------------------------------------
 
 type responsesRequest struct {
-	Model           string                 `json:"model"`
-	Input           string                 `json:"input"`
-	Instructions    string                 `json:"instructions"`
-	Text            map[string]interface{} `json:"text,omitempty"`
-	MaxOutputTokens int                    `json:"max_output_tokens,omitempty"`
+	Model              string                   `json:"model"`
+	Input              string                   `json:"input"`
+	Instructions       string                   `json:"instructions"`
+	Text               map[string]interface{}   `json:"text,omitempty"`
+	MaxOutputTokens    int                      `json:"max_output_tokens,omitempty"`
+	PreviousResponseID string                   `json:"previous_response_id,omitempty"`
+	ContextManagement  []map[string]interface{} `json:"context_management,omitempty"`
+	Tools              []map[string]interface{} `json:"tools,omitempty"`
+	PromptCacheKey     string                   `json:"prompt_cache_key,omitempty"`
 }
 
 type responsesResponse struct {
+	ID     string `json:"id"`
 	Output []struct {
 		Type    string `json:"type"`
 		Content []struct {
@@ -115,8 +120,42 @@ type Usage struct {
 }
 
 type TextResult struct {
-	Text  string
-	Usage Usage
+	Text       string
+	ResponseID string
+	Usage      Usage
+}
+
+type ResponseContextOptions struct {
+	PreviousResponseID   string
+	VectorStoreIDs       []string
+	CompactThreshold     int
+	PromptCacheKey       string
+	MaxFileSearchResults int
+}
+
+type OpenAIFile struct {
+	ID       string `json:"id"`
+	Filename string `json:"filename"`
+	Purpose  string `json:"purpose"`
+	Bytes    int64  `json:"bytes"`
+	Status   string `json:"status"`
+}
+
+type OpenAIVectorStore struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+type OpenAIVectorStoreFile struct {
+	ID            string `json:"id"`
+	FileID        string `json:"file_id"`
+	VectorStoreID string `json:"vector_store_id"`
+	Status        string `json:"status"`
+	LastError     struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"last_error"`
 }
 
 // ---------------------------------------------------------
@@ -151,7 +190,11 @@ func (c *OpenAIClient) GenerateText(ctx context.Context, instructions string, in
 }
 
 func (c *OpenAIClient) GenerateTextDetailed(ctx context.Context, instructions string, input string) (TextResult, error) {
-	return c.generateResponseText(ctx, instructions, input, nil)
+	return c.generateResponseTextWithOptions(ctx, instructions, input, nil, ResponseContextOptions{})
+}
+
+func (c *OpenAIClient) GenerateTextNative(ctx context.Context, instructions string, input string, options ResponseContextOptions) (TextResult, error) {
+	return c.generateResponseTextWithOptions(ctx, instructions, input, nil, options)
 }
 
 func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, language string, audio io.Reader) (string, error) {
@@ -234,17 +277,41 @@ func safeAudioFilename(filename string) string {
 }
 
 func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions string, input string, textFormat map[string]interface{}) (TextResult, error) {
+	return c.generateResponseTextWithOptions(ctx, instructions, input, textFormat, ResponseContextOptions{})
+}
+
+func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, instructions string, input string, textFormat map[string]interface{}, options ResponseContextOptions) (TextResult, error) {
 	httpClient, err := c.newHTTPClient()
 	if err != nil {
 		return TextResult{}, fmt.Errorf("proxy init error: %w", err)
 	}
 
 	reqBody := responsesRequest{
-		Model:           c.Model,
-		Input:           input,
-		Instructions:    instructions,
-		MaxOutputTokens: c.MaxOutputTokens,
-		Text:            textFormat,
+		Model:              c.Model,
+		Input:              input,
+		Instructions:       instructions,
+		MaxOutputTokens:    c.MaxOutputTokens,
+		Text:               textFormat,
+		PreviousResponseID: strings.TrimSpace(options.PreviousResponseID),
+		PromptCacheKey:     strings.TrimSpace(options.PromptCacheKey),
+	}
+	if options.CompactThreshold > 0 {
+		reqBody.ContextManagement = []map[string]interface{}{
+			{
+				"type":              "compaction",
+				"compact_threshold": options.CompactThreshold,
+			},
+		}
+	}
+	if len(options.VectorStoreIDs) > 0 {
+		fileSearchTool := map[string]interface{}{
+			"type":             "file_search",
+			"vector_store_ids": cleanStringList(options.VectorStoreIDs),
+		}
+		if options.MaxFileSearchResults > 0 {
+			fileSearchTool["max_num_results"] = options.MaxFileSearchResults
+		}
+		reqBody.Tools = []map[string]interface{}{fileSearchTool}
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -288,9 +355,183 @@ func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions st
 	}
 
 	return TextResult{
-		Text:  text,
-		Usage: parsed.Usage,
+		Text:       text,
+		ResponseID: parsed.ID,
+		Usage:      parsed.Usage,
 	}, nil
+}
+
+func (c *OpenAIClient) UploadFile(ctx context.Context, filename string, purpose string, file io.Reader) (OpenAIFile, error) {
+	httpClient, err := c.newHTTPClient()
+	if err != nil {
+		return OpenAIFile{}, fmt.Errorf("proxy init error: %w", err)
+	}
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	fileWriter, err := writer.CreateFormFile("file", safeAudioFilename(filename))
+	if err != nil {
+		return OpenAIFile{}, fmt.Errorf("multipart file error: %w", err)
+	}
+	if _, err := io.Copy(fileWriter, file); err != nil {
+		return OpenAIFile{}, fmt.Errorf("file copy error: %w", err)
+	}
+	if strings.TrimSpace(purpose) == "" {
+		purpose = "assistants"
+	}
+	_ = writer.WriteField("purpose", purpose)
+	if err := writer.Close(); err != nil {
+		return OpenAIFile{}, fmt.Errorf("multipart close error: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/files", body)
+	if err != nil {
+		return OpenAIFile{}, fmt.Errorf("request error: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return OpenAIFile{}, fmt.Errorf("http error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return OpenAIFile{}, fmt.Errorf("openai file upload error (%d): %s", resp.StatusCode, string(raw))
+	}
+
+	var parsed OpenAIFile
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return OpenAIFile{}, fmt.Errorf("file json decode error: %w | body: %s", err, string(raw))
+	}
+	if strings.TrimSpace(parsed.ID) == "" {
+		return OpenAIFile{}, fmt.Errorf("empty uploaded file id")
+	}
+	return parsed, nil
+}
+
+func (c *OpenAIClient) CreateVectorStore(ctx context.Context, name string) (OpenAIVectorStore, error) {
+	payload := map[string]string{"name": strings.TrimSpace(name)}
+	var parsed OpenAIVectorStore
+	if err := c.doJSON(ctx, http.MethodPost, "https://api.openai.com/v1/vector_stores", payload, &parsed); err != nil {
+		return OpenAIVectorStore{}, err
+	}
+	if strings.TrimSpace(parsed.ID) == "" {
+		return OpenAIVectorStore{}, fmt.Errorf("empty vector store id")
+	}
+	return parsed, nil
+}
+
+func (c *OpenAIClient) AddFileToVectorStore(ctx context.Context, vectorStoreID string, fileID string) (OpenAIVectorStoreFile, error) {
+	endpoint := "https://api.openai.com/v1/vector_stores/" + url.PathEscape(vectorStoreID) + "/files"
+	payload := map[string]string{"file_id": strings.TrimSpace(fileID)}
+	var parsed OpenAIVectorStoreFile
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, payload, &parsed); err != nil {
+		return OpenAIVectorStoreFile{}, err
+	}
+	return parsed, nil
+}
+
+func (c *OpenAIClient) ListVectorStoreFiles(ctx context.Context, vectorStoreID string) ([]OpenAIVectorStoreFile, error) {
+	endpoint := "https://api.openai.com/v1/vector_stores/" + url.PathEscape(vectorStoreID) + "/files"
+	var parsed struct {
+		Data []OpenAIVectorStoreFile `json:"data"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &parsed); err != nil {
+		return nil, err
+	}
+	return parsed.Data, nil
+}
+
+func (c *OpenAIClient) WaitVectorStoreFileReady(ctx context.Context, vectorStoreID string, vectorStoreFileID string, fileID string, timeout time.Duration) (OpenAIVectorStoreFile, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		files, err := c.ListVectorStoreFiles(ctx, vectorStoreID)
+		if err != nil {
+			return OpenAIVectorStoreFile{}, err
+		}
+		for _, item := range files {
+			if item.ID != vectorStoreFileID && item.ID != fileID && item.FileID != fileID {
+				continue
+			}
+			switch item.Status {
+			case "completed":
+				return item, nil
+			case "failed", "cancelled", "expired":
+				if strings.TrimSpace(item.LastError.Message) != "" {
+					return item, fmt.Errorf("vector store file %s: %s", item.Status, item.LastError.Message)
+				}
+				return item, fmt.Errorf("vector store file %s", item.Status)
+			}
+			if time.Now().After(deadline) {
+				return item, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return OpenAIVectorStoreFile{ID: vectorStoreFileID, FileID: fileID, VectorStoreID: vectorStoreID, Status: "processing"}, nil
+		}
+		select {
+		case <-ctx.Done():
+			return OpenAIVectorStoreFile{}, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (c *OpenAIClient) doJSON(ctx context.Context, method string, endpoint string, payload any, out any) error {
+	httpClient, err := c.newHTTPClient()
+	if err != nil {
+		return fmt.Errorf("proxy init error: %w", err)
+	}
+
+	var body io.Reader
+	if payload != nil {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("marshal error: %w", err)
+		}
+		body = bytes.NewBuffer(raw)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		return fmt.Errorf("request error: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("http error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
+	}
+	return nil
+}
+
+func cleanStringList(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func firstResponseText(parsed responsesResponse) string {

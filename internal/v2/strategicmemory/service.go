@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -11,12 +12,16 @@ import (
 )
 
 type Service struct {
-	store *Store
-	ai    *ai.OpenAIClient
+	store            *Store
+	ai               *ai.OpenAIClient
+	compactThreshold int
 }
 
-func NewService(store *Store, aiClient *ai.OpenAIClient) *Service {
-	return &Service{store: store, ai: aiClient}
+func NewService(store *Store, aiClient *ai.OpenAIClient, compactThreshold int) *Service {
+	if compactThreshold <= 0 {
+		compactThreshold = 120000
+	}
+	return &Service{store: store, ai: aiClient, compactThreshold: compactThreshold}
 }
 
 func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, error) {
@@ -48,6 +53,10 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 	if err != nil {
 		return StateResponse{}, err
 	}
+	files, err := s.store.ListFiles(ctx, workspaceID)
+	if err != nil {
+		return StateResponse{}, err
+	}
 
 	return StateResponse{
 		WorkspaceID:          workspaceID,
@@ -58,6 +67,7 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 		DialogueFocus:        focus,
 		Documents:            documents,
 		RecentMessages:       messages,
+		Files:                files,
 	}, nil
 }
 
@@ -79,29 +89,63 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	if err != nil {
 		return MessageResponse{}, err
 	}
+	session, err := s.store.OpenAISession(ctx, workspaceID, s.compactThreshold)
+	if err != nil {
+		return MessageResponse{}, err
+	}
 	relevantMessages, err := s.store.RelevantMessages(ctx, workspaceID, message, 8)
 	if err != nil {
 		return MessageResponse{}, err
 	}
 
-	contextPack := buildAuditorConversationInput(workspaceID, message, state, relevantMessages)
-
-	rawInput, _ := json.Marshal(contextPack)
+	input := message
+	if strings.TrimSpace(session.PreviousResponseID) == "" {
+		contextPack := buildAuditorConversationInput(workspaceID, message, state, relevantMessages)
+		rawInput, _ := json.Marshal(contextPack)
+		input = "Контекст для ответа в формате JSON:\n" + string(rawInput)
+	}
+	vectorStoreIDs := vectorStoreIDsFromSession(session)
 	started := time.Now()
-	assistantMessage, err := s.ai.GenerateText(ctx, businessAuditorPrompt, "Контекст для ответа в формате JSON:\n"+string(rawInput))
+	result, err := s.ai.GenerateTextNative(ctx, businessAuditorPrompt, input, ai.ResponseContextOptions{
+		PreviousResponseID:   session.PreviousResponseID,
+		VectorStoreIDs:       vectorStoreIDs,
+		CompactThreshold:     session.CompactThreshold,
+		PromptCacheKey:       session.PromptCacheKey,
+		MaxFileSearchResults: 8,
+	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.store.LogAIRun(ctx, workspaceID, "business_auditor_one_prompt", s.ai.Model, StrategicMemoryPromptVersion, duration, "failed", err.Error())
-		return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
+		if strings.TrimSpace(session.PreviousResponseID) != "" {
+			_ = s.store.UpdateOpenAIPreviousResponseID(ctx, workspaceID, "")
+			retryInput := buildFreshContextInput(workspaceID, message, state, relevantMessages)
+			started = time.Now()
+			result, err = s.ai.GenerateTextNative(ctx, businessAuditorPrompt, retryInput, ai.ResponseContextOptions{
+				VectorStoreIDs:       vectorStoreIDs,
+				CompactThreshold:     session.CompactThreshold,
+				PromptCacheKey:       session.PromptCacheKey,
+				MaxFileSearchResults: 8,
+			})
+			duration = time.Since(started).Milliseconds()
+		}
+		if err != nil {
+			s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.Model, StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
+			return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
+		}
 	}
-	s.store.LogAIRun(ctx, workspaceID, "business_auditor_one_prompt", s.ai.Model, StrategicMemoryPromptVersion, duration, "success", "")
+	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.Model, StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	if strings.TrimSpace(result.ResponseID) != "" {
+		_ = s.store.UpdateOpenAIPreviousResponseID(ctx, workspaceID, result.ResponseID)
+	}
 
-	assistantMessage = cleanAssistantMessage(assistantMessage)
+	assistantMessage := cleanAssistantMessage(result.Text)
 	assistantMessage = fallbackAssistantReply(assistantMessage)
 	_, _ = s.store.CreateRawSource(ctx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
-		"prompt_version": StrategicMemoryPromptVersion,
-		"mode":           "one_prompt",
-		"user_source_id": sourceID,
+		"prompt_version":       StrategicMemoryPromptVersion,
+		"mode":                 "openai_native",
+		"user_source_id":       sourceID,
+		"response_id":          result.ResponseID,
+		"previous_response_id": session.PreviousResponseID,
+		"vector_store_ids":     vectorStoreIDs,
 	})
 
 	finalState, err := s.State(ctx, workspaceID)
@@ -132,7 +176,71 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		Claims:               claims,
 		CommunicationProfile: finalState.CommunicationProfile,
 		DialogueFocus:        finalState.DialogueFocus,
+		OpenAIResponseID:     result.ResponseID,
 	}, nil
+}
+
+func (s *Service) UploadFile(ctx context.Context, workspaceID int, userID int, filename string, contentType string, sizeBytes int64, file io.Reader) (FileUploadResponse, error) {
+	session, err := s.store.OpenAISession(ctx, workspaceID, s.compactThreshold)
+	if err != nil {
+		return FileUploadResponse{}, err
+	}
+
+	vectorStoreID := strings.TrimSpace(session.VectorStoreID)
+	if vectorStoreID == "" {
+		vectorStore, err := s.ai.CreateVectorStore(ctx, fmt.Sprintf("reupgoals-workspace-%d-strategic-context", workspaceID))
+		if err != nil {
+			return FileUploadResponse{}, err
+		}
+		vectorStoreID = vectorStore.ID
+		if err := s.store.UpdateOpenAIVectorStoreID(ctx, workspaceID, vectorStoreID, s.compactThreshold); err != nil {
+			return FileUploadResponse{}, err
+		}
+	}
+
+	uploadedFile, err := s.ai.UploadFile(ctx, filename, "assistants", file)
+	if err != nil {
+		return FileUploadResponse{}, err
+	}
+
+	rawSourceID, err := s.store.CreateRawSource(ctx, workspaceID, &userID, SourceTypeFileUpload, "Uploaded file: "+filename, map[string]any{
+		"filename":        filename,
+		"content_type":    contentType,
+		"size_bytes":      sizeBytes,
+		"openai_file_id":  uploadedFile.ID,
+		"vector_store_id": vectorStoreID,
+	})
+	if err != nil {
+		return FileUploadResponse{}, err
+	}
+
+	vectorFile, err := s.ai.AddFileToVectorStore(ctx, vectorStoreID, uploadedFile.ID)
+	status := "uploaded"
+	errorText := ""
+	if err != nil {
+		status = "failed"
+		errorText = err.Error()
+	} else {
+		status = defaultString(vectorFile.Status, "processing")
+		vectorStoreFileID := defaultString(vectorFile.ID, uploadedFile.ID)
+		readyFile, waitErr := s.ai.WaitVectorStoreFileReady(ctx, vectorStoreID, vectorStoreFileID, uploadedFile.ID, 45*time.Second)
+		if waitErr != nil {
+			status = "failed"
+			errorText = waitErr.Error()
+		} else if strings.TrimSpace(readyFile.Status) != "" {
+			status = readyFile.Status
+		}
+	}
+
+	fileID := rawSourceID
+	item, saveErr := s.store.CreateStrategicFile(ctx, workspaceID, &fileID, uploadedFile.ID, vectorStoreID, filename, contentType, sizeBytes, status, errorText)
+	if saveErr != nil {
+		return FileUploadResponse{}, saveErr
+	}
+	if errorText != "" {
+		return FileUploadResponse{WorkspaceID: workspaceID, File: item}, fmt.Errorf("%s", errorText)
+	}
+	return FileUploadResponse{WorkspaceID: workspaceID, File: item}, nil
 }
 
 func (s *Service) fallbackMessageResponse(ctx context.Context, workspaceID int, state StateResponse, assistantMessage string) MessageResponse {
@@ -172,6 +280,19 @@ func buildAuditorConversationInput(workspaceID int, message string, state StateR
 		"communication_style": state.CommunicationProfile,
 		"answer_goal":         "Reply to the latest user message as the AI business auditor responsible for collecting, clarifying, checking, and updating business context. Use the known context as memory, not as a questionnaire.",
 	}
+}
+
+func buildFreshContextInput(workspaceID int, message string, state StateResponse, relevantMessages []ConversationMessage) string {
+	contextPack := buildAuditorConversationInput(workspaceID, message, state, relevantMessages)
+	rawInput, _ := json.Marshal(contextPack)
+	return "Контекст для ответа в формате JSON:\n" + string(rawInput)
+}
+
+func vectorStoreIDsFromSession(session OpenAISession) []string {
+	if strings.TrimSpace(session.VectorStoreID) == "" {
+		return nil
+	}
+	return []string{strings.TrimSpace(session.VectorStoreID)}
 }
 
 func (s *Service) Reset(ctx context.Context, workspaceID int) error {

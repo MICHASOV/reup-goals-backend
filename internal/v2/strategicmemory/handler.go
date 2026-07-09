@@ -12,17 +12,19 @@ import (
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
+const maxStrategicFileUploadBytes = 80 << 20
+
 type Handler struct {
 	store      *Store
 	service    *Service
 	workspaces *workspaces.Store
 }
 
-func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient) *Handler {
+func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *Handler {
 	store := NewStore(dbx)
 	return &Handler{
 		store:      store,
-		service:    NewService(store, aiClient),
+		service:    NewService(store, aiClient, compactThreshold),
 		workspaces: workspaces.NewStore(dbx),
 	}
 }
@@ -38,6 +40,8 @@ func (h *Handler) StrategicDirector(w http.ResponseWriter, r *http.Request) {
 		h.messages(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/strategic-director/state":
 		h.state(w, r, workspace.ID)
+	case r.URL.Path == "/api/v2/strategic-director/files":
+		h.files(w, r, workspace.ID)
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
 	}
@@ -93,6 +97,40 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request, workspaceID i
 			return
 		}
 		api.WriteError(w, http.StatusInternalServerError, "strategic_memory_message_failed")
+		return
+	}
+
+	api.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) files(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		api.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxStrategicFileUploadBytes)
+	if err := r.ParseMultipartForm(maxStrategicFileUploadBytes); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_file_upload")
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest, "file_required")
+		return
+	}
+	defer file.Close()
+
+	contentType := header.Header.Get("Content-Type")
+	response, err := h.service.UploadFile(r.Context(), workspaceID, userID, header.Filename, contentType, header.Size, file)
+	if err != nil {
+		api.WriteError(w, http.StatusBadGateway, "strategic_file_upload_failed")
 		return
 	}
 

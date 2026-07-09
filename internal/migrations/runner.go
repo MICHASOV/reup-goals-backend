@@ -774,6 +774,43 @@ var migrations = []Migration{
 			);
 		`,
 	},
+	{
+		ID: "20260709_013_strategic_openai_native_context",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS strategic_openai_sessions (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				previous_response_id TEXT NOT NULL DEFAULT '',
+				vector_store_id TEXT NOT NULL DEFAULT '',
+				compact_threshold INTEGER NOT NULL DEFAULT 120000,
+				prompt_cache_key TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id)
+			);
+
+			CREATE TABLE IF NOT EXISTS strategic_openai_files (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				raw_source_id INTEGER NULL REFERENCES strategic_raw_sources(id) ON DELETE SET NULL,
+				openai_file_id TEXT NOT NULL,
+				vector_store_id TEXT NOT NULL DEFAULT '',
+				filename TEXT NOT NULL DEFAULT '',
+				content_type TEXT NOT NULL DEFAULT '',
+				size_bytes BIGINT NOT NULL DEFAULT 0,
+				status TEXT NOT NULL DEFAULT 'uploaded',
+				error TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_openai_files_workspace
+				ON strategic_openai_files (workspace_id, created_at DESC);
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_openai_files_file_id
+				ON strategic_openai_files (openai_file_id);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

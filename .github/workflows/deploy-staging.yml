@@ -64,6 +64,7 @@ jobs:
           OPENAI_MODEL=gpt-4.1
           OPENAI_AUDITOR_MODEL=gpt-5.4
           OPENAI_AUDITOR_MAX_OUTPUT_TOKENS=1800
+          OPENAI_AUDITOR_COMPACT_THRESHOLD=120000
           OPENAI_SERVICE_MODEL=gpt-4.1-nano
           OPENAI_INTAKE_MODEL=gpt-4.1-mini
           OPENAI_SERVICE_MAX_OUTPUT_TOKENS=1800
@@ -98,6 +99,11 @@ jobs:
             sed -i 's/^OPENAI_AUDITOR_MAX_OUTPUT_TOKENS=.*/OPENAI_AUDITOR_MAX_OUTPUT_TOKENS=1800/' /etc/reup-goals-staging/backend.env
           else
             printf '\nOPENAI_AUDITOR_MAX_OUTPUT_TOKENS=1800\n' >> /etc/reup-goals-staging/backend.env
+          fi
+          if grep -q '^OPENAI_AUDITOR_COMPACT_THRESHOLD=' /etc/reup-goals-staging/backend.env; then
+            sed -i 's/^OPENAI_AUDITOR_COMPACT_THRESHOLD=.*/OPENAI_AUDITOR_COMPACT_THRESHOLD=120000/' /etc/reup-goals-staging/backend.env
+          else
+            printf '\nOPENAI_AUDITOR_COMPACT_THRESHOLD=120000\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^OPENAI_SERVICE_MODEL=' /etc/reup-goals-staging/backend.env; then
             sed -i 's/^OPENAI_SERVICE_MODEL=.*/OPENAI_SERVICE_MODEL=gpt-4.1-nano/' /etc/reup-goals-staging/backend.env

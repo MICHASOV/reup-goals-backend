@@ -14,17 +14,18 @@ type Config struct {
 	DBPassword string
 	DBName     string
 
-	OpenAIKey                    string
-	OpenAIModel                  string
-	OpenAIAuditorModel           string
-	OpenAIServiceModel           string
-	OpenAIIntakeModel            string
-	OpenAITranscriptionModel     string
-	OpenAIAuditorMaxOutputTokens int
-	OpenAIServiceMaxOutputTokens int
-	OpenAIIntakeMaxOutputTokens  int
-	OpenAIProxyURL               string
-	EnableAIBenchmark            bool
+	OpenAIKey                     string
+	OpenAIModel                   string
+	OpenAIAuditorModel            string
+	OpenAIServiceModel            string
+	OpenAIIntakeModel             string
+	OpenAITranscriptionModel      string
+	OpenAIAuditorMaxOutputTokens  int
+	OpenAIAuditorCompactThreshold int
+	OpenAIServiceMaxOutputTokens  int
+	OpenAIIntakeMaxOutputTokens   int
+	OpenAIProxyURL                string
+	EnableAIBenchmark             bool
 
 	JWTSecret          string
 	CORSAllowedOrigins []string
@@ -76,6 +77,7 @@ func Load() *Config {
 		transcriptionModel = "gpt-4o-transcribe"
 	}
 	auditorMaxOutputTokens := parseIntEnv("OPENAI_AUDITOR_MAX_OUTPUT_TOKENS", 1800)
+	auditorCompactThreshold := parseIntEnv("OPENAI_AUDITOR_COMPACT_THRESHOLD", 120000)
 	serviceMaxOutputTokens := parseIntEnv("OPENAI_SERVICE_MAX_OUTPUT_TOKENS", 1800)
 	intakeMaxOutputTokens := parseIntEnv("OPENAI_INTAKE_MAX_OUTPUT_TOKENS", 5000)
 	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
@@ -130,17 +132,18 @@ func Load() *Config {
 		DBPassword: os.Getenv("DB_PASSWORD"),
 		DBName:     os.Getenv("DB_NAME"),
 
-		OpenAIKey:                    os.Getenv("OPENAI_API_KEY"),
-		OpenAIModel:                  model,
-		OpenAIAuditorModel:           auditorModel,
-		OpenAIServiceModel:           serviceModel,
-		OpenAIIntakeModel:            intakeModel,
-		OpenAITranscriptionModel:     transcriptionModel,
-		OpenAIAuditorMaxOutputTokens: auditorMaxOutputTokens,
-		OpenAIServiceMaxOutputTokens: serviceMaxOutputTokens,
-		OpenAIIntakeMaxOutputTokens:  intakeMaxOutputTokens,
-		OpenAIProxyURL:               openAIProxyURL,
-		EnableAIBenchmark:            parseBoolEnv("ENABLE_AI_BENCHMARK"),
+		OpenAIKey:                     os.Getenv("OPENAI_API_KEY"),
+		OpenAIModel:                   model,
+		OpenAIAuditorModel:            auditorModel,
+		OpenAIServiceModel:            serviceModel,
+		OpenAIIntakeModel:             intakeModel,
+		OpenAITranscriptionModel:      transcriptionModel,
+		OpenAIAuditorMaxOutputTokens:  auditorMaxOutputTokens,
+		OpenAIAuditorCompactThreshold: auditorCompactThreshold,
+		OpenAIServiceMaxOutputTokens:  serviceMaxOutputTokens,
+		OpenAIIntakeMaxOutputTokens:   intakeMaxOutputTokens,
+		OpenAIProxyURL:                openAIProxyURL,
+		EnableAIBenchmark:             parseBoolEnv("ENABLE_AI_BENCHMARK"),
 
 		JWTSecret:          jwtSecret,
 		CORSAllowedOrigins: parseCSVEnv("CORS_ALLOWED_ORIGINS"),

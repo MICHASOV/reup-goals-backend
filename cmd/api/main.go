@@ -61,7 +61,7 @@ func main() {
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
 	knowledgeHandler := knowledge.NewHandler(database, intakeAIClient, serviceAIClient)
-	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient)
+	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	strategyHandler := strategy.NewHandler(database)
 	tacticsHandler := tactics.NewHandler(database)
 	tasksV2Handler := tasksv2.NewHandler(database)
@@ -111,6 +111,7 @@ func main() {
 	mux.Handle("/api/v2/workspaces/", v2api.RequireAuth(jwtSecret, knowledgeHandler.WorkspaceKnowledge))
 	mux.Handle("/api/v2/strategic-director/messages", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/state", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/strategic-director/files", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	if cfg.EnableAIBenchmark {
 		mux.Handle("/api/v2/strategic-director/model-benchmark", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.ModelBenchmark))
 	}

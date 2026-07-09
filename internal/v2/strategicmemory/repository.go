@@ -30,6 +30,113 @@ func (s *Store) CreateRawSource(ctx context.Context, workspaceID int, userID *in
 	return id, err
 }
 
+func (s *Store) OpenAISession(ctx context.Context, workspaceID int, compactThreshold int) (OpenAISession, error) {
+	if compactThreshold <= 0 {
+		compactThreshold = 120000
+	}
+	promptCacheKey := fmt.Sprintf("reupgoals-strategic-director-workspace-%d-v1", workspaceID)
+	var item OpenAISession
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO strategic_openai_sessions (workspace_id, compact_threshold, prompt_cache_key)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			compact_threshold=EXCLUDED.compact_threshold,
+			prompt_cache_key=EXCLUDED.prompt_cache_key,
+			updated_at=NOW()
+		RETURNING id, workspace_id, previous_response_id, vector_store_id,
+			compact_threshold, prompt_cache_key, created_at, updated_at
+	`, workspaceID, compactThreshold, promptCacheKey).Scan(
+		&item.ID,
+		&item.WorkspaceID,
+		&item.PreviousResponseID,
+		&item.VectorStoreID,
+		&item.CompactThreshold,
+		&item.PromptCacheKey,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	return item, err
+}
+
+func (s *Store) UpdateOpenAIPreviousResponseID(ctx context.Context, workspaceID int, responseID string) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE strategic_openai_sessions
+		SET previous_response_id=$2, updated_at=NOW()
+		WHERE workspace_id=$1
+	`, workspaceID, strings.TrimSpace(responseID))
+	return err
+}
+
+func (s *Store) UpdateOpenAIVectorStoreID(ctx context.Context, workspaceID int, vectorStoreID string, compactThreshold int) error {
+	if compactThreshold <= 0 {
+		compactThreshold = 120000
+	}
+	promptCacheKey := fmt.Sprintf("reupgoals-strategic-director-workspace-%d-v1", workspaceID)
+	_, err := s.dbx.ExecContext(ctx, `
+		INSERT INTO strategic_openai_sessions (
+			workspace_id, vector_store_id, compact_threshold, prompt_cache_key
+		)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			vector_store_id=EXCLUDED.vector_store_id,
+			compact_threshold=EXCLUDED.compact_threshold,
+			prompt_cache_key=EXCLUDED.prompt_cache_key,
+			updated_at=NOW()
+	`, workspaceID, strings.TrimSpace(vectorStoreID), compactThreshold, promptCacheKey)
+	return err
+}
+
+func (s *Store) CreateStrategicFile(ctx context.Context, workspaceID int, rawSourceID *int, openAIFileID string, vectorStoreID string, filename string, contentType string, sizeBytes int64, status string, errorText string) (StrategicFile, error) {
+	var item StrategicFile
+	var scannedRawSourceID sql.NullInt64
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO strategic_openai_files (
+			workspace_id, raw_source_id, openai_file_id, vector_store_id, filename,
+			content_type, size_bytes, status, error
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, workspace_id, raw_source_id, openai_file_id, vector_store_id,
+			filename, content_type, size_bytes, status, error, created_at, updated_at
+	`,
+		workspaceID,
+		rawSourceID,
+		strings.TrimSpace(openAIFileID),
+		strings.TrimSpace(vectorStoreID),
+		strings.TrimSpace(filename),
+		strings.TrimSpace(contentType),
+		sizeBytes,
+		defaultString(status, "uploaded"),
+		strings.TrimSpace(errorText),
+	).Scan(
+		&item.ID,
+		&item.WorkspaceID,
+		&scannedRawSourceID,
+		&item.OpenAIFileID,
+		&item.VectorStoreID,
+		&item.Filename,
+		&item.ContentType,
+		&item.SizeBytes,
+		&item.Status,
+		&item.Error,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	if scannedRawSourceID.Valid {
+		value := int(scannedRawSourceID.Int64)
+		item.RawSourceID = &value
+	}
+	return item, err
+}
+
+func (s *Store) UpdateStrategicFileStatus(ctx context.Context, workspaceID int, openAIFileID string, status string, errorText string) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE strategic_openai_files
+		SET status=$3, error=$4, updated_at=NOW()
+		WHERE workspace_id=$1 AND openai_file_id=$2
+	`, workspaceID, strings.TrimSpace(openAIFileID), defaultString(status, "uploaded"), strings.TrimSpace(errorText))
+	return err
+}
+
 func (s *Store) RecentMessages(ctx context.Context, workspaceID int, limit int) ([]ConversationMessage, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id,
@@ -510,6 +617,48 @@ func (s *Store) ListDocuments(ctx context.Context, workspaceID int) ([]Strategic
 	return items, rows.Err()
 }
 
+func (s *Store) ListFiles(ctx context.Context, workspaceID int) ([]StrategicFile, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT id, workspace_id, raw_source_id, openai_file_id, vector_store_id,
+			filename, content_type, size_bytes, status, error, created_at, updated_at
+		FROM strategic_openai_files
+		WHERE workspace_id=$1
+		ORDER BY created_at DESC, id DESC
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []StrategicFile{}
+	for rows.Next() {
+		var item StrategicFile
+		var rawSourceID sql.NullInt64
+		if err := rows.Scan(
+			&item.ID,
+			&item.WorkspaceID,
+			&rawSourceID,
+			&item.OpenAIFileID,
+			&item.VectorStoreID,
+			&item.Filename,
+			&item.ContentType,
+			&item.SizeBytes,
+			&item.Status,
+			&item.Error,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if rawSourceID.Valid {
+			value := int(rawSourceID.Int64)
+			item.RawSourceID = &value
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) UpsertDocuments(ctx context.Context, workspaceID int, docs []StrategicDocument) (int, error) {
 	updated := 0
 	for _, doc := range docs {
@@ -560,12 +709,20 @@ func (s *Store) Reset(ctx context.Context, workspaceID int) error {
 		"strategic_memory_snapshots",
 		"strategic_claims",
 		"strategic_communication_profiles",
+		"strategic_openai_files",
 		"strategic_raw_sources",
 	}
 	for _, table := range tables {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE workspace_id=$1", workspaceID); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE strategic_openai_sessions
+		SET previous_response_id='', vector_store_id='', updated_at=NOW()
+		WHERE workspace_id=$1
+	`, workspaceID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -575,6 +732,16 @@ func (s *Store) LogAIRun(ctx context.Context, workspaceID int, scenario string, 
 		INSERT INTO strategic_ai_runs (workspace_id, scenario, model, prompt_version, duration_ms, status, error)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, workspaceID, scenario, model, promptVersion, durationMs, status, errorText)
+}
+
+func (s *Store) LogAIRunWithUsage(ctx context.Context, workspaceID int, scenario string, model string, promptVersion string, durationMs int64, inputTokens int, outputTokens int, status string, errorText string) {
+	_, _ = s.dbx.ExecContext(ctx, `
+		INSERT INTO strategic_ai_runs (
+			workspace_id, scenario, model, prompt_version, input_tokens,
+			output_tokens, duration_ms, status, error
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, workspaceID, scenario, model, promptVersion, inputTokens, outputTokens, durationMs, status, errorText)
 }
 
 func mustJSON(value any) json.RawMessage {
