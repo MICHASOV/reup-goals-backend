@@ -95,7 +95,9 @@ type responsesRequest struct {
 
 type responsesResponse struct {
 	Output []struct {
+		Type    string `json:"type"`
 		Content []struct {
+			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
 	} `json:"output"`
@@ -280,15 +282,25 @@ func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions st
 		return TextResult{}, fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
 	}
 
-	if len(parsed.Output) == 0 ||
-		len(parsed.Output[0].Content) == 0 ||
-		parsed.Output[0].Content[0].Text == "" {
-
+	text := firstResponseText(parsed)
+	if text == "" {
 		return TextResult{}, fmt.Errorf("empty model output")
 	}
 
 	return TextResult{
-		Text:  strings.TrimSpace(parsed.Output[0].Content[0].Text),
+		Text:  text,
 		Usage: parsed.Usage,
 	}, nil
+}
+
+func firstResponseText(parsed responsesResponse) string {
+	for _, output := range parsed.Output {
+		for _, content := range output.Content {
+			text := strings.TrimSpace(content.Text)
+			if text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
