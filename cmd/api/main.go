@@ -46,6 +46,8 @@ func main() {
 	}
 
 	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel, cfg.OpenAIProxyURL)
+	auditorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIAuditorModel, cfg.OpenAIProxyURL).
+		WithMaxOutputTokens(cfg.OpenAIAuditorMaxOutputTokens)
 	serviceAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIServiceModel, cfg.OpenAIProxyURL).
 		WithMaxOutputTokens(cfg.OpenAIServiceMaxOutputTokens)
 	intakeAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIIntakeModel, cfg.OpenAIProxyURL).
@@ -59,7 +61,7 @@ func main() {
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
 	knowledgeHandler := knowledge.NewHandler(database, intakeAIClient, serviceAIClient)
-	strategicMemoryHandler := strategicmemory.NewHandler(database, serviceAIClient)
+	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient)
 	strategyHandler := strategy.NewHandler(database)
 	tacticsHandler := tactics.NewHandler(database)
 	tasksV2Handler := tasksv2.NewHandler(database)

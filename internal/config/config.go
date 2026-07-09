@@ -16,9 +16,11 @@ type Config struct {
 
 	OpenAIKey                    string
 	OpenAIModel                  string
+	OpenAIAuditorModel           string
 	OpenAIServiceModel           string
 	OpenAIIntakeModel            string
 	OpenAITranscriptionModel     string
+	OpenAIAuditorMaxOutputTokens int
 	OpenAIServiceMaxOutputTokens int
 	OpenAIIntakeMaxOutputTokens  int
 	OpenAIProxyURL               string
@@ -57,6 +59,10 @@ func Load() *Config {
 	if model == "" {
 		model = "gpt-4o-mini" // дефолтная модель (можешь заменить на нужную)
 	}
+	auditorModel := os.Getenv("OPENAI_AUDITOR_MODEL")
+	if auditorModel == "" {
+		auditorModel = model
+	}
 	serviceModel := os.Getenv("OPENAI_SERVICE_MODEL")
 	if serviceModel == "" {
 		serviceModel = "gpt-4.1-nano"
@@ -69,6 +75,7 @@ func Load() *Config {
 	if transcriptionModel == "" {
 		transcriptionModel = "gpt-4o-transcribe"
 	}
+	auditorMaxOutputTokens := parseIntEnv("OPENAI_AUDITOR_MAX_OUTPUT_TOKENS", 1800)
 	serviceMaxOutputTokens := parseIntEnv("OPENAI_SERVICE_MAX_OUTPUT_TOKENS", 1800)
 	intakeMaxOutputTokens := parseIntEnv("OPENAI_INTAKE_MAX_OUTPUT_TOKENS", 5000)
 	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
@@ -125,9 +132,11 @@ func Load() *Config {
 
 		OpenAIKey:                    os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:                  model,
+		OpenAIAuditorModel:           auditorModel,
 		OpenAIServiceModel:           serviceModel,
 		OpenAIIntakeModel:            intakeModel,
 		OpenAITranscriptionModel:     transcriptionModel,
+		OpenAIAuditorMaxOutputTokens: auditorMaxOutputTokens,
 		OpenAIServiceMaxOutputTokens: serviceMaxOutputTokens,
 		OpenAIIntakeMaxOutputTokens:  intakeMaxOutputTokens,
 		OpenAIProxyURL:               openAIProxyURL,
