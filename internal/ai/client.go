@@ -131,6 +131,7 @@ type ResponseContextOptions struct {
 	CompactThreshold     int
 	PromptCacheKey       string
 	MaxFileSearchResults int
+	MaxOutputTokens      int
 }
 
 type OpenAIFile struct {
@@ -195,6 +196,14 @@ func (c *OpenAIClient) GenerateTextDetailed(ctx context.Context, instructions st
 
 func (c *OpenAIClient) GenerateTextNative(ctx context.Context, instructions string, input string, options ResponseContextOptions) (TextResult, error) {
 	return c.generateResponseTextWithOptions(ctx, instructions, input, nil, options)
+}
+
+func (c *OpenAIClient) GenerateJSONNative(ctx context.Context, instructions string, input string, options ResponseContextOptions) (TextResult, error) {
+	return c.generateResponseTextWithOptions(ctx, instructions, "Return valid JSON only.\n\nInput JSON:\n"+input, map[string]interface{}{
+		"format": map[string]string{
+			"type": "json_object",
+		},
+	}, options)
 }
 
 func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, language string, audio io.Reader) (string, error) {
@@ -294,6 +303,9 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 		Text:               textFormat,
 		PreviousResponseID: strings.TrimSpace(options.PreviousResponseID),
 		PromptCacheKey:     strings.TrimSpace(options.PromptCacheKey),
+	}
+	if options.MaxOutputTokens > 0 {
+		reqBody.MaxOutputTokens = options.MaxOutputTokens
 	}
 	if options.CompactThreshold > 0 {
 		reqBody.ContextManagement = []map[string]interface{}{

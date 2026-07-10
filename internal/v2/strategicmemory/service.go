@@ -147,6 +147,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		"previous_response_id": session.PreviousResponseID,
 		"vector_store_ids":     vectorStoreIDs,
 	})
+	s.queueBusinessContextMaterialization(workspaceID, sourceID, message, assistantMessage)
 
 	finalState, err := s.State(ctx, workspaceID)
 	if err != nil {

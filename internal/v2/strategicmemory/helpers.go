@@ -186,7 +186,7 @@ func defaultString(value string, fallback string) string {
 
 func normalizeClaimType(value string) string {
 	switch strings.TrimSpace(value) {
-	case "fact", "self_reported_fact", "hypothesis", "assumption", "plan", "unknown", "not_tested", "not_disclosed", "evidence", "risk", "constraint", "contradiction":
+	case "fact", "self_reported_fact", "historical_fact", "process", "problem", "constraint", "risk", "opportunity", "hypothesis", "goal", "plan", "decision", "task", "metric", "result", "opinion", "assumption", "open_question", "contradiction", "unknown", "not_tested", "not_disclosed", "evidence":
 		return value
 	default:
 		return "self_reported_fact"
@@ -250,19 +250,33 @@ func normalizeTopicKey(value string) string {
 }
 
 func documentTitle(documentType string) string {
-	switch normalizeTopicKey(documentType) {
-	case "company_profile", "company", "company_card":
-		return "Профиль компании"
-	case "market_hypothesis", "market":
-		return "Гипотеза рынка"
-	case "customers_and_demand", "customer", "demand":
-		return "Клиенты и спрос"
-	case "validation_plan":
-		return "План проверки спроса"
-	case "business_model":
-		return "Бизнес-модель"
-	case "evidence_and_unknowns":
-		return "Доказательства и неизвестности"
+	switch normalizeDocumentType(documentType) {
+	case "company_governance":
+		return "Компания и управление"
+	case "strategy_development":
+		return "Стратегия и развитие"
+	case "product_value":
+		return "Продукт и ценность"
+	case "customers_market_competition":
+		return "Клиенты, рынок и конкуренты"
+	case "marketing_sales_relationships":
+		return "Маркетинг, продажи и клиентские отношения"
+	case "operations_execution":
+		return "Операционная деятельность и исполнение"
+	case "team_organization":
+		return "Команда и организация"
+	case "technology_data_assets":
+		return "Технологии, данные и активы"
+	case "finance_economics":
+		return "Финансы и экономика"
+	case "legal_compliance":
+		return "Право и соответствие требованиям"
+	case "hypotheses_assumptions":
+		return "Гипотезы и непроверенные предположения"
+	case "open_questions":
+		return "Открытые вопросы"
+	case "contradictions_changes":
+		return "Противоречия и изменения"
 	case "constraints":
 		return "Ограничения"
 	default:
