@@ -13,7 +13,7 @@ import (
 
 const (
 	materializerMaxOutputTokens     = 4500
-	documentDesignerMaxOutputTokens = 7000
+	documentDesignerMaxOutputTokens = 12000
 	materializerTimeout             = 150 * time.Second
 )
 
@@ -113,9 +113,19 @@ func (s *Service) materializeBusinessContext(ctx context.Context, workspaceID in
 
 	documentsUpdated := 0
 	if len(materialized.ExtractedItems) > 0 || len(materialized.DocumentBrief) > 0 || len(materialized.Contradictions) > 0 {
-		updatedDocuments, err := s.designDocuments(ctx, workspaceID, materialized, state, session)
+		updatedState, err := s.State(ctx, workspaceID)
 		if err != nil {
 			return err
+		}
+
+		updatedDocuments, err := s.designDocuments(ctx, workspaceID, materialized, updatedState, session)
+		if err != nil {
+			log.Printf("[WARN] strategic document designer failed workspace_id=%d: %v", workspaceID, err)
+			updatedDocuments = fallbackDocumentsFromMaterialized(workspaceID, materialized, updatedState)
+		}
+		if len(updatedDocuments) == 0 {
+			log.Printf("[WARN] strategic document designer returned no documents workspace_id=%d", workspaceID)
+			updatedDocuments = fallbackDocumentsFromMaterialized(workspaceID, materialized, updatedState)
 		}
 		documentsUpdated, err = s.store.UpsertDocuments(ctx, workspaceID, updatedDocuments)
 		if err != nil {
@@ -385,4 +395,103 @@ func normalizeDocumentStatus(value string) string {
 	default:
 		return DefaultStrategicDocumentStatus
 	}
+}
+
+func fallbackDocumentsFromMaterialized(workspaceID int, materialized materializerOutput, state StateResponse) []StrategicDocument {
+	affected := affectedDocumentTypes(materialized)
+	if len(affected) == 0 {
+		return nil
+	}
+
+	existing := map[string]StrategicDocument{}
+	for _, doc := range state.Documents {
+		existing[normalizeDocumentType(doc.DocumentType)] = doc
+	}
+
+	itemsByDoc := map[string][]materializerItem{}
+	for _, item := range materialized.ExtractedItems {
+		docType := normalizeDocumentType(item.PrimaryDocument)
+		if docType == "" {
+			continue
+		}
+		itemsByDoc[docType] = append(itemsByDoc[docType], item)
+	}
+
+	questionsByDoc := map[string][]materializerQuestion{}
+	for _, question := range materialized.OpenQuestions {
+		docType := normalizeDocumentType(question.TopicKey)
+		if docType == "" {
+			continue
+		}
+		questionsByDoc[docType] = append(questionsByDoc[docType], question)
+	}
+
+	docs := make([]StrategicDocument, 0, len(affected))
+	for _, docType := range affected {
+		current := existing[docType]
+		var builder strings.Builder
+		if strings.TrimSpace(current.Markdown) != "" {
+			builder.WriteString(strings.TrimSpace(current.Markdown))
+			builder.WriteString("\n\n")
+		} else {
+			builder.WriteString("# ")
+			builder.WriteString(documentTitle(docType))
+			builder.WriteString("\n\n")
+		}
+
+		if items := itemsByDoc[docType]; len(items) > 0 {
+			builder.WriteString("## Последние уточнения\n\n")
+			for _, item := range items {
+				text := cleanText(item.Text)
+				if text == "" {
+					continue
+				}
+				builder.WriteString("- ")
+				builder.WriteString(text)
+				if item.Type != "" || item.EvidenceLevel != "" || item.Confidence != "" {
+					builder.WriteString("  \n  _")
+					builder.WriteString(strings.Trim(strings.Join([]string{
+						cleanText(item.Type),
+						cleanText(item.EvidenceLevel),
+						cleanText(item.Confidence),
+					}, " / "), " /"))
+					builder.WriteString("_")
+				}
+				builder.WriteString("\n")
+			}
+			builder.WriteString("\n")
+		}
+
+		if questions := questionsByDoc[docType]; len(questions) > 0 {
+			builder.WriteString("## Открытые вопросы\n\n")
+			for _, question := range questions {
+				goal := cleanText(question.QuestionGoal)
+				if goal == "" {
+					continue
+				}
+				builder.WriteString("- ")
+				builder.WriteString(goal)
+				if why := cleanText(question.WhyItMatters); why != "" {
+					builder.WriteString("  \n  _")
+					builder.WriteString(why)
+					builder.WriteString("_")
+				}
+				builder.WriteString("\n")
+			}
+			builder.WriteString("\n")
+		}
+
+		status := current.Status
+		if status == "" {
+			status = DefaultStrategicDocumentStatus
+		}
+		docs = append(docs, StrategicDocument{
+			WorkspaceID:  workspaceID,
+			DocumentType: docType,
+			Title:        defaultString(current.Title, documentTitle(docType)),
+			Markdown:     strings.TrimSpace(builder.String()),
+			Status:       normalizeDocumentStatus(status),
+		})
+	}
+	return docs
 }

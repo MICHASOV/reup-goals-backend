@@ -662,7 +662,7 @@ func (s *Store) ListFiles(ctx context.Context, workspaceID int) ([]StrategicFile
 func (s *Store) UpsertDocuments(ctx context.Context, workspaceID int, docs []StrategicDocument) (int, error) {
 	updated := 0
 	for _, doc := range docs {
-		docType := normalizeTopicKey(doc.DocumentType)
+		docType := normalizeDocumentType(doc.DocumentType)
 		if docType == "" || strings.TrimSpace(doc.Markdown) == "" {
 			continue
 		}
