@@ -65,9 +65,6 @@ jobs:
           OPENAI_AUDITOR_MODEL=gpt-5.4
           OPENAI_AUDITOR_MAX_OUTPUT_TOKENS=1800
           OPENAI_AUDITOR_COMPACT_THRESHOLD=120000
-          OPENAI_SERVICE_MODEL=gpt-4.1-nano
-          OPENAI_INTAKE_MODEL=gpt-4.1-mini
-          OPENAI_SERVICE_MAX_OUTPUT_TOKENS=1800
           ENABLE_AI_BENCHMARK=true
           OPENAI_PROXY_URL=direct
           UNISENDER_API_KEY=
@@ -105,21 +102,6 @@ jobs:
           else
             printf '\nOPENAI_AUDITOR_COMPACT_THRESHOLD=120000\n' >> /etc/reup-goals-staging/backend.env
           fi
-          if grep -q '^OPENAI_SERVICE_MODEL=' /etc/reup-goals-staging/backend.env; then
-            sed -i 's/^OPENAI_SERVICE_MODEL=.*/OPENAI_SERVICE_MODEL=gpt-4.1-nano/' /etc/reup-goals-staging/backend.env
-          else
-            printf '\nOPENAI_SERVICE_MODEL=gpt-4.1-nano\n' >> /etc/reup-goals-staging/backend.env
-          fi
-          if grep -q '^OPENAI_INTAKE_MODEL=' /etc/reup-goals-staging/backend.env; then
-            sed -i 's/^OPENAI_INTAKE_MODEL=.*/OPENAI_INTAKE_MODEL=gpt-4.1-mini/' /etc/reup-goals-staging/backend.env
-          else
-            printf '\nOPENAI_INTAKE_MODEL=gpt-4.1-mini\n' >> /etc/reup-goals-staging/backend.env
-          fi
-          if grep -q '^OPENAI_SERVICE_MAX_OUTPUT_TOKENS=' /etc/reup-goals-staging/backend.env; then
-            sed -i 's/^OPENAI_SERVICE_MAX_OUTPUT_TOKENS=.*/OPENAI_SERVICE_MAX_OUTPUT_TOKENS=1800/' /etc/reup-goals-staging/backend.env
-          else
-            printf '\nOPENAI_SERVICE_MAX_OUTPUT_TOKENS=1800\n' >> /etc/reup-goals-staging/backend.env
-          fi
           if grep -q '^ENABLE_AI_BENCHMARK=' /etc/reup-goals-staging/backend.env; then
             sed -i 's/^ENABLE_AI_BENCHMARK=.*/ENABLE_AI_BENCHMARK=true/' /etc/reup-goals-staging/backend.env
           else
@@ -152,7 +134,7 @@ jobs:
               listen [::]:80;
               server_name api-staging.reupgoals.pro;
 
-              client_max_body_size 10m;
+              client_max_body_size 90m;
 
               location / {
                   proxy_pass http://127.0.0.1:8080;

@@ -48,10 +48,6 @@ func main() {
 	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel, cfg.OpenAIProxyURL)
 	auditorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIAuditorModel, cfg.OpenAIProxyURL).
 		WithMaxOutputTokens(cfg.OpenAIAuditorMaxOutputTokens)
-	serviceAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIServiceModel, cfg.OpenAIProxyURL).
-		WithMaxOutputTokens(cfg.OpenAIServiceMaxOutputTokens)
-	intakeAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIIntakeModel, cfg.OpenAIProxyURL).
-		WithMaxOutputTokens(cfg.OpenAIIntakeMaxOutputTokens)
 	transcriptionAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITranscriptionModel, cfg.OpenAIProxyURL)
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)
@@ -60,7 +56,7 @@ func main() {
 	audioHandler := audioapi.NewHandler(transcriptionAIClient)
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
-	knowledgeHandler := knowledge.NewHandler(database, intakeAIClient, serviceAIClient)
+	knowledgeHandler := knowledge.NewHandler(database)
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	strategyHandler := strategy.NewHandler(database)
 	tacticsHandler := tactics.NewHandler(database)
@@ -108,7 +104,6 @@ func main() {
 	mux.Handle("/api/v2/audio/transcriptions", v2api.RequireAuth(jwtSecret, audioHandler.Transcriptions))
 	mux.Handle("/api/v2/knowledge-base/blocks", v2api.RequireAuth(jwtSecret, knowledgeHandler.Blocks))
 	mux.Handle("/api/v2/knowledge-base/blocks/", v2api.RequireAuth(jwtSecret, knowledgeHandler.Block))
-	mux.Handle("/api/v2/workspaces/", v2api.RequireAuth(jwtSecret, knowledgeHandler.WorkspaceKnowledge))
 	mux.Handle("/api/v2/strategic-director/messages", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/state", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/files", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))

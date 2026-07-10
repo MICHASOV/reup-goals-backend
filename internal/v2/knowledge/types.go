@@ -7,63 +7,6 @@ const (
 	StatusDraft           = "draft"
 	StatusPartiallyFilled = "partially_filled"
 	StatusReady           = "ready"
-
-	StatementTypeStatement  = "statement"
-	StatementTypeHypothesis = "hypothesis"
-	StatementTypeUnknown    = "unknown"
-
-	ConfidenceLow    = "low"
-	ConfidenceMedium = "medium"
-	ConfidenceHigh   = "high"
-
-	SessionProcessing   = "processing"
-	SessionPreviewReady = "preview_ready"
-	SessionConfirmed    = "confirmed"
-	SessionRejected     = "rejected"
-	SessionFailed       = "failed"
-
-	PatchTypeAdd    = "add"
-	PatchTypeUpdate = "update"
-
-	PatchStatusSuggested = "suggested"
-	PatchStatusApplied   = "applied"
-	PatchStatusRejected  = "rejected"
-
-	ConflictStatusActive    = "active"
-	ConflictStatusResolved  = "resolved"
-	ConflictStatusDismissed = "dismissed"
-
-	ConflictOptionExisting = "existing"
-	ConflictOptionNew      = "new"
-
-	RouterPromptVersion     = "knowledge_intake_router_v1_8_attached_context"
-	ReconcilerPromptVersion = "knowledge_document_reconciler_v1"
-	DocumentComposerVersion = "knowledge_document_composer_v2_1_internal_voice"
-
-	CompanyProfileCollectorVersion = "company_profile_collector_v2_compact"
-	DocumentReadinessVersion       = "document_readiness_preflight_v1"
-	GuidancePlannerVersion         = "strategic_guidance_question_planner_v4_0_strategic_director"
-
-	ProfileStatusRed    = "red"
-	ProfileStatusOrange = "orange"
-	ProfileStatusGreen  = "green"
-
-	ReadinessRed    = "red"
-	ReadinessYellow = "yellow"
-	ReadinessGreen  = "green"
-
-	KnowledgeReadinessNotReady      = "not_ready"
-	KnowledgeReadinessAlmostReady   = "almost_ready"
-	KnowledgeReadinessStrategyReady = "strategy_ready"
-
-	QuestionSourceFirstGate = "first_gate"
-	QuestionSourcePlanner   = "planner"
-
-	QuestionStatusActive   = "active"
-	QuestionStatusAnswered = "answered"
-
-	GuidanceStatusAskNextQuestion           = "ask_next_question"
-	GuidanceStatusSuggestStrategyTransition = "suggest_strategy_transition"
 )
 
 type Block struct {
@@ -206,37 +149,4 @@ func ValidStatus(status string) bool {
 	default:
 		return false
 	}
-}
-
-func ValidStatementType(value string) bool {
-	switch value {
-	case StatementTypeStatement, StatementTypeHypothesis, StatementTypeUnknown:
-		return true
-	default:
-		return false
-	}
-}
-
-func ValidConfidence(value string) bool {
-	switch value {
-	case ConfidenceLow, ConfidenceMedium, ConfidenceHigh:
-		return true
-	default:
-		return false
-	}
-}
-
-func ValidDocumentType(value string) bool {
-	_, ok := documentDefinitionByType(value)
-	return ok
-}
-
-func documentDefinitionByType(documentType string) (DocumentDefinition, bool) {
-	for _, definition := range documentDefinitions {
-		if definition.Type == documentType {
-			return definition, true
-		}
-	}
-
-	return DocumentDefinition{}, false
 }
