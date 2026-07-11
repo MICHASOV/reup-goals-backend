@@ -811,6 +811,23 @@ var migrations = []Migration{
 				ON strategic_openai_files (openai_file_id);
 		`,
 	},
+	{
+		ID: "20260711_014_strategic_quality_reports",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS strategic_quality_reports (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				readiness_score INTEGER NOT NULL DEFAULT 0,
+				readiness_status TEXT NOT NULL DEFAULT 'not_ready',
+				changed_document_types_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				report_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_quality_reports_workspace
+				ON strategic_quality_reports (workspace_id, created_at DESC, id DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

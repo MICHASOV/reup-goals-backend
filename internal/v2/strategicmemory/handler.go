@@ -62,6 +62,8 @@ func (h *Handler) StrategicMemory(w http.ResponseWriter, r *http.Request) {
 		h.agenda(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/strategic-memory/documents":
 		h.documents(w, r, workspace.ID)
+	case r.URL.Path == "/api/v2/strategic-memory/quality-audit":
+		h.qualityAudit(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/strategic-memory/reset":
 		h.reset(w, r, workspace.ID)
 	default:
@@ -187,6 +189,36 @@ func (h *Handler) documents(w http.ResponseWriter, r *http.Request, workspaceID 
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspaceID, "documents": documents})
+}
+
+func (h *Handler) qualityAudit(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	switch r.Method {
+	case http.MethodGet:
+		report, err := h.store.LatestQualityReport(r.Context(), workspaceID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "strategic_quality_audit_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspaceID, "quality_report": report})
+	case http.MethodPost:
+		var req struct {
+			ChangedDocumentTypes []string `json:"changed_document_types"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		report, err := h.service.RunQualityAudit(r.Context(), workspaceID, req.ChangedDocumentTypes, "manual")
+		if err != nil {
+			if strings.Contains(err.Error(), "quality_audit_no_documents") {
+				api.WriteError(w, http.StatusBadRequest, "quality_audit_no_documents")
+				return
+			}
+			api.WriteError(w, http.StatusInternalServerError, "strategic_quality_audit_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspaceID, "quality_report": report})
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
 }
 
 func (h *Handler) reset(w http.ResponseWriter, r *http.Request, workspaceID int) {

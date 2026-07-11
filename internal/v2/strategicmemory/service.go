@@ -49,6 +49,10 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 	if err != nil {
 		return StateResponse{}, err
 	}
+	qualityReport, err := s.store.LatestQualityReport(ctx, workspaceID)
+	if err != nil {
+		return StateResponse{}, err
+	}
 	messages, err := s.store.RecentMessages(ctx, workspaceID, 20)
 	if err != nil {
 		return StateResponse{}, err
@@ -63,6 +67,7 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 		Snapshot:             snapshot,
 		Claims:               claims,
 		Agenda:               agenda,
+		QualityReport:        qualityReport,
 		CommunicationProfile: profile,
 		DialogueFocus:        focus,
 		Documents:            documents,
@@ -276,6 +281,7 @@ func buildAuditorConversationInput(workspaceID int, message string, state StateR
 			"existing_claims":        limitClaimsForContext(state.Claims, 80),
 			"current_documents":      limitDocumentsForContext(state.Documents, 10),
 			"open_research_agenda":   limitAgendaForContext(state.Agenda, 30),
+			"quality_report":         compactQualityReportForContext(state.QualityReport),
 			"current_dialogue_focus": state.DialogueFocus,
 		},
 		"communication_style": state.CommunicationProfile,

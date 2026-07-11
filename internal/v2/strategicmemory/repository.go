@@ -617,6 +617,96 @@ func (s *Store) ListDocuments(ctx context.Context, workspaceID int) ([]Strategic
 	return items, rows.Err()
 }
 
+func (s *Store) LatestQualityReport(ctx context.Context, workspaceID int) (*QualityReport, error) {
+	var id int
+	var storedWorkspaceID int
+	var readinessScore int
+	var readinessStatus string
+	var changedRaw json.RawMessage
+	var reportRaw json.RawMessage
+	var createdAt sql.NullTime
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, readiness_score, readiness_status,
+			changed_document_types_json, report_json, created_at
+		FROM strategic_quality_reports
+		WHERE workspace_id=$1
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, workspaceID).Scan(
+		&id,
+		&storedWorkspaceID,
+		&readinessScore,
+		&readinessStatus,
+		&changedRaw,
+		&reportRaw,
+		&createdAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return qualityReportFromStored(id, storedWorkspaceID, readinessScore, readinessStatus, changedRaw, reportRaw, createdAt), nil
+}
+
+func (s *Store) SaveQualityReport(ctx context.Context, workspaceID int, report QualityReport) (QualityReport, error) {
+	readinessScore := clampScore(report.ReadinessScore)
+	if readinessScore == 0 {
+		readinessScore = clampScore(report.Overall.ReadinessScore)
+	}
+	readinessStatus := normalizeReadinessStatus(defaultString(report.ReadinessStatus, report.Overall.ReadinessStatus))
+	report.ReadinessScore = readinessScore
+	report.ReadinessStatus = readinessStatus
+	report.Overall.ReadinessScore = readinessScore
+	report.Overall.ReadinessStatus = readinessStatus
+
+	payload := map[string]any{
+		"overall":       report.Overall,
+		"documents":     report.Documents,
+		"chat_guidance": report.ChatGuidance,
+	}
+
+	var id int
+	var storedWorkspaceID int
+	var storedScore int
+	var storedStatus string
+	var changedRaw json.RawMessage
+	var reportRaw json.RawMessage
+	var createdAt sql.NullTime
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO strategic_quality_reports (
+			workspace_id, readiness_score, readiness_status,
+			changed_document_types_json, report_json
+		)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, workspace_id, readiness_score, readiness_status,
+			changed_document_types_json, report_json, created_at
+	`,
+		workspaceID,
+		readinessScore,
+		readinessStatus,
+		mustJSON(report.ChangedDocumentTypes),
+		mustJSON(payload),
+	).Scan(
+		&id,
+		&storedWorkspaceID,
+		&storedScore,
+		&storedStatus,
+		&changedRaw,
+		&reportRaw,
+		&createdAt,
+	)
+	if err != nil {
+		return QualityReport{}, err
+	}
+	stored := qualityReportFromStored(id, storedWorkspaceID, storedScore, storedStatus, changedRaw, reportRaw, createdAt)
+	if stored == nil {
+		return QualityReport{}, fmt.Errorf("quality_report_decode_failed")
+	}
+	return *stored, nil
+}
+
 func (s *Store) ListFiles(ctx context.Context, workspaceID int) ([]StrategicFile, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, workspace_id, raw_source_id, openai_file_id, vector_store_id,
@@ -703,6 +793,7 @@ func (s *Store) Reset(ctx context.Context, workspaceID int) error {
 
 	tables := []string{
 		"strategic_ai_runs",
+		"strategic_quality_reports",
 		"strategic_documents",
 		"strategic_dialogue_focus",
 		"strategic_research_agenda_items",
@@ -757,6 +848,49 @@ func defaultRawJSON(value json.RawMessage) json.RawMessage {
 		return json.RawMessage(`[]`)
 	}
 	return value
+}
+
+type storedQualityReportPayload struct {
+	Overall      QualityOverallAssessment    `json:"overall"`
+	Documents    []QualityDocumentAssessment `json:"documents"`
+	ChatGuidance QualityChatGuidance         `json:"chat_guidance"`
+}
+
+func qualityReportFromStored(
+	id int,
+	workspaceID int,
+	readinessScore int,
+	readinessStatus string,
+	changedRaw json.RawMessage,
+	reportRaw json.RawMessage,
+	createdAt sql.NullTime,
+) *QualityReport {
+	var changed []string
+	_ = json.Unmarshal(defaultRawJSON(changedRaw), &changed)
+
+	var payload storedQualityReportPayload
+	_ = json.Unmarshal(reportRaw, &payload)
+
+	report := &QualityReport{
+		ID:                   id,
+		WorkspaceID:          workspaceID,
+		ReadinessScore:       clampScore(readinessScore),
+		ReadinessStatus:      normalizeReadinessStatus(readinessStatus),
+		ChangedDocumentTypes: changed,
+		Overall:              payload.Overall,
+		Documents:            payload.Documents,
+		ChatGuidance:         payload.ChatGuidance,
+	}
+	if createdAt.Valid {
+		report.CreatedAt = createdAt.Time
+	}
+	if report.Overall.ReadinessScore == 0 {
+		report.Overall.ReadinessScore = report.ReadinessScore
+	}
+	if report.Overall.ReadinessStatus == "" {
+		report.Overall.ReadinessStatus = report.ReadinessStatus
+	}
+	return report
 }
 
 func reverseMessages(items []ConversationMessage) {

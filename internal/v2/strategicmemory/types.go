@@ -139,6 +139,7 @@ type StateResponse struct {
 	Snapshot             *MemorySnapshot       `json:"snapshot,omitempty"`
 	Claims               []Claim               `json:"claims"`
 	Agenda               []ResearchAgendaItem  `json:"agenda"`
+	QualityReport        *QualityReport        `json:"quality_report,omitempty"`
 	CommunicationProfile CommunicationProfile  `json:"communication_profile"`
 	DialogueFocus        DialogueFocus         `json:"dialogue_focus"`
 	Documents            []StrategicDocument   `json:"documents"`
@@ -182,6 +183,67 @@ type MemoryUpdates struct {
 	ClaimsSkipped    int `json:"claims_skipped"`
 	AgendaUpdated    int `json:"agenda_updated"`
 	DocumentsUpdated int `json:"documents_updated"`
+}
+
+type QualityReport struct {
+	ID                   int                         `json:"id"`
+	WorkspaceID          int                         `json:"workspace_id"`
+	ReadinessScore       int                         `json:"readiness_score"`
+	ReadinessStatus      string                      `json:"readiness_status"`
+	ChangedDocumentTypes []string                    `json:"changed_document_types"`
+	Overall              QualityOverallAssessment    `json:"overall"`
+	Documents            []QualityDocumentAssessment `json:"documents"`
+	ChatGuidance         QualityChatGuidance         `json:"chat_guidance"`
+	CreatedAt            time.Time                   `json:"created_at"`
+}
+
+type QualityOverallAssessment struct {
+	ReadinessScore              int      `json:"readiness_score"`
+	ReadinessStatus             string   `json:"readiness_status"`
+	Summary                     string   `json:"summary"`
+	CriticalBlockers            []string `json:"critical_blockers"`
+	StrongestDocuments          []string `json:"strongest_documents"`
+	WeakestDocuments            []string `json:"weakest_documents"`
+	MostImportantMissingInfo    []string `json:"most_important_missing_information"`
+	MajorInconsistencies        []string `json:"major_inconsistencies"`
+	MissingConnections          []string `json:"important_missing_connections"`
+	RecurringWeaknesses         []string `json:"recurring_weaknesses"`
+	HighestPriorityImprovements []string `json:"highest_priority_improvements"`
+	HighestPriorityQuestions    []string `json:"highest_priority_clarifications"`
+	CrossDocumentQualityScore   int      `json:"cross_document_quality_score"`
+}
+
+type QualityCriterionScores struct {
+	Completeness    int `json:"completeness"`
+	Specificity     int `json:"specificity"`
+	EvidenceQuality int `json:"evidence_quality"`
+	Freshness       int `json:"freshness"`
+	StrategicValue  int `json:"strategic_value"`
+	Consistency     int `json:"consistency"`
+	Actionability   int `json:"actionability"`
+}
+
+type QualityDocumentAssessment struct {
+	DocumentType           string                 `json:"document_type"`
+	Title                  string                 `json:"title"`
+	Relevance              string                 `json:"relevance"`
+	RelevanceReason        string                 `json:"relevance_reason"`
+	Scores                 QualityCriterionScores `json:"scores"`
+	DocumentScore          int                    `json:"document_score"`
+	Status                 string                 `json:"status"`
+	WhatIsGood             []string               `json:"what_is_good"`
+	ProblemAreas           []string               `json:"problem_areas"`
+	MissingInformation     []string               `json:"missing_information"`
+	Inconsistencies        []string               `json:"inconsistencies"`
+	RequiredClarifications []string               `json:"required_clarifications"`
+}
+
+type QualityChatGuidance struct {
+	NextBestTopic     string   `json:"next_best_topic"`
+	NextBestQuestions []string `json:"next_best_questions"`
+	AvoidRepeating    []string `json:"avoid_repeating"`
+	BlindSpots        []string `json:"blind_spots"`
+	WhyThisNext       string   `json:"why_this_next"`
 }
 
 type aiMemoryResponse struct {

@@ -435,3 +435,26 @@ func compactStrings(values []string) []string {
 	}
 	return result
 }
+
+func clampScore(value int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func normalizeReadinessStatus(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "ready", "ready_for_strategy_development":
+		return "ready"
+	case "ready_with_limitations", "ready_with_important_limitations":
+		return "ready_with_limitations"
+	case "not_ready", "not_ready_for_strategy_development", "insufficient":
+		return "not_ready"
+	default:
+		return "not_ready"
+	}
+}

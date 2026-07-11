@@ -131,6 +131,9 @@ func (s *Service) materializeBusinessContext(ctx context.Context, workspaceID in
 		if err != nil {
 			return err
 		}
+		if documentsUpdated > 0 {
+			s.queueQualityAudit(workspaceID, documentTypesFromStrategicDocuments(updatedDocuments), "documents_updated")
+		}
 	}
 
 	log.Printf(
@@ -331,6 +334,14 @@ func affectedDocumentTypes(materialized materializerOutput) []string {
 		add("contradictions_changes")
 	}
 	return result
+}
+
+func documentTypesFromStrategicDocuments(documents []StrategicDocument) []string {
+	result := make([]string, 0, len(documents))
+	for _, doc := range documents {
+		result = append(result, doc.DocumentType)
+	}
+	return normalizeDocumentTypes(result)
 }
 
 func strategicDocumentCatalog() []map[string]string {
