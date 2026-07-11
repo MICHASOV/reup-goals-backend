@@ -194,6 +194,7 @@ type QualityReport struct {
 	Overall              QualityOverallAssessment    `json:"overall"`
 	Documents            []QualityDocumentAssessment `json:"documents"`
 	ChatGuidance         QualityChatGuidance         `json:"chat_guidance"`
+	StrategyGate         QualityStrategyGate         `json:"strategy_gate"`
 	CreatedAt            time.Time                   `json:"created_at"`
 }
 
@@ -244,6 +245,39 @@ type QualityChatGuidance struct {
 	AvoidRepeating    []string `json:"avoid_repeating"`
 	BlindSpots        []string `json:"blind_spots"`
 	WhyThisNext       string   `json:"why_this_next"`
+}
+
+type QualityStrategyGate struct {
+	CanStartStrategy     bool                     `json:"can_start_strategy"`
+	MinimumScoreMet      bool                     `json:"minimum_score_met"`
+	NoCriticalBlockers   bool                     `json:"no_critical_blockers"`
+	BasicProfileComplete bool                     `json:"basic_profile_complete"`
+	GateItems            QualityStrategyGateItems `json:"gate_items"`
+	MissingGateItems     []string                 `json:"missing_gate_items"`
+	Recommendation       string                   `json:"recommendation"`
+}
+
+type QualityStrategyGateItems struct {
+	ProductOrService  bool `json:"product_or_service"`
+	CustomerOrSegment bool `json:"customer_or_segment"`
+	BusinessStage     bool `json:"business_stage"`
+	EvidenceStatus    bool `json:"evidence_status"`
+	MainProblem       bool `json:"main_problem"`
+	KeyConstraints    bool `json:"key_constraints"`
+}
+
+type AIRun struct {
+	ID            int       `json:"id"`
+	WorkspaceID   int       `json:"workspace_id"`
+	Scenario      string    `json:"scenario"`
+	Model         string    `json:"model"`
+	PromptVersion string    `json:"prompt_version"`
+	InputTokens   int       `json:"input_tokens"`
+	OutputTokens  int       `json:"output_tokens"`
+	DurationMs    int       `json:"duration_ms"`
+	Status        string    `json:"status"`
+	Error         string    `json:"error,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type aiMemoryResponse struct {

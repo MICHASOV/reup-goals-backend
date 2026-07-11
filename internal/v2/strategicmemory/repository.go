@@ -665,6 +665,7 @@ func (s *Store) SaveQualityReport(ctx context.Context, workspaceID int, report Q
 		"overall":       report.Overall,
 		"documents":     report.Documents,
 		"chat_guidance": report.ChatGuidance,
+		"strategy_gate": report.StrategyGate,
 	}
 
 	var id int
@@ -835,6 +836,50 @@ func (s *Store) LogAIRunWithUsage(ctx context.Context, workspaceID int, scenario
 	`, workspaceID, scenario, model, promptVersion, inputTokens, outputTokens, durationMs, status, errorText)
 }
 
+func (s *Store) ListAIRuns(ctx context.Context, workspaceID int, limit int) ([]AIRun, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT id, workspace_id, scenario, model, prompt_version,
+			input_tokens, output_tokens, duration_ms, status, error, created_at
+		FROM strategic_ai_runs
+		WHERE workspace_id=$1
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2
+	`, workspaceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	runs := []AIRun{}
+	for rows.Next() {
+		var run AIRun
+		var errorText sql.NullString
+		if err := rows.Scan(
+			&run.ID,
+			&run.WorkspaceID,
+			&run.Scenario,
+			&run.Model,
+			&run.PromptVersion,
+			&run.InputTokens,
+			&run.OutputTokens,
+			&run.DurationMs,
+			&run.Status,
+			&errorText,
+			&run.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if errorText.Valid {
+			run.Error = errorText.String
+		}
+		runs = append(runs, run)
+	}
+	return runs, rows.Err()
+}
+
 func mustJSON(value any) json.RawMessage {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -854,6 +899,7 @@ type storedQualityReportPayload struct {
 	Overall      QualityOverallAssessment    `json:"overall"`
 	Documents    []QualityDocumentAssessment `json:"documents"`
 	ChatGuidance QualityChatGuidance         `json:"chat_guidance"`
+	StrategyGate QualityStrategyGate         `json:"strategy_gate"`
 }
 
 func qualityReportFromStored(
@@ -880,6 +926,7 @@ func qualityReportFromStored(
 		Overall:              payload.Overall,
 		Documents:            payload.Documents,
 		ChatGuidance:         payload.ChatGuidance,
+		StrategyGate:         payload.StrategyGate,
 	}
 	if createdAt.Valid {
 		report.CreatedAt = createdAt.Time

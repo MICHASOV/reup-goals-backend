@@ -312,6 +312,24 @@ Cross-document checks:
 - contradictions and major changes should be captured in contradictions_changes;
 - unresolved gaps should be represented in open_questions or the research agenda.
 
+Strategy transition gate:
+The knowledge base is sufficient to move into strategy work only when:
+- readiness_score is at least 60;
+- there are no critical_blockers;
+- the basic business profile is complete enough.
+
+The basic business profile requires:
+1. product_or_service - what the company sells or intends to sell is understandable;
+2. customer_or_segment - the target customer or working customer hypothesis is understandable;
+3. business_stage - the current business stage is clear;
+4. evidence_status - it is clear what is proven, what is hypothetical, and what is unknown;
+5. main_problem - the main current problem, bottleneck, or strategic tension is understandable;
+6. key_constraints - the key constraints are documented: money, team, time, technology, sales, operations, or other relevant limits.
+
+Do not require perfect information before strategy work can begin. For an early-stage business, it is acceptable that revenue, retention, CAC, or unit economics are missing if the absence is clearly documented and the strategy should focus on validation.
+
+If the score is at least 60 but the basic profile is incomplete, can_start_strategy must be false and missing_gate_items must list the missing gate items.
+
 Return valid JSON only:
 {
   "overall": {
@@ -359,5 +377,21 @@ Return valid JSON only:
     "avoid_repeating": ["what not to ask again"],
     "blind_spots": ["important blind zone still missing"],
     "why_this_next": "why this is the best next move"
+  },
+  "strategy_gate": {
+    "can_start_strategy": false,
+    "minimum_score_met": false,
+    "no_critical_blockers": false,
+    "basic_profile_complete": false,
+    "gate_items": {
+      "product_or_service": false,
+      "customer_or_segment": false,
+      "business_stage": false,
+      "evidence_status": false,
+      "main_problem": false,
+      "key_constraints": false
+    },
+    "missing_gate_items": ["specific missing gate item"],
+    "recommendation": "what should happen before moving to strategy"
   }
 }`

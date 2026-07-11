@@ -107,7 +107,8 @@ func finalizeQualityReport(report QualityReport) QualityReport {
 	weightedDocs := weightedDocumentsScore(report.Documents)
 	readinessScore := int(math.Round(float64(weightedDocs)*0.75 + float64(crossScore)*0.25))
 	readinessScore = clampScore(readinessScore)
-	status := readinessStatusFromScore(readinessScore, len(report.Overall.CriticalBlockers) > 0)
+	report.StrategyGate = finalizeStrategyGate(report.StrategyGate, readinessScore, report.Overall.CriticalBlockers)
+	status := readinessStatusFromScore(readinessScore, len(report.Overall.CriticalBlockers) > 0 || !report.StrategyGate.BasicProfileComplete)
 
 	report.ReadinessScore = readinessScore
 	report.ReadinessStatus = status
@@ -115,6 +116,35 @@ func finalizeQualityReport(report QualityReport) QualityReport {
 	report.Overall.ReadinessStatus = status
 	report.Overall.CrossDocumentQualityScore = crossScore
 	return report
+}
+
+func finalizeStrategyGate(gate QualityStrategyGate, readinessScore int, criticalBlockers []string) QualityStrategyGate {
+	gate.MinimumScoreMet = readinessScore >= 60
+	gate.NoCriticalBlockers = len(criticalBlockers) == 0
+	gate.BasicProfileComplete = qualityStrategyGateItemsComplete(gate.GateItems) && len(gate.MissingGateItems) == 0
+	gate.CanStartStrategy = gate.MinimumScoreMet && gate.NoCriticalBlockers && gate.BasicProfileComplete
+	if gate.Recommendation == "" {
+		switch {
+		case gate.CanStartStrategy:
+			gate.Recommendation = "База знаний достаточна, чтобы переходить к первичной стратегической работе."
+		case !gate.MinimumScoreMet:
+			gate.Recommendation = "Перед стратегией нужно добрать контекст до минимального уровня готовности 60%."
+		case !gate.NoCriticalBlockers:
+			gate.Recommendation = "Перед стратегией нужно снять критические блокеры в базе знаний."
+		default:
+			gate.Recommendation = "Перед стратегией нужно закрыть базовый профиль бизнеса."
+		}
+	}
+	return gate
+}
+
+func qualityStrategyGateItemsComplete(items QualityStrategyGateItems) bool {
+	return items.ProductOrService &&
+		items.CustomerOrSegment &&
+		items.BusinessStage &&
+		items.EvidenceStatus &&
+		items.MainProblem &&
+		items.KeyConstraints
 }
 
 func scoreDocument(doc QualityDocumentAssessment) int {
@@ -318,6 +348,7 @@ func compactQualityReportForContext(report *QualityReport) map[string]any {
 		"next_best_questions":    report.ChatGuidance.NextBestQuestions,
 		"avoid_repeating":        report.ChatGuidance.AvoidRepeating,
 		"why_this_next":          report.ChatGuidance.WhyThisNext,
+		"strategy_gate":          report.StrategyGate,
 		"highest_priority_gaps":  report.Overall.MostImportantMissingInfo,
 		"highest_priority_tasks": report.Overall.HighestPriorityImprovements,
 	}

@@ -64,6 +64,8 @@ func (h *Handler) StrategicMemory(w http.ResponseWriter, r *http.Request) {
 		h.documents(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/strategic-memory/quality-audit":
 		h.qualityAudit(w, r, workspace.ID)
+	case r.URL.Path == "/api/v2/strategic-memory/ai-runs":
+		h.aiRuns(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/strategic-memory/reset":
 		h.reset(w, r, workspace.ID)
 	default:
@@ -219,6 +221,19 @@ func (h *Handler) qualityAudit(w http.ResponseWriter, r *http.Request, workspace
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
+}
+
+func (h *Handler) aiRuns(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	if r.Method != http.MethodGet {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	runs, err := h.store.ListAIRuns(r.Context(), workspaceID, 300)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "strategic_ai_runs_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspaceID, "ai_runs": runs})
 }
 
 func (h *Handler) reset(w http.ResponseWriter, r *http.Request, workspaceID int) {
