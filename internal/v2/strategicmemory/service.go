@@ -6,22 +6,32 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"reup-goals-backend/internal/ai"
 )
 
+const autoQualityAuditThrottle = 10 * time.Minute
+
 type Service struct {
-	store            *Store
-	ai               *ai.OpenAIClient
-	compactThreshold int
+	store                  *Store
+	ai                     *ai.OpenAIClient
+	compactThreshold       int
+	qualityAuditMu         sync.Mutex
+	qualityAuditReservedAt map[int]time.Time
 }
 
 func NewService(store *Store, aiClient *ai.OpenAIClient, compactThreshold int) *Service {
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
 	}
-	return &Service{store: store, ai: aiClient, compactThreshold: compactThreshold}
+	return &Service{
+		store:                  store,
+		ai:                     aiClient,
+		compactThreshold:       compactThreshold,
+		qualityAuditReservedAt: map[int]time.Time{},
+	}
 }
 
 func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, error) {
@@ -303,6 +313,9 @@ func vectorStoreIDsFromSession(session OpenAISession) []string {
 }
 
 func (s *Service) Reset(ctx context.Context, workspaceID int) error {
+	s.qualityAuditMu.Lock()
+	delete(s.qualityAuditReservedAt, workspaceID)
+	s.qualityAuditMu.Unlock()
 	return s.store.Reset(ctx, workspaceID)
 }
 

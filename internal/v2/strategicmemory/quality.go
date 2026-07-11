@@ -27,6 +27,10 @@ type qualityAuditInputDocument struct {
 }
 
 func (s *Service) queueQualityAudit(workspaceID int, changedDocumentTypes []string, trigger string) {
+	if trigger == "documents_updated" && !s.reserveAutoQualityAudit(workspaceID) {
+		log.Printf("[INFO] strategic quality audit skipped by throttle workspace_id=%d trigger=%s", workspaceID, trigger)
+		return
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), qualityAuditTimeout)
 		defer cancel()
@@ -35,6 +39,19 @@ func (s *Service) queueQualityAudit(workspaceID int, changedDocumentTypes []stri
 			log.Printf("[WARN] strategic quality audit failed workspace_id=%d trigger=%s: %v", workspaceID, trigger, err)
 		}
 	}()
+}
+
+func (s *Service) reserveAutoQualityAudit(workspaceID int) bool {
+	now := time.Now()
+	s.qualityAuditMu.Lock()
+	defer s.qualityAuditMu.Unlock()
+
+	last, ok := s.qualityAuditReservedAt[workspaceID]
+	if ok && now.Sub(last) < autoQualityAuditThrottle {
+		return false
+	}
+	s.qualityAuditReservedAt[workspaceID] = now
+	return true
 }
 
 func (s *Service) RunQualityAudit(ctx context.Context, workspaceID int, changedDocumentTypes []string, trigger string) (QualityReport, error) {
