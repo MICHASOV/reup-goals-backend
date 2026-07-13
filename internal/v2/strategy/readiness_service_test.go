@@ -85,6 +85,18 @@ func TestParseStrategyFacilitatorOutputKeepsNaturalMessageAndNormalizesStatus(t 
 	}
 }
 
+func TestParseStrategyFacilitatorOutputRejectsReplacementCharacters(t *testing.T) {
+	_, err := parseStrategyFacilitatorOutput(`{
+		"message":"Кажется, но здесь символ повре�дён.",
+		"session_status":"continue",
+		"status_reason":"",
+		"remaining_uncertainties":[]
+	}`)
+	if err == nil {
+		t.Fatal("expected invalid UTF-8 replacement character to trigger a retry")
+	}
+}
+
 func TestMessagesThroughIDExcludesNewerTurns(t *testing.T) {
 	messages := []StrategyChatMessage{{ID: 10}, {ID: 11}, {ID: 12}}
 	filtered := messagesThroughID(messages, 11)

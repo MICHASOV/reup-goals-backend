@@ -112,6 +112,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		return StrategyFacilitatorMessageResponse{}, err
 	}
 	vectorStoreIDs := s.strategyVectorStoreIDs(ctx, workspaceID)
+	usedPreviousResponseID := session.PreviousResponseID
 
 	input := buildStrategyFacilitatorTurnInput(message, state)
 	if strings.TrimSpace(session.PreviousResponseID) == "" {
@@ -130,6 +131,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if err != nil {
 		if strings.TrimSpace(session.PreviousResponseID) != "" {
 			_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, "")
+			usedPreviousResponseID = ""
 			started = time.Now()
 			result, err = s.ai.GenerateJSONNative(ctx, strategyFacilitatorPrompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
 				VectorStoreIDs:       vectorStoreIDs,
@@ -149,7 +151,28 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if parseErr != nil {
 		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_output_parse", s.ai.Model, StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
 		_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, "")
-		return s.fallbackResponse(ctx, workspaceID, userSourceID, state), nil
+		usedPreviousResponseID = ""
+		started = time.Now()
+		result, err = s.ai.GenerateJSONNative(ctx, strategyFacilitatorPrompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
+			VectorStoreIDs:       vectorStoreIDs,
+			CompactThreshold:     session.CompactThreshold,
+			PromptCacheKey:       session.PromptCacheKey,
+			MaxFileSearchResults: 8,
+		})
+		duration = time.Since(started).Milliseconds()
+		if err == nil {
+			modelOutput, parseErr = parseStrategyFacilitatorOutput(result.Text)
+		}
+		if err != nil || parseErr != nil {
+			errorText := "strategy facilitator retry failed"
+			if err != nil {
+				errorText = err.Error()
+			} else if parseErr != nil {
+				errorText = parseErr.Error()
+			}
+			s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_output_retry", s.ai.Model, StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
+			return s.fallbackResponse(ctx, workspaceID, userSourceID, state), nil
+		}
 	}
 	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_openai_native", s.ai.Model, StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	if strings.TrimSpace(result.ResponseID) != "" {
@@ -164,7 +187,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		"mode":                    "openai_native",
 		"user_source_id":          userSourceID,
 		"response_id":             result.ResponseID,
-		"previous_response_id":    session.PreviousResponseID,
+		"previous_response_id":    usedPreviousResponseID,
 		"vector_store_ids":        vectorStoreIDs,
 		"session_status":          modelOutput.SessionStatus,
 		"status_reason":           modelOutput.StatusReason,
@@ -291,6 +314,9 @@ func parseStrategyFacilitatorOutput(raw string) (strategyFacilitatorModelOutput,
 	output.Message = cleanAssistantMessage(output.Message)
 	if output.Message == "" {
 		return strategyFacilitatorModelOutput{}, fmt.Errorf("strategy facilitator returned empty message")
+	}
+	if strings.ContainsRune(output.Message, '\uFFFD') {
+		return strategyFacilitatorModelOutput{}, fmt.Errorf("strategy facilitator returned invalid UTF-8 replacement characters")
 	}
 	output.SessionStatus = normalizeFacilitatorStatus(output.SessionStatus)
 	output.StatusReason = strings.TrimSpace(output.StatusReason)
