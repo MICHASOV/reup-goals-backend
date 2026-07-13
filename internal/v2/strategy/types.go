@@ -59,10 +59,12 @@ type Artifact struct {
 }
 
 type KnowledgeBaseSummary struct {
-	BlocksTotal  int `json:"blocks_total"`
-	BlocksReady  int `json:"blocks_ready"`
-	BlocksFilled int `json:"blocks_filled"`
-	BlocksEmpty  int `json:"blocks_empty"`
+	BlocksTotal     int    `json:"blocks_total"`
+	BlocksReady     int    `json:"blocks_ready"`
+	BlocksFilled    int    `json:"blocks_filled"`
+	BlocksEmpty     int    `json:"blocks_empty"`
+	ReadinessScore  int    `json:"readiness_score"`
+	ReadinessStatus string `json:"readiness_status"`
 }
 
 type StrategyChatMessage struct {
@@ -87,6 +89,13 @@ type StrategyFacilitatorState struct {
 	RecentMessages []StrategyChatMessage    `json:"recent_messages"`
 	Session        StrategySessionState     `json:"session"`
 	Readiness      *StrategyReadinessRun    `json:"readiness,omitempty"`
+}
+
+type StrategyFacilitatorHistoryState struct {
+	WorkspaceID    int                   `json:"workspace_id"`
+	RecentMessages []StrategyChatMessage `json:"recent_messages"`
+	Session        StrategySessionState  `json:"session"`
+	Readiness      *StrategyReadinessRun `json:"readiness,omitempty"`
 }
 
 type StrategyFacilitatorMessageRequest struct {
@@ -318,8 +327,10 @@ type StrategySynthesisDocument struct {
 }
 
 type StrategySynthesisResponse struct {
-	Run       *StrategySynthesisRun       `json:"run"`
-	Documents []StrategySynthesisDocument `json:"documents"`
+	Run          *StrategySynthesisRun       `json:"run"`
+	DocumentsRun *StrategySynthesisRun       `json:"documents_run,omitempty"`
+	Documents    []StrategySynthesisDocument `json:"documents"`
+	IsCurrent    bool                        `json:"is_current"`
 }
 
 type strategySynthesisModelOutput struct {

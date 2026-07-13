@@ -40,6 +40,19 @@ func (s *Store) SessionState(ctx context.Context, workspaceID int) (StrategySess
 	return state, err
 }
 
+func (s *Store) InvalidateSessionAfterContextChange(ctx context.Context, workspaceID int) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_strategy_session_state
+		SET revision=revision + 1,
+			facilitator_status=$2,
+			status_reason='The strategy context changed after a file upload.',
+			remaining_uncertainties_json='[]'::jsonb,
+			updated_at=NOW()
+		WHERE workspace_id=$1
+	`, workspaceID, FacilitatorStatusContinue)
+	return err
+}
+
 func (s *Store) BeginFacilitatorTurn(
 	ctx context.Context,
 	workspaceID int,

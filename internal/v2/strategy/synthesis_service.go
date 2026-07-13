@@ -27,6 +27,9 @@ const (
 )
 
 var synthesisURLPattern = regexp.MustCompile(`https?://[^\s<>()\[\]{}"']+`)
+var synthesisTechnicalSourcePattern = regexp.MustCompile(`\[(?:knowledge_document|strategy_message|uploaded_file|external_link):[^\]]+\]`)
+var synthesisEmptySourceLinePattern = regexp.MustCompile(`(?im)^\s*(?:источники|sources?)\s*:\s*[,;·\s-]*$`)
+var synthesisExcessiveBreaksPattern = regexp.MustCompile(`\n{3,}`)
 
 type SynthesisService struct {
 	store            *Store
@@ -102,6 +105,7 @@ func (s *SynthesisService) StartForRevision(
 	if created {
 		go s.executeDetached(workspaceID, run.ID, strategy)
 	}
+	_ = s.store.LinkSynthesisToSession(ctx, workspaceID, sessionRevision, run.ID)
 	return StrategySynthesisResponse{Run: &run, Documents: []StrategySynthesisDocument{}}, nil
 }
 
@@ -528,7 +532,7 @@ func normalizeFormattedSynthesisDocuments(
 		document.FrameSubtitle = strings.TrimSpace(formatted.FrameSubtitle)
 		document.PrimarySignal = strings.TrimSpace(formatted.PrimarySignal)
 		document.VisualStatus = normalizeStrategyVisualStatus(formatted.Status, document.Status)
-		document.FormattedDocument = strings.TrimSpace(formatted.FormattedDocument)
+		document.FormattedDocument = cleanFormattedStrategyDocument(formatted.FormattedDocument)
 		if document.FormattedDocument == "" {
 			document.FormattedDocument = fallbackFormattedMarkdown(document)
 		}
@@ -553,11 +557,18 @@ func fallbackFormattedSynthesisDocument(document StrategySynthesisDocument) Stra
 	document.FrameSubtitle = defaultString(document.FrameSubtitle, firstSynthesisSentence(document))
 	document.PrimarySignal = defaultString(document.PrimarySignal, firstSynthesisSentence(document))
 	document.VisualStatus = normalizeStrategyVisualStatus(document.VisualStatus, document.Status)
-	document.FormattedDocument = defaultString(document.FormattedDocument, fallbackFormattedMarkdown(document))
+	document.FormattedDocument = cleanFormattedStrategyDocument(defaultString(document.FormattedDocument, fallbackFormattedMarkdown(document)))
 	if document.OpenQuestions == nil {
 		document.OpenQuestions = []string{}
 	}
 	return document
+}
+
+func cleanFormattedStrategyDocument(value string) string {
+	value = synthesisTechnicalSourcePattern.ReplaceAllString(value, "")
+	value = synthesisEmptySourceLinePattern.ReplaceAllString(value, "")
+	value = synthesisExcessiveBreaksPattern.ReplaceAllString(value, "\n\n")
+	return strings.TrimSpace(value)
 }
 
 func fallbackFormattedMarkdown(document StrategySynthesisDocument) string {

@@ -77,8 +77,7 @@ Preserve nuance:
 - do not make weakly supported claims sound certain;
 - do not remove small details that may matter for future strategy work.
 
-Keep links to sources where they help the reader verify or understand the artifact.
-If a claim is based on a specific Knowledge Base document, uploaded file, or session fragment, include the source reference in the relevant place.
+Keep source relationships in the structured source_refs array. Do not print technical source keys such as [knowledge_document:12] or [strategy_message:42] inside formatted_document. The frontend renders source links separately.
 
 Use only source keys that were supplied in the input. Never invent source keys, files, URLs, or source labels.
 

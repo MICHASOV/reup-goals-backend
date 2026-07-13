@@ -99,6 +99,66 @@ func (s *Store) Activate(ctx context.Context, workspaceID int, strategyID int, u
 		return Strategy{}, err
 	}
 
+	var readinessVerdict string
+	var readinessCanSynthesize bool
+	var readinessRevision int
+	var currentRevision int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT r.verdict, r.can_synthesize, r.session_revision, session.revision
+		FROM v2_strategy_readiness_runs r
+		JOIN v2_strategy_session_state session ON session.workspace_id=r.workspace_id
+		WHERE r.workspace_id=$1 AND r.strategy_id=$2 AND r.status=$3
+		ORDER BY r.created_at DESC, r.id DESC
+		LIMIT 1
+	`, workspaceID, strategyID, ReadinessRunCompleted).Scan(
+		&readinessVerdict,
+		&readinessCanSynthesize,
+		&readinessRevision,
+		&currentRevision,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Strategy{}, ErrStrategyActivationNotReady
+		}
+		return Strategy{}, err
+	}
+	if readinessRevision != currentRevision {
+		return Strategy{}, ErrStrategyActivationStale
+	}
+	if readinessVerdict != ReadinessVerdictReady || !readinessCanSynthesize {
+		return Strategy{}, ErrStrategyActivationNotReady
+	}
+
+	var synthesisRunID int
+	var synthesisRevision int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id, session_revision
+		FROM v2_strategy_synthesis_runs
+		WHERE workspace_id=$1 AND strategy_id=$2 AND status=$3
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, workspaceID, strategyID, SynthesisStatusCompleted).Scan(&synthesisRunID, &synthesisRevision); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Strategy{}, ErrStrategyActivationArtifactsMissing
+		}
+		return Strategy{}, err
+	}
+	if synthesisRevision != currentRevision {
+		return Strategy{}, ErrStrategyActivationStale
+	}
+
+	var coreArtifactsReady int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM v2_strategy_synthesis_documents
+		WHERE run_id=$1 AND workspace_id=$2 AND status=$3
+			AND document_type IN ('key_challenge', 'chosen_direction_and_refusals', 'goals_and_metrics', 'ninety_day_course')
+	`, synthesisRunID, workspaceID, SynthesisDocumentFilled).Scan(&coreArtifactsReady); err != nil {
+		return Strategy{}, err
+	}
+	if coreArtifactsReady != 4 {
+		return Strategy{}, ErrStrategyActivationArtifactsMissing
+	}
+
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE v2_strategies
 		SET status=$1, archived_at=NOW(), updated_at=NOW()
@@ -380,17 +440,31 @@ func (s *Store) knowledgeBaseSummary(ctx context.Context, workspaceID int) (Know
 		SELECT
 			COUNT(*),
 			COUNT(*) FILTER (WHERE status='ready'),
-			COUNT(*) FILTER (WHERE status<>'empty'),
-			COUNT(*) FILTER (WHERE status='empty')
-		FROM v2_knowledge_base_blocks
-		WHERE workspace_id=$1 AND archived_at IS NULL
+			COUNT(*) FILTER (WHERE BTRIM(markdown)<>''),
+			COUNT(*) FILTER (WHERE BTRIM(markdown)='')
+		FROM strategic_documents
+		WHERE workspace_id=$1
 	`, workspaceID).Scan(&summary.BlocksTotal, &summary.BlocksReady, &summary.BlocksFilled, &summary.BlocksEmpty)
 	if err != nil {
 		return KnowledgeBaseSummary{}, err
 	}
 
+	_ = s.dbx.QueryRowContext(ctx, `
+		SELECT readiness_score, readiness_status
+		FROM strategic_quality_reports
+		WHERE workspace_id=$1
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, workspaceID).Scan(&summary.ReadinessScore, &summary.ReadinessStatus)
+
 	return summary, nil
 }
+
+var (
+	ErrStrategyActivationNotReady         = errors.New("strategy_activation_not_ready")
+	ErrStrategyActivationStale            = errors.New("strategy_activation_stale")
+	ErrStrategyActivationArtifactsMissing = errors.New("strategy_activation_artifacts_missing")
+)
 
 type scanner interface {
 	Scan(dest ...any) error

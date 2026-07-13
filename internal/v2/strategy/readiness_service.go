@@ -24,7 +24,6 @@ type ReadinessService struct {
 	memoryStore      *strategicmemory.Store
 	ai               *ai.OpenAIClient
 	compactThreshold int
-	synthesis        *SynthesisService
 	wake             chan struct{}
 }
 
@@ -32,7 +31,6 @@ func NewReadinessService(
 	dbx *sql.DB,
 	aiClient *ai.OpenAIClient,
 	compactThreshold int,
-	synthesis *SynthesisService,
 ) *ReadinessService {
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
@@ -42,7 +40,6 @@ func NewReadinessService(
 		memoryStore:      strategicmemory.NewStore(dbx),
 		ai:               aiClient,
 		compactThreshold: compactThreshold,
-		synthesis:        synthesis,
 		wake:             make(chan struct{}, 1),
 	}
 }
@@ -208,27 +205,12 @@ func (s *ReadinessService) execute(ctx context.Context, run StrategyReadinessRun
 		return fmt.Errorf("strategy readiness json decode error: %w", err)
 	}
 	report = normalizeReadinessReport(report, run, sourceIndex)
-	isCurrent, err := s.store.CompleteReadinessAudit(ctx, run, report, result.Usage.InputTokens, result.Usage.OutputTokens, duration)
+	_, err = s.store.CompleteReadinessAudit(ctx, run, report, result.Usage.InputTokens, result.Usage.OutputTokens, duration)
 	if err != nil {
 		return err
 	}
 	s.memoryStore.LogAIRunWithUsage(ctx, run.WorkspaceID, "strategy_readiness_auditor", s.ai.Model, StrategyReadinessPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 
-	if isCurrent && report.CanSynthesize && s.synthesis != nil {
-		userID := 0
-		if run.CreatedBy != nil {
-			userID = *run.CreatedBy
-		}
-		if userID > 0 {
-			response, startErr := s.synthesis.StartForRevision(ctx, run.WorkspaceID, userID, run.SessionRevision, run.ValidatedThroughMessageID)
-			if startErr != nil {
-				return startErr
-			}
-			if response.Run != nil {
-				_ = s.store.LinkSynthesisToSession(ctx, run.WorkspaceID, run.SessionRevision, response.Run.ID)
-			}
-		}
-	}
 	return nil
 }
 

@@ -25,7 +25,7 @@ type Handler struct {
 
 func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *Handler {
 	synthesis := NewSynthesisService(dbx, aiClient, compactThreshold)
-	readiness := NewReadinessService(dbx, aiClient, compactThreshold, synthesis)
+	readiness := NewReadinessService(dbx, aiClient, compactThreshold)
 	facilitator := NewFacilitatorService(dbx, aiClient, compactThreshold)
 	facilitator.SetReadinessService(readiness)
 	readiness.StartWorker()
@@ -246,6 +246,18 @@ func (h *Handler) activateStrategy(w http.ResponseWriter, r *http.Request, works
 		api.WriteError(w, http.StatusForbidden, "forbidden")
 		return
 	}
+	if errors.Is(err, ErrStrategyActivationNotReady) {
+		api.WriteError(w, http.StatusConflict, "strategy_activation_not_ready")
+		return
+	}
+	if errors.Is(err, ErrStrategyActivationStale) {
+		api.WriteError(w, http.StatusConflict, "strategy_activation_stale")
+		return
+	}
+	if errors.Is(err, ErrStrategyActivationArtifactsMissing) {
+		api.WriteError(w, http.StatusConflict, "strategy_activation_artifacts_missing")
+		return
+	}
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "strategy_activate_failed")
 		return
@@ -262,6 +274,16 @@ func (h *Handler) facilitatorState(w http.ResponseWriter, r *http.Request) {
 
 	workspace, userID, ok := h.currentWorkspace(w, r)
 	if !ok {
+		return
+	}
+
+	if r.URL.Query().Get("view") == "history" {
+		state, err := h.facilitator.History(r.Context(), workspace.ID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "strategy_facilitator_state_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, state)
 		return
 	}
 

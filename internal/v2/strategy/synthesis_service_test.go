@@ -159,3 +159,11 @@ func TestNormalizeFormattedSynthesisDocumentsFallsBackWhenArtifactMissing(t *tes
 		t.Fatalf("unexpected visual status: %q", formatted[0].VisualStatus)
 	}
 }
+
+func TestCleanFormattedStrategyDocumentRemovesTechnicalSourceKeys(t *testing.T) {
+	raw := "## Решение\n\nФокус на B2B [strategy_message:42].\n\nИсточники: [knowledge_document:7], [strategy_message:42]\n\n\nСледующий шаг."
+	cleaned := cleanFormattedStrategyDocument(raw)
+	if cleaned != "## Решение\n\nФокус на B2B .\n\nСледующий шаг." {
+		t.Fatalf("unexpected cleaned document: %q", cleaned)
+	}
+}

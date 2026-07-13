@@ -86,6 +86,27 @@ func (s *FacilitatorService) State(ctx context.Context, workspaceID int, userID 
 	}, nil
 }
 
+func (s *FacilitatorService) History(ctx context.Context, workspaceID int) (StrategyFacilitatorHistoryState, error) {
+	messages, err := s.store.ChatMessages(ctx, workspaceID, 300)
+	if err != nil {
+		return StrategyFacilitatorHistoryState{}, err
+	}
+	sessionState, err := s.store.SessionState(ctx, workspaceID)
+	if err != nil {
+		return StrategyFacilitatorHistoryState{}, err
+	}
+	readinessRun, err := s.store.LatestReadinessAudit(ctx, workspaceID)
+	if err != nil {
+		return StrategyFacilitatorHistoryState{}, err
+	}
+	return StrategyFacilitatorHistoryState{
+		WorkspaceID:    workspaceID,
+		RecentMessages: messages,
+		Session:        sessionState,
+		Readiness:      readinessRun,
+	}, nil
+}
+
 func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int, userID int, message string) (StrategyFacilitatorMessageResponse, error) {
 	message = strings.TrimSpace(message)
 	if len([]rune(message)) < 2 {
@@ -219,7 +240,12 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 }
 
 func (s *FacilitatorService) UploadFile(ctx context.Context, workspaceID int, userID int, filename string, contentType string, sizeBytes int64, file io.Reader) (strategicmemory.FileUploadResponse, error) {
-	return s.memoryService.UploadFile(ctx, workspaceID, userID, filename, contentType, sizeBytes, file)
+	response, err := s.memoryService.UploadFile(ctx, workspaceID, userID, filename, contentType, sizeBytes, file)
+	if err != nil {
+		return response, err
+	}
+	_ = s.store.InvalidateSessionAfterContextChange(ctx, workspaceID)
+	return response, nil
 }
 
 func (s *FacilitatorService) strategyVectorStoreIDs(ctx context.Context, workspaceID int) []string {

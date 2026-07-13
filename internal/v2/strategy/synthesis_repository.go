@@ -265,11 +265,48 @@ func (s *Store) LatestSynthesis(ctx context.Context, workspaceID int) (StrategyS
 	if err != nil {
 		return StrategySynthesisResponse{}, err
 	}
-	documents, err := s.listSynthesisDocuments(ctx, workspaceID, run.ID)
+	documentsRun := run
+	documents, err := s.listSynthesisDocuments(ctx, workspaceID, documentsRun.ID)
 	if err != nil {
 		return StrategySynthesisResponse{}, err
 	}
-	return StrategySynthesisResponse{Run: &run, Documents: documents}, nil
+	if len(documents) == 0 {
+		completed, completedErr := s.latestCompletedSynthesis(ctx, workspaceID)
+		if completedErr != nil && !errors.Is(completedErr, sql.ErrNoRows) {
+			return StrategySynthesisResponse{}, completedErr
+		}
+		if completedErr == nil {
+			documentsRun = completed
+			documents, err = s.listSynthesisDocuments(ctx, workspaceID, documentsRun.ID)
+			if err != nil {
+				return StrategySynthesisResponse{}, err
+			}
+		}
+	}
+	var currentRevision int
+	_ = s.dbx.QueryRowContext(ctx, `
+		SELECT revision FROM v2_strategy_session_state WHERE workspace_id=$1
+	`, workspaceID).Scan(&currentRevision)
+	isCurrent := documentsRun.Status == SynthesisStatusCompleted && documentsRun.SessionRevision == currentRevision
+	return StrategySynthesisResponse{
+		Run:          &run,
+		DocumentsRun: &documentsRun,
+		Documents:    documents,
+		IsCurrent:    isCurrent,
+	}, nil
+}
+
+func (s *Store) latestCompletedSynthesis(ctx context.Context, workspaceID int) (StrategySynthesisRun, error) {
+	row := s.dbx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, strategy_id, version, session_revision, through_message_id, status, model, prompt_version,
+			summary, openai_response_id, input_tokens, output_tokens, duration_ms,
+			error, created_by, created_at, started_at, completed_at
+		FROM v2_strategy_synthesis_runs
+		WHERE workspace_id=$1 AND status=$2
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, workspaceID, SynthesisStatusCompleted)
+	return scanSynthesisRun(row)
 }
 
 func (s *Store) ChatMessages(ctx context.Context, workspaceID int, limit int) ([]StrategyChatMessage, error) {

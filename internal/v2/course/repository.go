@@ -125,6 +125,11 @@ func (s *Store) activeStrategy(ctx context.Context, workspaceID int) (StrategySu
 func (s *Store) getOrCreate(ctx context.Context, workspaceID int, userID int, strategy StrategySummary) (Course, error) {
 	course, err := s.courseByStrategy(ctx, workspaceID, strategy.ID)
 	if err == nil {
+		if course.Source == SourceFromStrategy {
+			if refreshed, refreshErr := s.refreshGeneratedCourse(ctx, workspaceID, strategy, course); refreshErr == nil {
+				return refreshed, nil
+			}
+		}
 		return course, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -194,6 +199,45 @@ func (s *Store) getOrCreate(ctx context.Context, workspaceID int, userID int, st
 	return course, nil
 }
 
+func (s *Store) refreshGeneratedCourse(
+	ctx context.Context,
+	workspaceID int,
+	strategy StrategySummary,
+	current Course,
+) (Course, error) {
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return Course{}, err
+	}
+	defer tx.Rollback()
+	artifacts, err := strategyArtifactsTx(ctx, tx, workspaceID, strategy.ID)
+	if err != nil {
+		return Course{}, err
+	}
+	draft := buildDraft(strategy, artifacts)
+	row := tx.QueryRowContext(ctx, `
+		UPDATE v2_courses
+		SET title=$1, direction=$2, strategic_goal=$3, meaning=$4,
+			horizon=$5, horizon_unit=$6, end_date=start_date + $5,
+			key_metric=$7, success_criterion=$8, updated_at=NOW()
+		WHERE id=$9 AND workspace_id=$10 AND source=$11 AND archived_at IS NULL
+		RETURNING
+			id, workspace_id, strategy_id, title, direction, strategic_goal, meaning,
+			horizon, horizon_unit, start_date::TEXT, end_date::TEXT, key_metric,
+			success_criterion, status, source, created_by, created_at, updated_at, activated_at
+	`, draft.Title, draft.Direction, draft.StrategicGoal, draft.Meaning,
+		*draft.Horizon, draft.HorizonUnit, draft.KeyMetric, draft.SuccessCriterion,
+		current.ID, workspaceID, SourceFromStrategy)
+	refreshed, err := scanCourse(row)
+	if err != nil {
+		return Course{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Course{}, err
+	}
+	return refreshed, nil
+}
+
 func (s *Store) courseByStrategy(ctx context.Context, workspaceID int, strategyID int) (Course, error) {
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT
@@ -234,8 +278,47 @@ func courseByStrategyTx(ctx context.Context, tx *sql.Tx, workspaceID int, strate
 	return scanCourse(row)
 }
 
-func strategyArtifactsTx(ctx context.Context, tx *sql.Tx, workspaceID int, strategyID int) (map[string]string, error) {
+type strategyArtifactValue struct {
+	FrameTitle    string
+	FrameSubtitle string
+	PrimarySignal string
+	Content       string
+}
+
+func strategyArtifactsTx(ctx context.Context, tx *sql.Tx, workspaceID int, strategyID int) (map[string]strategyArtifactValue, error) {
 	rows, err := tx.QueryContext(ctx, `
+		SELECT document_type, frame_title, frame_subtitle, primary_signal, formatted_markdown
+		FROM v2_strategy_synthesis_documents
+		WHERE workspace_id=$1 AND run_id=(
+			SELECT id
+			FROM v2_strategy_synthesis_runs
+			WHERE workspace_id=$1 AND strategy_id=$2 AND status='completed'
+			ORDER BY created_at DESC, id DESC
+			LIMIT 1
+		)
+	`, workspaceID, strategyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	artifacts := map[string]strategyArtifactValue{}
+	for rows.Next() {
+		var artifactType string
+		var value strategyArtifactValue
+		if err := rows.Scan(&artifactType, &value.FrameTitle, &value.FrameSubtitle, &value.PrimarySignal, &value.Content); err != nil {
+			return nil, err
+		}
+		artifacts[artifactType] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(artifacts) > 0 {
+		return artifacts, nil
+	}
+
+	legacyRows, err := tx.QueryContext(ctx, `
 		SELECT type, content
 		FROM v2_strategy_artifacts
 		WHERE workspace_id=$1 AND strategy_id=$2
@@ -243,29 +326,42 @@ func strategyArtifactsTx(ctx context.Context, tx *sql.Tx, workspaceID int, strat
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	artifacts := map[string]string{}
-	for rows.Next() {
+	defer legacyRows.Close()
+	for legacyRows.Next() {
 		var artifactType string
 		var content string
-		if err := rows.Scan(&artifactType, &content); err != nil {
+		if err := legacyRows.Scan(&artifactType, &content); err != nil {
 			return nil, err
 		}
-		artifacts[artifactType] = strings.TrimSpace(content)
+		artifacts[artifactType] = strategyArtifactValue{Content: strings.TrimSpace(content)}
 	}
-	return artifacts, rows.Err()
+	return artifacts, legacyRows.Err()
 }
 
-func buildDraft(strategy StrategySummary, artifacts map[string]string) CourseInput {
-	direction := firstNonEmpty(artifacts["strategic_direction"])
-	goal := firstNonEmpty(artifacts["local_goal"], artifacts["global_goal"])
-	meaning := firstNonEmpty(artifacts["current_challenge"], strategy.Summary, artifacts["strategy_verdict"])
-	keyMetric := firstNonEmpty(artifacts["key_metric"])
-	successCriterion := firstNonEmpty(artifacts["validation_plan"], artifacts["strategy_verdict"])
+func buildDraft(strategy StrategySummary, artifacts map[string]strategyArtifactValue) CourseInput {
+	direction := firstNonEmpty(
+		artifactValue(artifacts["chosen_direction_and_refusals"]),
+		artifactValue(artifacts["strategic_direction"]),
+	)
+	goal := firstNonEmpty(
+		artifacts["goals_and_metrics"].PrimarySignal,
+		artifactValue(artifacts["goals_and_metrics"]),
+		artifactValue(artifacts["local_goal"]),
+		artifactValue(artifacts["global_goal"]),
+	)
+	meaning := firstNonEmpty(
+		artifactValue(artifacts["key_challenge"]),
+		artifactValue(artifacts["strategic_diagnosis"]),
+		strategy.Summary,
+		artifactValue(artifacts["current_challenge"]),
+	)
+	keyMetric := firstNonEmpty(artifacts["goals_and_metrics"].PrimarySignal, artifacts["goals_and_metrics"].FrameTitle, artifactValue(artifacts["key_metric"]))
+	successCriterion := firstNonEmpty(artifacts["ninety_day_course"].FrameSubtitle, artifacts["goals_and_metrics"].FrameSubtitle, artifactValue(artifacts["validation_plan"]))
 
 	title := "Курс компании"
-	if direction != "" {
+	if courseTitle := strings.TrimSpace(artifacts["ninety_day_course"].FrameTitle); courseTitle != "" {
+		title = courseTitle
+	} else if direction != "" {
 		title = direction
 	}
 
@@ -281,6 +377,10 @@ func buildDraft(strategy StrategySummary, artifacts map[string]string) CourseInp
 		SuccessCriterion: successCriterion,
 		Status:           StatusActive,
 	}
+}
+
+func artifactValue(value strategyArtifactValue) string {
+	return firstNonEmpty(value.PrimarySignal, value.FrameTitle, value.FrameSubtitle, value.Content)
 }
 
 func firstNonEmpty(values ...string) string {
