@@ -387,7 +387,9 @@ func buildDraft(strategy StrategySummary, artifacts map[string]strategyArtifactV
 	successCriterion := firstNonEmpty(artifacts["ninety_day_course"].FrameSubtitle, artifacts["goals_and_metrics"].FrameSubtitle, artifactValue(artifacts["validation_plan"]))
 
 	title := "Курс компании"
-	if courseTitle := strings.TrimSpace(artifacts["ninety_day_course"].FrameTitle); courseTitle != "" {
+	if courseTitle := strings.TrimSpace(artifacts["ninety_day_course"].PrimarySignal); courseTitle != "" {
+		title = courseTitle
+	} else if courseTitle := strings.TrimSpace(artifacts["ninety_day_course"].FrameTitle); courseTitle != "" {
 		title = courseTitle
 	} else if direction != "" {
 		title = direction
