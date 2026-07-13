@@ -20,7 +20,10 @@ import (
 
 const (
 	strategySynthesisMaxOutputTokens = 18000
-	strategySynthesisTimeout         = 4 * time.Minute
+	strategyFormatterMaxOutputTokens = 18000
+	strategySynthesisTimeout         = 7 * time.Minute
+	strategySemanticSynthesisTimeout = 4 * time.Minute
+	strategyFormatterTimeout         = 3 * time.Minute
 )
 
 var synthesisURLPattern = regexp.MustCompile(`https?://[^\s<>()\[\]{}"']+`)
@@ -170,7 +173,7 @@ func (s *SynthesisService) execute(ctx context.Context, workspaceID int, runID i
 		PromptCacheKey:       fmt.Sprintf("reupgoals-strategy-synthesizer-workspace-%d-v1", workspaceID),
 		MaxFileSearchResults: 20,
 		MaxOutputTokens:      strategySynthesisMaxOutputTokens,
-		RequestTimeout:       strategySynthesisTimeout - 15*time.Second,
+		RequestTimeout:       strategySemanticSynthesisTimeout - 15*time.Second,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
@@ -188,12 +191,16 @@ func (s *SynthesisService) execute(ctx context.Context, workspaceID int, runID i
 	}
 
 	normalized := normalizeSynthesisOutput(workspaceID, runID, output, sourceIndex)
+	formatted, formatErr := s.formatSynthesisDocuments(ctx, workspaceID, runID, normalized)
+	if formatErr != nil {
+		formatted = fallbackFormattedSynthesisDocuments(normalized)
+	}
 	if err := s.store.CompleteSynthesisRun(
 		ctx,
 		workspaceID,
 		runID,
 		output,
-		normalized,
+		formatted,
 		result.ResponseID,
 		result.Usage.InputTokens,
 		result.Usage.OutputTokens,
@@ -207,6 +214,55 @@ func (s *SynthesisService) execute(ctx context.Context, workspaceID int, runID i
 	}
 	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_synthesizer", s.ai.Model, StrategySynthesizerPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	return nil
+}
+
+func (s *SynthesisService) formatSynthesisDocuments(
+	ctx context.Context,
+	workspaceID int,
+	runID int,
+	documents []StrategySynthesisDocument,
+) ([]StrategySynthesisDocument, error) {
+	input := map[string]any{
+		"workspace_id": workspaceID,
+		"run_id":       runID,
+		"language":     "Russian",
+		"ui_context": map[string]any{
+			"surface": "REUP.goals strategy and course screens",
+			"needs": []string{
+				"compact frame titles for cards",
+				"readable artifact documents for detail panels",
+				"precise strategic wording without inventing new decisions",
+			},
+		},
+		"raw_strategy_artifacts": formatterInputDocuments(documents),
+	}
+	rawInput, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+
+	formatterCtx, cancel := context.WithTimeout(ctx, strategyFormatterTimeout)
+	defer cancel()
+
+	started := time.Now()
+	result, err := s.ai.GenerateJSONNative(formatterCtx, strategyArtifactFormatterPrompt, string(rawInput), ai.ResponseContextOptions{
+		PromptCacheKey:  fmt.Sprintf("reupgoals-strategy-artifact-formatter-workspace-%d-v1", workspaceID),
+		MaxOutputTokens: strategyFormatterMaxOutputTokens,
+		RequestTimeout:  strategyFormatterTimeout - 10*time.Second,
+	})
+	duration := time.Since(started).Milliseconds()
+	if err != nil {
+		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_artifact_formatter", s.ai.Model, StrategyArtifactFormatterPromptVersion, duration, 0, 0, "failed", err.Error())
+		return nil, err
+	}
+
+	var output strategyArtifactFormatterModelOutput
+	if err := json.Unmarshal([]byte(result.Text), &output); err != nil {
+		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_artifact_formatter", s.ai.Model, StrategyArtifactFormatterPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
+		return nil, fmt.Errorf("strategy artifact formatter json decode error: %w", err)
+	}
+	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_artifact_formatter", s.ai.Model, StrategyArtifactFormatterPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	return normalizeFormattedSynthesisDocuments(documents, output), nil
 }
 
 func buildStrategySynthesisInput(
@@ -415,6 +471,213 @@ func normalizeSynthesisOutput(
 		})
 	}
 	return result
+}
+
+func formatterInputDocuments(documents []StrategySynthesisDocument) []map[string]any {
+	result := make([]map[string]any, 0, len(documents))
+	for _, document := range documents {
+		sourceRefs := make([]map[string]any, 0, len(document.SourceRefs))
+		for _, source := range document.SourceRefs {
+			sourceRefs = append(sourceRefs, map[string]any{
+				"source_key":  source.Key,
+				"source_type": source.SourceType,
+				"source_id":   source.SourceID,
+				"label":       source.Label,
+				"href":        source.Href,
+				"supports":    source.Supports,
+			})
+		}
+		result = append(result, map[string]any{
+			"artifact_key":   document.DocumentType,
+			"artifact_type":  document.DocumentType,
+			"semantic_title": document.Title,
+			"status":         document.Status,
+			"content_blocks": document.ContentBlocks,
+			"source_refs":    sourceRefs,
+			"sort_order":     document.SortOrder,
+		})
+	}
+	return result
+}
+
+func normalizeFormattedSynthesisDocuments(
+	documents []StrategySynthesisDocument,
+	output strategyArtifactFormatterModelOutput,
+) []StrategySynthesisDocument {
+	byType := map[string]strategyArtifactFormatterModelArtifact{}
+	for _, artifact := range output.Artifacts {
+		docType := strings.TrimSpace(strings.ToLower(defaultString(artifact.ArtifactKey, artifact.ArtifactType)))
+		if docType == "" {
+			continue
+		}
+		if _, exists := byType[docType]; !exists {
+			byType[docType] = artifact
+		}
+	}
+
+	result := make([]StrategySynthesisDocument, 0, len(documents))
+	for _, document := range documents {
+		formatted, exists := byType[document.DocumentType]
+		if !exists {
+			result = append(result, fallbackFormattedSynthesisDocument(document))
+			continue
+		}
+
+		document.DisplayTitle = defaultString(formatted.DisplayTitle, document.Title)
+		document.FrameTitle = defaultString(formatted.FrameTitle, compactFrameTitle(document.DisplayTitle))
+		document.FrameSubtitle = strings.TrimSpace(formatted.FrameSubtitle)
+		document.PrimarySignal = strings.TrimSpace(formatted.PrimarySignal)
+		document.VisualStatus = normalizeStrategyVisualStatus(formatted.Status, document.Status)
+		document.FormattedDocument = strings.TrimSpace(formatted.FormattedDocument)
+		if document.FormattedDocument == "" {
+			document.FormattedDocument = fallbackFormattedMarkdown(document)
+		}
+		document.OpenQuestions = cleanStringSlice(formatted.OpenQuestions, 12)
+		document.SourceRefs = mergeFormattedSourceRefs(document.SourceRefs, formatted.SourceRefs)
+		result = append(result, document)
+	}
+	return result
+}
+
+func fallbackFormattedSynthesisDocuments(documents []StrategySynthesisDocument) []StrategySynthesisDocument {
+	result := make([]StrategySynthesisDocument, 0, len(documents))
+	for _, document := range documents {
+		result = append(result, fallbackFormattedSynthesisDocument(document))
+	}
+	return result
+}
+
+func fallbackFormattedSynthesisDocument(document StrategySynthesisDocument) StrategySynthesisDocument {
+	document.DisplayTitle = defaultString(document.DisplayTitle, document.Title)
+	document.FrameTitle = defaultString(document.FrameTitle, compactFrameTitle(document.DisplayTitle))
+	document.FrameSubtitle = defaultString(document.FrameSubtitle, firstSynthesisSentence(document))
+	document.PrimarySignal = defaultString(document.PrimarySignal, firstSynthesisSentence(document))
+	document.VisualStatus = normalizeStrategyVisualStatus(document.VisualStatus, document.Status)
+	document.FormattedDocument = defaultString(document.FormattedDocument, fallbackFormattedMarkdown(document))
+	if document.OpenQuestions == nil {
+		document.OpenQuestions = []string{}
+	}
+	return document
+}
+
+func fallbackFormattedMarkdown(document StrategySynthesisDocument) string {
+	if len(document.ContentBlocks) == 0 {
+		return "Информации пока недостаточно для уверенного оформления этого артефакта."
+	}
+	lines := []string{"## " + defaultString(document.DisplayTitle, document.Title)}
+	for _, block := range document.ContentBlocks {
+		text := strings.TrimSpace(block.Text)
+		if text == "" {
+			continue
+		}
+		lines = append(lines, "", text)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func firstSynthesisSentence(document StrategySynthesisDocument) string {
+	for _, block := range document.ContentBlocks {
+		text := strings.TrimSpace(block.Text)
+		if text == "" {
+			continue
+		}
+		if len([]rune(text)) <= 150 {
+			return text
+		}
+		runes := []rune(text)
+		return strings.TrimSpace(string(runes[:150])) + "..."
+	}
+	return ""
+}
+
+func compactFrameTitle(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= 64 {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:61])) + "..."
+}
+
+func normalizeStrategyVisualStatus(value string, documentStatus string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "complete", "partial", "uncertain":
+		return strings.TrimSpace(strings.ToLower(value))
+	}
+	switch normalizeSynthesisDocumentStatus(documentStatus) {
+	case SynthesisDocumentFilled:
+		return "complete"
+	case SynthesisDocumentNotApplicable:
+		return "uncertain"
+	default:
+		return "partial"
+	}
+}
+
+func mergeFormattedSourceRefs(
+	baseRefs []StrategySynthesisSourceRef,
+	formattedRefs []strategyArtifactFormatterSourceRef,
+) []StrategySynthesisSourceRef {
+	byKey := make(map[string]StrategySynthesisSourceRef, len(baseRefs))
+	order := make([]string, 0, len(baseRefs))
+	for _, ref := range baseRefs {
+		key := strings.TrimSpace(ref.Key)
+		if key == "" {
+			continue
+		}
+		if _, exists := byKey[key]; !exists {
+			order = append(order, key)
+		}
+		byKey[key] = ref
+	}
+	for _, formatted := range formattedRefs {
+		key := strings.TrimSpace(formatted.SourceKey)
+		ref, exists := byKey[key]
+		if !exists {
+			continue
+		}
+		if strings.TrimSpace(formatted.Reason) != "" {
+			ref.Supports = strings.TrimSpace(formatted.Reason)
+		}
+		if strings.TrimSpace(formatted.Label) != "" {
+			ref.Label = strings.TrimSpace(formatted.Label)
+		}
+		byKey[key] = ref
+	}
+	result := make([]StrategySynthesisSourceRef, 0, len(order))
+	for _, key := range order {
+		result = append(result, byKey[key])
+	}
+	return result
+}
+
+func cleanStringSlice(values []string, limit int) []string {
+	if limit <= 0 {
+		limit = len(values)
+	}
+	result := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || containsString(result, value) {
+			continue
+		}
+		result = append(result, value)
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result
+}
+
+func defaultString(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func normalizeSynthesisDocumentStatus(value string) string {

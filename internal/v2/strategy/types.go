@@ -21,8 +21,9 @@ const (
 
 	SourceManual = "manual"
 
-	StrategyFacilitatorPromptVersion = "strategy_facilitator_openai_native_v0_2_0"
-	StrategySynthesizerPromptVersion = "strategy_synthesizer_v0_1_0"
+	StrategyFacilitatorPromptVersion       = "strategy_facilitator_openai_native_v0_2_0"
+	StrategySynthesizerPromptVersion       = "strategy_synthesizer_v0_1_0"
+	StrategyArtifactFormatterPromptVersion = "strategy_artifact_formatter_v0_1_0"
 )
 
 type Strategy struct {
@@ -297,16 +298,23 @@ type StrategySynthesisSourceRef struct {
 }
 
 type StrategySynthesisDocument struct {
-	ID            int                             `json:"id"`
-	RunID         int                             `json:"run_id"`
-	WorkspaceID   int                             `json:"workspace_id"`
-	DocumentType  string                          `json:"document_type"`
-	Title         string                          `json:"title"`
-	Status        string                          `json:"status"`
-	ContentBlocks []StrategySynthesisContentBlock `json:"content_blocks"`
-	SourceRefs    []StrategySynthesisSourceRef    `json:"source_refs"`
-	SortOrder     int                             `json:"sort_order"`
-	CreatedAt     time.Time                       `json:"created_at"`
+	ID                int                             `json:"id"`
+	RunID             int                             `json:"run_id"`
+	WorkspaceID       int                             `json:"workspace_id"`
+	DocumentType      string                          `json:"document_type"`
+	Title             string                          `json:"title"`
+	DisplayTitle      string                          `json:"display_title"`
+	FrameTitle        string                          `json:"frame_title"`
+	FrameSubtitle     string                          `json:"frame_subtitle"`
+	PrimarySignal     string                          `json:"primary_signal"`
+	Status            string                          `json:"status"`
+	VisualStatus      string                          `json:"visual_status"`
+	ContentBlocks     []StrategySynthesisContentBlock `json:"content_blocks"`
+	FormattedDocument string                          `json:"formatted_document"`
+	SourceRefs        []StrategySynthesisSourceRef    `json:"source_refs"`
+	OpenQuestions     []string                        `json:"open_questions"`
+	SortOrder         int                             `json:"sort_order"`
+	CreatedAt         time.Time                       `json:"created_at"`
 }
 
 type StrategySynthesisResponse struct {
@@ -332,6 +340,29 @@ type strategySynthesisSourceCatalogItem struct {
 	SourceID   string `json:"source_id"`
 	Label      string `json:"label"`
 	Href       string `json:"href"`
+}
+
+type strategyArtifactFormatterModelOutput struct {
+	Artifacts []strategyArtifactFormatterModelArtifact `json:"artifacts"`
+}
+
+type strategyArtifactFormatterModelArtifact struct {
+	ArtifactKey       string                               `json:"artifact_key"`
+	ArtifactType      string                               `json:"artifact_type"`
+	DisplayTitle      string                               `json:"display_title"`
+	FrameTitle        string                               `json:"frame_title"`
+	FrameSubtitle     string                               `json:"frame_subtitle"`
+	PrimarySignal     string                               `json:"primary_signal"`
+	Status            string                               `json:"status"`
+	FormattedDocument string                               `json:"formatted_document"`
+	SourceRefs        []strategyArtifactFormatterSourceRef `json:"source_refs"`
+	OpenQuestions     []string                             `json:"open_questions"`
+}
+
+type strategyArtifactFormatterSourceRef struct {
+	SourceKey string `json:"source_key"`
+	Label     string `json:"label"`
+	Reason    string `json:"reason"`
 }
 
 type strategySynthesisDocumentDefinition struct {

@@ -80,3 +80,82 @@ func TestExtractSynthesisURLsKeepsOnlyValidUniqueHTTPLinks(t *testing.T) {
 		t.Fatalf("unexpected second URL %q", urls[1])
 	}
 }
+
+func TestNormalizeFormattedSynthesisDocumentsKeepsValidatedSources(t *testing.T) {
+	documents := []StrategySynthesisDocument{
+		{
+			DocumentType: "goals_and_metrics",
+			Title:        "Цели и ключевые метрики",
+			Status:       SynthesisDocumentFilled,
+			ContentBlocks: []StrategySynthesisContentBlock{
+				{Text: "Компания хочет выйти на 100 платящих клиентов за 90 дней."},
+			},
+			SourceRefs: []StrategySynthesisSourceRef{
+				{Key: "strategy_message:42", Label: "Сообщение участника", Href: "/strategy?message=42"},
+			},
+			SortOrder: 5,
+		},
+	}
+	output := strategyArtifactFormatterModelOutput{
+		Artifacts: []strategyArtifactFormatterModelArtifact{
+			{
+				ArtifactKey:       "goals_and_metrics",
+				DisplayTitle:      "100 платящих клиентов за 90 дней",
+				FrameTitle:        "100 клиентов",
+				FrameSubtitle:     "Главный ориентир ближайшего курса",
+				PrimarySignal:     "100 платящих клиентов",
+				Status:            "complete",
+				FormattedDocument: "## 100 платящих клиентов за 90 дней\n\nЭто основной измеримый ориентир.",
+				SourceRefs: []strategyArtifactFormatterSourceRef{
+					{SourceKey: "strategy_message:42", Label: "Подтверждённое сообщение", Reason: "Подтверждает цель"},
+					{SourceKey: "strategy_message:999", Label: "Лишнее", Reason: "Не должно попасть"},
+				},
+				OpenQuestions: []string{"Какой CAC допустим?"},
+			},
+		},
+	}
+
+	formatted := normalizeFormattedSynthesisDocuments(documents, output)
+	if formatted[0].DisplayTitle != "100 платящих клиентов за 90 дней" {
+		t.Fatalf("unexpected display title: %q", formatted[0].DisplayTitle)
+	}
+	if formatted[0].FrameTitle != "100 клиентов" || formatted[0].PrimarySignal != "100 платящих клиентов" {
+		t.Fatalf("unexpected frame fields: %#v", formatted[0])
+	}
+	if formatted[0].VisualStatus != "complete" {
+		t.Fatalf("unexpected visual status: %q", formatted[0].VisualStatus)
+	}
+	if len(formatted[0].SourceRefs) != 1 || formatted[0].SourceRefs[0].Key != "strategy_message:42" {
+		t.Fatalf("unexpected source refs: %#v", formatted[0].SourceRefs)
+	}
+	if formatted[0].SourceRefs[0].Supports != "Подтверждает цель" {
+		t.Fatalf("expected formatter source reason, got %q", formatted[0].SourceRefs[0].Supports)
+	}
+	if len(formatted[0].OpenQuestions) != 1 {
+		t.Fatalf("unexpected open questions: %#v", formatted[0].OpenQuestions)
+	}
+}
+
+func TestNormalizeFormattedSynthesisDocumentsFallsBackWhenArtifactMissing(t *testing.T) {
+	documents := []StrategySynthesisDocument{
+		{
+			DocumentType: "key_challenge",
+			Title:        "Ключевой вызов компании",
+			Status:       SynthesisDocumentFilled,
+			ContentBlocks: []StrategySynthesisContentBlock{
+				{Text: "Главный вызов - перейти от роста выручки к прибыльной модели."},
+			},
+		},
+	}
+
+	formatted := normalizeFormattedSynthesisDocuments(documents, strategyArtifactFormatterModelOutput{})
+	if formatted[0].FrameTitle == "" {
+		t.Fatalf("expected fallback frame title")
+	}
+	if formatted[0].FormattedDocument == "" {
+		t.Fatalf("expected fallback formatted document")
+	}
+	if formatted[0].VisualStatus != "complete" {
+		t.Fatalf("unexpected visual status: %q", formatted[0].VisualStatus)
+	}
+}

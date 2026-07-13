@@ -964,6 +964,19 @@ var migrations = []Migration{
 				ON v2_strategy_readiness_queue (not_before, updated_at);
 		`,
 	},
+	{
+		ID: "20260713_018_strategy_artifact_formatting",
+		SQL: `
+			ALTER TABLE v2_strategy_synthesis_documents
+				ADD COLUMN IF NOT EXISTS display_title TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS frame_title TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS frame_subtitle TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS primary_signal TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS visual_status TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS formatted_markdown TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS open_questions_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

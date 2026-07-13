@@ -170,10 +170,29 @@ func (s *Store) CompleteSynthesisRun(
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO v2_strategy_synthesis_documents (
 				run_id, workspace_id, document_type, title, status,
-				content_json, source_refs_json, sort_order
+				content_json, source_refs_json,
+				display_title, frame_title, frame_subtitle, primary_signal,
+				visual_status, formatted_markdown, open_questions_json,
+				sort_order
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		`, runID, workspaceID, document.DocumentType, document.Title, document.Status, contentRaw, sourcesRaw, document.SortOrder); err != nil {
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		`,
+			runID,
+			workspaceID,
+			document.DocumentType,
+			document.Title,
+			document.Status,
+			contentRaw,
+			sourcesRaw,
+			strings.TrimSpace(document.DisplayTitle),
+			strings.TrimSpace(document.FrameTitle),
+			strings.TrimSpace(document.FrameSubtitle),
+			strings.TrimSpace(document.PrimarySignal),
+			strings.TrimSpace(document.VisualStatus),
+			strings.TrimSpace(document.FormattedDocument),
+			mustJSON(document.OpenQuestions),
+			document.SortOrder,
+		); err != nil {
 			return err
 		}
 	}
@@ -284,7 +303,10 @@ func (s *Store) ChatMessages(ctx context.Context, workspaceID int, limit int) ([
 func (s *Store) listSynthesisDocuments(ctx context.Context, workspaceID int, runID int) ([]StrategySynthesisDocument, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, run_id, workspace_id, document_type, title, status,
-			content_json, source_refs_json, sort_order, created_at
+			content_json, source_refs_json,
+			display_title, frame_title, frame_subtitle, primary_signal,
+			visual_status, formatted_markdown, open_questions_json,
+			sort_order, created_at
 		FROM v2_strategy_synthesis_documents
 		WHERE workspace_id=$1 AND run_id=$2
 		ORDER BY sort_order ASC, id ASC
@@ -299,6 +321,7 @@ func (s *Store) listSynthesisDocuments(ctx context.Context, workspaceID int, run
 		var document StrategySynthesisDocument
 		var contentRaw []byte
 		var sourcesRaw []byte
+		var openQuestionsRaw []byte
 		if err := rows.Scan(
 			&document.ID,
 			&document.RunID,
@@ -308,6 +331,13 @@ func (s *Store) listSynthesisDocuments(ctx context.Context, workspaceID int, run
 			&document.Status,
 			&contentRaw,
 			&sourcesRaw,
+			&document.DisplayTitle,
+			&document.FrameTitle,
+			&document.FrameSubtitle,
+			&document.PrimarySignal,
+			&document.VisualStatus,
+			&document.FormattedDocument,
+			&openQuestionsRaw,
 			&document.SortOrder,
 			&document.CreatedAt,
 		); err != nil {
@@ -317,6 +347,9 @@ func (s *Store) listSynthesisDocuments(ctx context.Context, workspaceID int, run
 			return nil, err
 		}
 		if err := json.Unmarshal(sourcesRaw, &document.SourceRefs); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(openQuestionsRaw, &document.OpenQuestions); err != nil {
 			return nil, err
 		}
 		documents = append(documents, document)
