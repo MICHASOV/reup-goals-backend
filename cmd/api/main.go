@@ -123,6 +123,8 @@ func main() {
 	mux.Handle("/api/v2/strategy-facilitator/state", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
 	mux.Handle("/api/v2/strategy-facilitator/messages", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
 	mux.Handle("/api/v2/strategy-facilitator/files", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/synthesis", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/readiness", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
 	mux.Handle("/api/v2/course/current", v2api.RequireAuth(jwtSecret, courseHandler.Current))
 	mux.Handle("/api/v2/course/", v2api.RequireAuth(jwtSecret, courseHandler.Course))
 	mux.Handle("/api/v2/tactics/current", v2api.RequireAuth(jwtSecret, tacticsHandler.Current))

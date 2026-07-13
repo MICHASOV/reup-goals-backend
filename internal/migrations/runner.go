@@ -856,6 +856,114 @@ var migrations = []Migration{
 			);
 		`,
 	},
+	{
+		ID: "20260713_016_strategy_synthesis",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_strategy_synthesis_runs (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				strategy_id INTEGER NOT NULL REFERENCES v2_strategies(id) ON DELETE CASCADE,
+				version INTEGER NOT NULL DEFAULT 1,
+				session_revision INTEGER NOT NULL DEFAULT 0,
+				through_message_id INTEGER NOT NULL DEFAULT 0,
+				status TEXT NOT NULL DEFAULT 'queued',
+				model TEXT NOT NULL DEFAULT '',
+				prompt_version TEXT NOT NULL DEFAULT '',
+				summary TEXT NOT NULL DEFAULT '',
+				openai_response_id TEXT NOT NULL DEFAULT '',
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				duration_ms BIGINT NOT NULL DEFAULT 0,
+				error TEXT NOT NULL DEFAULT '',
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				started_at TIMESTAMPTZ NULL,
+				completed_at TIMESTAMPTZ NULL,
+				UNIQUE(workspace_id, version)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_strategy_synthesis_runs_workspace
+				ON v2_strategy_synthesis_runs (workspace_id, created_at DESC, id DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_strategy_synthesis_documents (
+				id SERIAL PRIMARY KEY,
+				run_id INTEGER NOT NULL REFERENCES v2_strategy_synthesis_runs(id) ON DELETE CASCADE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				title TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'insufficient_data',
+				content_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				source_refs_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				sort_order INTEGER NOT NULL DEFAULT 0,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(run_id, document_type)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_strategy_synthesis_documents_run
+				ON v2_strategy_synthesis_documents (run_id, sort_order, id);
+		`,
+	},
+	{
+		ID: "20260713_017_strategy_readiness_pipeline",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_strategy_readiness_runs (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				strategy_id INTEGER NOT NULL REFERENCES v2_strategies(id) ON DELETE CASCADE,
+				session_revision INTEGER NOT NULL,
+				validated_through_message_id INTEGER NOT NULL,
+				status TEXT NOT NULL DEFAULT 'queued',
+				verdict TEXT NOT NULL DEFAULT '',
+				can_synthesize BOOLEAN NOT NULL DEFAULT FALSE,
+				confidence TEXT NOT NULL DEFAULT '',
+				report_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				model TEXT NOT NULL DEFAULT '',
+				prompt_version TEXT NOT NULL DEFAULT '',
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				duration_ms BIGINT NOT NULL DEFAULT 0,
+				error TEXT NOT NULL DEFAULT '',
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				started_at TIMESTAMPTZ NULL,
+				completed_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_strategy_readiness_runs_workspace
+				ON v2_strategy_readiness_runs (workspace_id, created_at DESC, id DESC);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_strategy_readiness_runs_active
+				ON v2_strategy_readiness_runs (workspace_id, status, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_strategy_session_state (
+				workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+				revision INTEGER NOT NULL DEFAULT 0,
+				last_user_message_id INTEGER NOT NULL DEFAULT 0,
+				last_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				facilitator_status TEXT NOT NULL DEFAULT 'continue',
+				status_reason TEXT NOT NULL DEFAULT '',
+				remaining_uncertainties_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				last_audited_revision INTEGER NOT NULL DEFAULT 0,
+				last_readiness_run_id INTEGER NULL REFERENCES v2_strategy_readiness_runs(id) ON DELETE SET NULL,
+				last_synthesis_run_id INTEGER NULL REFERENCES v2_strategy_synthesis_runs(id) ON DELETE SET NULL,
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE TABLE IF NOT EXISTS v2_strategy_readiness_queue (
+				workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+				strategy_id INTEGER NOT NULL REFERENCES v2_strategies(id) ON DELETE CASCADE,
+				session_revision INTEGER NOT NULL,
+				through_message_id INTEGER NOT NULL,
+				requested_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				not_before TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_strategy_readiness_queue_due
+				ON v2_strategy_readiness_queue (not_before, updated_at);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

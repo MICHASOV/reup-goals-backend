@@ -19,6 +19,7 @@ type FacilitatorService struct {
 	memoryService    *strategicmemory.Service
 	ai               *ai.OpenAIClient
 	compactThreshold int
+	readiness        *ReadinessService
 }
 
 func NewFacilitatorService(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *FacilitatorService {
@@ -33,6 +34,10 @@ func NewFacilitatorService(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThresh
 		ai:               aiClient,
 		compactThreshold: compactThreshold,
 	}
+}
+
+func (s *FacilitatorService) SetReadinessService(readiness *ReadinessService) {
+	s.readiness = readiness
 }
 
 func (s *FacilitatorService) State(ctx context.Context, workspaceID int, userID int) (StrategyFacilitatorState, error) {
@@ -56,6 +61,14 @@ func (s *FacilitatorService) State(ctx context.Context, workspaceID int, userID 
 	if err != nil {
 		return StrategyFacilitatorState{}, err
 	}
+	sessionState, err := s.store.SessionState(ctx, workspaceID)
+	if err != nil {
+		return StrategyFacilitatorState{}, err
+	}
+	readinessRun, err := s.store.LatestCompletedReadinessAudit(ctx, workspaceID)
+	if err != nil {
+		return StrategyFacilitatorState{}, err
+	}
 
 	return StrategyFacilitatorState{
 		WorkspaceID: workspaceID,
@@ -68,6 +81,8 @@ func (s *FacilitatorService) State(ctx context.Context, workspaceID int, userID 
 			Files:         files,
 		},
 		RecentMessages: messages,
+		Session:        sessionState,
+		Readiness:      readinessRun,
 	}, nil
 }
 
@@ -84,6 +99,9 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if err != nil {
 		return StrategyFacilitatorMessageResponse{}, err
 	}
+	if _, err := s.store.BeginFacilitatorTurn(ctx, workspaceID, userID, userSourceID); err != nil {
+		return StrategyFacilitatorMessageResponse{}, err
+	}
 
 	state, err := s.State(ctx, workspaceID, userID)
 	if err != nil {
@@ -95,13 +113,13 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	}
 	vectorStoreIDs := s.strategyVectorStoreIDs(ctx, workspaceID)
 
-	input := message
+	input := buildStrategyFacilitatorTurnInput(message, state)
 	if strings.TrimSpace(session.PreviousResponseID) == "" {
 		input = buildStrategyFacilitatorFreshInput(workspaceID, message, state)
 	}
 
 	started := time.Now()
-	result, err := s.ai.GenerateTextNative(ctx, strategyFacilitatorPrompt, input, ai.ResponseContextOptions{
+	result, err := s.ai.GenerateJSONNative(ctx, strategyFacilitatorPrompt, input, ai.ResponseContextOptions{
 		PreviousResponseID:   session.PreviousResponseID,
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
@@ -113,7 +131,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		if strings.TrimSpace(session.PreviousResponseID) != "" {
 			_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, "")
 			started = time.Now()
-			result, err = s.ai.GenerateTextNative(ctx, strategyFacilitatorPrompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
+			result, err = s.ai.GenerateJSONNative(ctx, strategyFacilitatorPrompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
 				VectorStoreIDs:       vectorStoreIDs,
 				CompactThreshold:     session.CompactThreshold,
 				PromptCacheKey:       session.PromptCacheKey,
@@ -127,23 +145,41 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		}
 	}
 
+	modelOutput, parseErr := parseStrategyFacilitatorOutput(result.Text)
+	if parseErr != nil {
+		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_output_parse", s.ai.Model, StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
+		_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, "")
+		return s.fallbackResponse(ctx, workspaceID, userSourceID, state), nil
+	}
 	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_openai_native", s.ai.Model, StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	if strings.TrimSpace(result.ResponseID) != "" {
 		_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, result.ResponseID)
 	}
-
-	assistantMessage := cleanAssistantMessage(result.Text)
+	assistantMessage := cleanAssistantMessage(modelOutput.Message)
 	if assistantMessage == "" {
 		assistantMessage = strategyFallbackAssistantReply()
 	}
-	_, _ = s.store.CreateChatMessage(ctx, workspaceID, nil, "assistant", assistantMessage, map[string]any{
-		"prompt_version":       StrategyFacilitatorPromptVersion,
-		"mode":                 "openai_native",
-		"user_source_id":       userSourceID,
-		"response_id":          result.ResponseID,
-		"previous_response_id": session.PreviousResponseID,
-		"vector_store_ids":     vectorStoreIDs,
-	})
+	if _, err := s.store.CreateChatMessage(ctx, workspaceID, nil, "assistant", assistantMessage, map[string]any{
+		"prompt_version":          StrategyFacilitatorPromptVersion,
+		"mode":                    "openai_native",
+		"user_source_id":          userSourceID,
+		"response_id":             result.ResponseID,
+		"previous_response_id":    session.PreviousResponseID,
+		"vector_store_ids":        vectorStoreIDs,
+		"session_status":          modelOutput.SessionStatus,
+		"status_reason":           modelOutput.StatusReason,
+		"remaining_uncertainties": modelOutput.RemainingUncertainties,
+	}); err != nil {
+		return StrategyFacilitatorMessageResponse{}, err
+	}
+
+	sessionState, err := s.store.RecordFacilitatorAssessment(ctx, workspaceID, userSourceID, modelOutput)
+	if err != nil {
+		return StrategyFacilitatorMessageResponse{}, err
+	}
+	if sessionState.FacilitatorStatus == FacilitatorStatusCandidateReady && s.readiness != nil {
+		_, _ = s.readiness.QueueCandidate(ctx, sessionState, state.Strategy.ID, false)
+	}
 
 	messages, err := s.store.RecentChatMessages(ctx, workspaceID, 40)
 	if err != nil {
@@ -154,6 +190,8 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		AssistantMessage: assistantMessage,
 		RecentMessages:   messages,
 		OpenAIResponseID: result.ResponseID,
+		SessionStatus:    sessionState.FacilitatorStatus,
+		SessionRevision:  sessionState.Revision,
 	}, nil
 }
 
@@ -171,11 +209,17 @@ func (s *FacilitatorService) strategyVectorStoreIDs(ctx context.Context, workspa
 
 func (s *FacilitatorService) fallbackResponse(ctx context.Context, workspaceID int, userSourceID int, state StrategyFacilitatorState) StrategyFacilitatorMessageResponse {
 	assistantMessage := strategyFallbackAssistantReply()
+	modelOutput := strategyFacilitatorModelOutput{
+		Message:       assistantMessage,
+		SessionStatus: FacilitatorStatusContinue,
+		StatusReason:  "The AI response failed, so the session remains open.",
+	}
 	_, _ = s.store.CreateChatMessage(ctx, workspaceID, nil, "assistant", assistantMessage, map[string]any{
 		"prompt_version": StrategyFacilitatorPromptVersion,
 		"fallback":       true,
 		"user_source_id": userSourceID,
 	})
+	sessionState, _ := s.store.RecordFacilitatorAssessment(ctx, workspaceID, userSourceID, modelOutput)
 	messages := state.RecentMessages
 	if updated, err := s.store.RecentChatMessages(ctx, workspaceID, 40); err == nil {
 		messages = updated
@@ -184,6 +228,8 @@ func (s *FacilitatorService) fallbackResponse(ctx context.Context, workspaceID i
 		WorkspaceID:      workspaceID,
 		AssistantMessage: assistantMessage,
 		RecentMessages:   messages,
+		SessionStatus:    sessionState.FacilitatorStatus,
+		SessionRevision:  sessionState.Revision,
 	}
 }
 
@@ -202,10 +248,65 @@ func buildStrategyFacilitatorFreshInput(workspaceID int, message string, state S
 			"quality_report": compactQualityReportForStrategyContext(state.KnowledgeBase.QualityReport),
 			"uploaded_files": limitFilesForContext(state.KnowledgeBase.Files, 20),
 		},
-		"session_goal": "Facilitate a strategic session using the collected company context. Reply to the latest user message and ask the next question that reduces strategic uncertainty the most.",
+		"session_goal":              "Facilitate a strategic session using the collected company context. Reply to the latest user message and ask the next question that reduces strategic uncertainty the most.",
+		"session_state":             state.Session,
+		"latest_readiness_feedback": compactReadinessFeedback(state.Readiness),
 	}
 	rawInput, _ := json.Marshal(contextPack)
 	return "Context for the strategic session in JSON:\n" + string(rawInput)
+}
+
+func buildStrategyFacilitatorTurnInput(message string, state StrategyFacilitatorState) string {
+	turn := map[string]any{
+		"latest_user_message":       message,
+		"session_state":             state.Session,
+		"latest_readiness_feedback": compactReadinessFeedback(state.Readiness),
+		"instruction":               "Continue the same live strategic conversation. Respond naturally to the user, use any independent-auditor feedback as judgment context, and do not expose internal status mechanics.",
+	}
+	raw, _ := json.Marshal(turn)
+	return string(raw)
+}
+
+func compactReadinessFeedback(run *StrategyReadinessRun) any {
+	if run == nil || run.Report == nil {
+		return nil
+	}
+	return map[string]any{
+		"audited_session_revision": run.SessionRevision,
+		"verdict":                  run.Report.Verdict,
+		"can_synthesize":           run.Report.CanSynthesize,
+		"executive_summary":        run.Report.ExecutiveSummary,
+		"blocking_gaps":            run.Report.BlockingGaps,
+		"weak_zones":               run.Report.WeakZones,
+		"additional_perspectives":  run.Report.AdditionalPerspectives,
+		"facilitator_guidance":     run.Report.FacilitatorGuidance,
+	}
+}
+
+func parseStrategyFacilitatorOutput(raw string) (strategyFacilitatorModelOutput, error) {
+	var output strategyFacilitatorModelOutput
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &output); err != nil {
+		return strategyFacilitatorModelOutput{}, err
+	}
+	output.Message = cleanAssistantMessage(output.Message)
+	if output.Message == "" {
+		return strategyFacilitatorModelOutput{}, fmt.Errorf("strategy facilitator returned empty message")
+	}
+	output.SessionStatus = normalizeFacilitatorStatus(output.SessionStatus)
+	output.StatusReason = strings.TrimSpace(output.StatusReason)
+	output.RemainingUncertainties = cleanStringListLocal(output.RemainingUncertainties)
+	return output, nil
+}
+
+func normalizeFacilitatorStatus(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case FacilitatorStatusCandidateReady:
+		return FacilitatorStatusCandidateReady
+	case FacilitatorStatusNeedsResearch:
+		return FacilitatorStatusNeedsResearch
+	default:
+		return FacilitatorStatusContinue
+	}
 }
 
 func limitArtifactsForContext(items []Artifact, limit int) []map[string]any {

@@ -132,6 +132,7 @@ type ResponseContextOptions struct {
 	PromptCacheKey       string
 	MaxFileSearchResults int
 	MaxOutputTokens      int
+	RequestTimeout       time.Duration
 }
 
 type OpenAIFile struct {
@@ -293,6 +294,9 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 	httpClient, err := c.newHTTPClient()
 	if err != nil {
 		return TextResult{}, fmt.Errorf("proxy init error: %w", err)
+	}
+	if options.RequestTimeout > 0 {
+		httpClient.Timeout = options.RequestTimeout
 	}
 
 	reqBody := responsesRequest{

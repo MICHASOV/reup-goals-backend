@@ -19,13 +19,22 @@ type Handler struct {
 	store       *Store
 	workspaces  *workspaces.Store
 	facilitator *FacilitatorService
+	synthesis   *SynthesisService
+	readiness   *ReadinessService
 }
 
 func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *Handler {
+	synthesis := NewSynthesisService(dbx, aiClient, compactThreshold)
+	readiness := NewReadinessService(dbx, aiClient, compactThreshold, synthesis)
+	facilitator := NewFacilitatorService(dbx, aiClient, compactThreshold)
+	facilitator.SetReadinessService(readiness)
+	readiness.StartWorker()
 	return &Handler{
 		store:       NewStore(dbx),
 		workspaces:  workspaces.NewStore(dbx),
-		facilitator: NewFacilitatorService(dbx, aiClient, compactThreshold),
+		facilitator: facilitator,
+		synthesis:   synthesis,
+		readiness:   readiness,
 	}
 }
 
@@ -131,8 +140,80 @@ func (h *Handler) Facilitator(w http.ResponseWriter, r *http.Request) {
 		h.facilitatorMessage(w, r)
 	case r.URL.Path == "/api/v2/strategy-facilitator/files":
 		h.facilitatorFile(w, r)
+	case r.URL.Path == "/api/v2/strategy-facilitator/synthesis":
+		h.strategySynthesis(w, r)
+	case r.URL.Path == "/api/v2/strategy-facilitator/readiness":
+		h.strategyReadiness(w, r)
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
+	}
+}
+
+func (h *Handler) strategyReadiness(w http.ResponseWriter, r *http.Request) {
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		run, err := h.readiness.Latest(r.Context(), workspace.ID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "strategy_readiness_state_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"run": run})
+	case http.MethodPost:
+		item, err := h.readiness.ForceCurrent(r.Context(), workspace.ID, userID)
+		if err != nil {
+			if err.Error() == "strategy_readiness_no_session" {
+				api.WriteError(w, http.StatusUnprocessableEntity, "strategy_readiness_no_session")
+				return
+			}
+			api.WriteError(w, http.StatusInternalServerError, "strategy_readiness_start_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusAccepted, map[string]any{"queued": item})
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
+}
+
+func (h *Handler) strategySynthesis(w http.ResponseWriter, r *http.Request) {
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		response, err := h.synthesis.Latest(r.Context(), workspace.ID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "strategy_synthesis_state_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, response)
+	case http.MethodPost:
+		response, err := h.synthesis.Start(r.Context(), workspace.ID, userID)
+		if err != nil {
+			if err.Error() == "strategy_synthesis_no_session" {
+				api.WriteError(w, http.StatusUnprocessableEntity, "strategy_synthesis_no_session")
+				return
+			}
+			if err.Error() == "strategy_synthesis_not_ready" {
+				api.WriteError(w, http.StatusConflict, "strategy_synthesis_not_ready")
+				return
+			}
+			if err.Error() == "strategy_synthesis_stale_revision" {
+				api.WriteError(w, http.StatusConflict, "strategy_synthesis_stale_revision")
+				return
+			}
+			api.WriteError(w, http.StatusInternalServerError, "strategy_synthesis_start_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusAccepted, response)
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
 }
 
