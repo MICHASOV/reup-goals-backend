@@ -1,6 +1,10 @@
 package strategy
 
-import "time"
+import (
+	"time"
+
+	"reup-goals-backend/internal/v2/strategicmemory"
+)
 
 const (
 	StatusDraft          = "draft"
@@ -15,6 +19,8 @@ const (
 	ArtifactStatusApproved    = "approved"
 
 	SourceManual = "manual"
+
+	StrategyFacilitatorPromptVersion = "strategy_facilitator_openai_native_v0_1_0"
 )
 
 type Strategy struct {
@@ -54,6 +60,49 @@ type KnowledgeBaseSummary struct {
 	BlocksReady  int `json:"blocks_ready"`
 	BlocksFilled int `json:"blocks_filled"`
 	BlocksEmpty  int `json:"blocks_empty"`
+}
+
+type StrategyChatMessage struct {
+	ID        int       `json:"id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type StrategyKnowledgeContext struct {
+	Summary       KnowledgeBaseSummary                `json:"summary"`
+	Documents     []strategicmemory.StrategicDocument `json:"documents"`
+	QualityReport *strategicmemory.QualityReport      `json:"quality_report,omitempty"`
+	Files         []strategicmemory.StrategicFile     `json:"files,omitempty"`
+}
+
+type StrategyFacilitatorState struct {
+	WorkspaceID    int                      `json:"workspace_id"`
+	Strategy       Strategy                 `json:"strategy"`
+	Artifacts      []Artifact               `json:"artifacts"`
+	KnowledgeBase  StrategyKnowledgeContext `json:"knowledge_base"`
+	RecentMessages []StrategyChatMessage    `json:"recent_messages"`
+}
+
+type StrategyFacilitatorMessageRequest struct {
+	Message string `json:"message"`
+}
+
+type StrategyFacilitatorMessageResponse struct {
+	WorkspaceID      int                   `json:"workspace_id"`
+	AssistantMessage string                `json:"assistant_message"`
+	RecentMessages   []StrategyChatMessage `json:"recent_messages"`
+	OpenAIResponseID string                `json:"openai_response_id,omitempty"`
+}
+
+type StrategyOpenAISession struct {
+	ID                 int       `json:"id"`
+	WorkspaceID        int       `json:"workspace_id"`
+	PreviousResponseID string    `json:"previous_response_id,omitempty"`
+	CompactThreshold   int       `json:"compact_threshold"`
+	PromptCacheKey     string    `json:"prompt_cache_key,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type ArtifactDefinition struct {

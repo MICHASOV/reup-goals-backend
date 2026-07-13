@@ -3,7 +3,9 @@ package strategy
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -131,6 +133,87 @@ func (s *Store) Activate(ctx context.Context, workspaceID int, strategyID int, u
 	}
 
 	return strategy, nil
+}
+
+func (s *Store) CreateChatMessage(ctx context.Context, workspaceID int, userID *int, role string, content string, metadata any) (int, error) {
+	role = strings.TrimSpace(role)
+	if role != "assistant" && role != "user" {
+		role = "user"
+	}
+
+	var id int
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO v2_strategy_chat_messages (workspace_id, user_id, role, content, metadata_json)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id
+	`, workspaceID, userID, role, strings.TrimSpace(content), mustJSON(metadata)).Scan(&id)
+	return id, err
+}
+
+func (s *Store) RecentChatMessages(ctx context.Context, workspaceID int, limit int) ([]StrategyChatMessage, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 40
+	}
+
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT id, role, content, created_at
+		FROM v2_strategy_chat_messages
+		WHERE workspace_id=$1
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2
+	`, workspaceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	messages := []StrategyChatMessage{}
+	for rows.Next() {
+		var item StrategyChatMessage
+		if err := rows.Scan(&item.ID, &item.Role, &item.Content, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, item)
+	}
+	reverseChatMessages(messages)
+	return messages, rows.Err()
+}
+
+func (s *Store) OpenAIStrategySession(ctx context.Context, workspaceID int, compactThreshold int) (StrategyOpenAISession, error) {
+	if compactThreshold <= 0 {
+		compactThreshold = 120000
+	}
+	promptCacheKey := fmt.Sprintf("reupgoals-strategy-facilitator-workspace-%d-v1", workspaceID)
+
+	var item StrategyOpenAISession
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO v2_strategy_openai_sessions (workspace_id, compact_threshold, prompt_cache_key)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			compact_threshold=EXCLUDED.compact_threshold,
+			prompt_cache_key=EXCLUDED.prompt_cache_key,
+			updated_at=NOW()
+		RETURNING id, workspace_id, previous_response_id,
+			compact_threshold, prompt_cache_key, created_at, updated_at
+	`, workspaceID, compactThreshold, promptCacheKey).Scan(
+		&item.ID,
+		&item.WorkspaceID,
+		&item.PreviousResponseID,
+		&item.CompactThreshold,
+		&item.PromptCacheKey,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	return item, err
+}
+
+func (s *Store) UpdateOpenAIStrategyPreviousResponseID(ctx context.Context, workspaceID int, responseID string) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_strategy_openai_sessions
+		SET previous_response_id=$2, updated_at=NOW()
+		WHERE workspace_id=$1
+	`, workspaceID, strings.TrimSpace(responseID))
+	return err
 }
 
 func (s *Store) getCurrent(ctx context.Context, workspaceID int) (Strategy, error) {
@@ -385,4 +468,21 @@ func scanArtifact(scanner scanner) (Artifact, error) {
 	}
 
 	return artifact, nil
+}
+
+func mustJSON(value any) []byte {
+	if value == nil {
+		return []byte("{}")
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return []byte("{}")
+	}
+	return raw
+}
+
+func reverseChatMessages(messages []StrategyChatMessage) {
+	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+		messages[left], messages[right] = messages[right], messages[left]
+	}
 }

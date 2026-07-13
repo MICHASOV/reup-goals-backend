@@ -58,7 +58,7 @@ func main() {
 	courseHandler := course.NewHandler(database)
 	knowledgeHandler := knowledge.NewHandler(database)
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
-	strategyHandler := strategy.NewHandler(database)
+	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	tacticsHandler := tactics.NewHandler(database)
 	tasksV2Handler := tasksv2.NewHandler(database)
 
@@ -120,6 +120,9 @@ func main() {
 	mux.Handle("/api/v2/strategy/current", v2api.RequireAuth(jwtSecret, strategyHandler.Current))
 	mux.Handle("/api/v2/strategy/artifacts/", v2api.RequireAuth(jwtSecret, strategyHandler.Artifacts))
 	mux.Handle("/api/v2/strategy/", v2api.RequireAuth(jwtSecret, strategyHandler.Strategy))
+	mux.Handle("/api/v2/strategy-facilitator/state", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/messages", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/files", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
 	mux.Handle("/api/v2/course/current", v2api.RequireAuth(jwtSecret, courseHandler.Current))
 	mux.Handle("/api/v2/course/", v2api.RequireAuth(jwtSecret, courseHandler.Course))
 	mux.Handle("/api/v2/tactics/current", v2api.RequireAuth(jwtSecret, tacticsHandler.Current))

@@ -828,6 +828,34 @@ var migrations = []Migration{
 				ON strategic_quality_reports (workspace_id, created_at DESC, id DESC);
 		`,
 	},
+	{
+		ID: "20260713_015_strategy_facilitator_chat",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_strategy_chat_messages (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				role TEXT NOT NULL,
+				content TEXT NOT NULL DEFAULT '',
+				metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_strategy_chat_messages_workspace
+				ON v2_strategy_chat_messages (workspace_id, created_at DESC, id DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_strategy_openai_sessions (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				previous_response_id TEXT NOT NULL DEFAULT '',
+				compact_threshold INTEGER NOT NULL DEFAULT 120000,
+				prompt_cache_key TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id)
+			);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
