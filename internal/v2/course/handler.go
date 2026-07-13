@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -42,6 +43,7 @@ func (h *Handler) Current(w http.ResponseWriter, r *http.Request) {
 
 	response, err := h.store.Current(r.Context(), workspace.ID, userID)
 	if err != nil {
+		log.Printf("[ERROR] course current failed workspace_id=%d user_id=%d: %v", workspace.ID, userID, err)
 		api.WriteError(w, http.StatusInternalServerError, "course_current_failed")
 		return
 	}

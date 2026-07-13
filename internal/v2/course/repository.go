@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -26,12 +27,12 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 		}, nil
 	}
 	if err != nil {
-		return CurrentResponse{}, err
+		return CurrentResponse{}, fmt.Errorf("load active strategy: %w", err)
 	}
 
 	course, err := s.getOrCreate(ctx, workspaceID, userID, strategy)
 	if err != nil {
-		return CurrentResponse{}, err
+		return CurrentResponse{}, fmt.Errorf("materialize course: %w", err)
 	}
 
 	return CurrentResponse{
@@ -173,13 +174,24 @@ func (s *Store) getOrCreate(ctx context.Context, workspaceID int, userID int, st
 	draft := buildDraft(strategy, artifacts)
 
 	row := tx.QueryRowContext(ctx, `
-		INSERT INTO v2_courses (
-			workspace_id, strategy_id, title, direction, strategic_goal, meaning,
-			horizon, horizon_unit, start_date, end_date, key_metric, success_criterion,
-			status, source, created_by, activated_at
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_DATE, CURRENT_DATE + $7, $9, $10, $11, $12, $13, NOW())
-		ON CONFLICT (workspace_id, strategy_id) DO UPDATE SET updated_at=v2_courses.updated_at
+		UPDATE v2_courses
+		SET title=$3,
+			direction=$4,
+			strategic_goal=$5,
+			meaning=$6,
+			horizon=$7,
+			horizon_unit=$8,
+			start_date=CURRENT_DATE,
+			end_date=CURRENT_DATE + ($7::INTEGER),
+			key_metric=$9,
+			success_criterion=$10,
+			status=$11,
+			source=$12,
+			created_by=COALESCE(created_by, $13),
+			activated_at=COALESCE(activated_at, NOW()),
+			archived_at=NULL,
+			updated_at=NOW()
+		WHERE workspace_id=$1 AND strategy_id=$2
 		RETURNING
 			id, workspace_id, strategy_id, title, direction, strategic_goal, meaning,
 			horizon, horizon_unit, start_date::TEXT, end_date::TEXT, key_metric,
@@ -188,8 +200,24 @@ func (s *Store) getOrCreate(ctx context.Context, workspaceID int, userID int, st
 		draft.Horizon, draft.HorizonUnit, draft.KeyMetric, draft.SuccessCriterion, StatusActive, SourceFromStrategy, userID)
 
 	course, err = scanCourse(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		row = tx.QueryRowContext(ctx, `
+		INSERT INTO v2_courses (
+			workspace_id, strategy_id, title, direction, strategic_goal, meaning,
+			horizon, horizon_unit, start_date, end_date, key_metric, success_criterion,
+			status, source, created_by, activated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_DATE, CURRENT_DATE + ($7::INTEGER), $9, $10, $11, $12, $13, NOW())
+		RETURNING
+			id, workspace_id, strategy_id, title, direction, strategic_goal, meaning,
+			horizon, horizon_unit, start_date::TEXT, end_date::TEXT, key_metric,
+			success_criterion, status, source, created_by, created_at, updated_at, activated_at
+		`, workspaceID, strategy.ID, draft.Title, draft.Direction, draft.StrategicGoal, draft.Meaning,
+			draft.Horizon, draft.HorizonUnit, draft.KeyMetric, draft.SuccessCriterion, StatusActive, SourceFromStrategy, userID)
+		course, err = scanCourse(row)
+	}
 	if err != nil {
-		return Course{}, err
+		return Course{}, fmt.Errorf("write generated course: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -218,7 +246,7 @@ func (s *Store) refreshGeneratedCourse(
 	row := tx.QueryRowContext(ctx, `
 		UPDATE v2_courses
 		SET title=$1, direction=$2, strategic_goal=$3, meaning=$4,
-			horizon=$5, horizon_unit=$6, end_date=start_date + $5,
+			horizon=$5, horizon_unit=$6, end_date=start_date + ($5::INTEGER),
 			key_metric=$7, success_criterion=$8, updated_at=NOW()
 		WHERE id=$9 AND workspace_id=$10 AND source=$11 AND archived_at IS NULL
 		RETURNING
