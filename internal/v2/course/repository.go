@@ -607,30 +607,37 @@ func (s *Store) knowledgeBaseSummary(ctx context.Context, workspaceID int) (Know
 	var summary KnowledgeBaseSummary
 	var updatedAt sql.NullTime
 	err := s.dbx.QueryRowContext(ctx, `
-		SELECT COUNT(*),
-			COUNT(*) FILTER (WHERE BTRIM(markdown)<>''),
-			MAX(generated_at)
-		FROM strategic_documents
-		WHERE workspace_id=$1
-	`, workspaceID).Scan(&summary.DocumentsTotal, &summary.DocumentsFilled, &updatedAt)
+		WITH documents AS (
+			SELECT COUNT(*) AS total,
+				COUNT(*) FILTER (WHERE BTRIM(markdown)<>'') AS filled,
+				MAX(generated_at) AS updated_at
+			FROM strategic_documents
+			WHERE workspace_id=$1
+		), latest_quality AS (
+			SELECT readiness_score, readiness_status, created_at
+			FROM strategic_quality_reports
+			WHERE workspace_id=$1
+			ORDER BY created_at DESC, id DESC
+			LIMIT 1
+		)
+		SELECT documents.total,
+			documents.filled,
+			COALESCE(latest_quality.readiness_score, 0),
+			COALESCE(latest_quality.readiness_status, 'not_ready'),
+			COALESCE(latest_quality.created_at, documents.updated_at)
+		FROM documents
+		LEFT JOIN latest_quality ON TRUE
+	`, workspaceID).Scan(
+		&summary.DocumentsTotal,
+		&summary.DocumentsFilled,
+		&summary.ReadinessScore,
+		&summary.ReadinessStatus,
+		&updatedAt,
+	)
 	if err != nil {
 		return KnowledgeBaseSummary{}, err
 	}
-
-	var qualityUpdatedAt sql.NullTime
-	err = s.dbx.QueryRowContext(ctx, `
-		SELECT readiness_score, readiness_status, created_at
-		FROM strategic_quality_reports
-		WHERE workspace_id=$1
-		ORDER BY created_at DESC, id DESC
-		LIMIT 1
-	`, workspaceID).Scan(&summary.ReadinessScore, &summary.ReadinessStatus, &qualityUpdatedAt)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return KnowledgeBaseSummary{}, err
-	}
-	if qualityUpdatedAt.Valid {
-		summary.UpdatedAt = qualityUpdatedAt.Time.UTC().Format(time.RFC3339)
-	} else if updatedAt.Valid {
+	if updatedAt.Valid {
 		summary.UpdatedAt = updatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	return summary, nil
