@@ -66,6 +66,10 @@ func (h *Handler) Course(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case action == "" && r.Method == http.MethodPatch:
 		h.updateCourse(w, r, workspace.ID, courseID)
+	case action == "activate" && r.Method == http.MethodPost:
+		h.activateCourse(w, r, workspace.ID, courseID)
+	case action == "refresh" && r.Method == http.MethodPost:
+		h.refreshCourse(w, r, workspace.ID, courseID)
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
@@ -78,8 +82,8 @@ func (h *Handler) updateCourse(w http.ResponseWriter, r *http.Request, workspace
 		return
 	}
 	input.trim()
-	if input.Status != "" && !ValidStatus(input.Status) {
-		api.WriteError(w, http.StatusUnprocessableEntity, "invalid_status")
+	if input.Status != "" {
+		api.WriteError(w, http.StatusUnprocessableEntity, "course_status_action_required")
 		return
 	}
 	if input.Horizon != nil && *input.Horizon <= 0 {
@@ -98,6 +102,44 @@ func (h *Handler) updateCourse(w http.ResponseWriter, r *http.Request, workspace
 	}
 
 	api.WriteJSON(w, http.StatusOK, map[string]any{"course": course})
+}
+
+func (h *Handler) activateCourse(w http.ResponseWriter, r *http.Request, workspaceID int, courseID int) {
+	course, err := h.store.Activate(r.Context(), workspaceID, courseID)
+	if h.writeCourseActionError(w, err) {
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{"course": course})
+}
+
+func (h *Handler) refreshCourse(w http.ResponseWriter, r *http.Request, workspaceID int, courseID int) {
+	course, err := h.store.Refresh(r.Context(), workspaceID, courseID)
+	if h.writeCourseActionError(w, err) {
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{"course": course})
+}
+
+func (h *Handler) writeCourseActionError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		api.WriteError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, ErrCourseIncomplete):
+		api.WriteError(w, http.StatusUnprocessableEntity, "course_incomplete")
+	case errors.Is(err, ErrCourseStrategyStale):
+		api.WriteError(w, http.StatusConflict, "course_strategy_stale")
+	case errors.Is(err, ErrCourseStrategyMismatch):
+		api.WriteError(w, http.StatusConflict, "course_strategy_mismatch")
+	case errors.Is(err, ErrCourseArtifactsMissing):
+		api.WriteError(w, http.StatusConflict, "course_strategy_artifacts_missing")
+	default:
+		log.Printf("[ERROR] course action failed: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "course_action_failed")
+	}
+	return true
 }
 
 func (h *Handler) currentWorkspace(w http.ResponseWriter, r *http.Request) (workspaces.Workspace, int, bool) {

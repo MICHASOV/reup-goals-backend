@@ -977,6 +977,41 @@ var migrations = []Migration{
 				ADD COLUMN IF NOT EXISTS open_questions_json JSONB NOT NULL DEFAULT '[]'::jsonb;
 		`,
 	},
+	{
+		ID: "20260714_019_course_strategy_provenance",
+		SQL: `
+			ALTER TABLE v2_courses
+				ADD COLUMN IF NOT EXISTS source_synthesis_run_id INTEGER NULL REFERENCES v2_strategy_synthesis_runs(id) ON DELETE SET NULL,
+				ADD COLUMN IF NOT EXISTS source_session_revision INTEGER NOT NULL DEFAULT 0;
+
+			ALTER TABLE v2_courses
+				ALTER COLUMN status SET DEFAULT 'draft';
+
+			UPDATE v2_courses course
+			SET source_synthesis_run_id = (
+					SELECT run.id
+					FROM v2_strategy_synthesis_runs run
+					WHERE run.workspace_id=course.workspace_id
+						AND run.strategy_id=course.strategy_id
+						AND run.status='completed'
+					ORDER BY run.created_at DESC, run.id DESC
+					LIMIT 1
+				),
+				source_session_revision = COALESCE((
+					SELECT run.session_revision
+					FROM v2_strategy_synthesis_runs run
+					WHERE run.workspace_id=course.workspace_id
+						AND run.strategy_id=course.strategy_id
+						AND run.status='completed'
+					ORDER BY run.created_at DESC, run.id DESC
+					LIMIT 1
+				), 0)
+			WHERE source_synthesis_run_id IS NULL;
+
+			CREATE INDEX IF NOT EXISTS idx_v2_courses_source_synthesis
+				ON v2_courses (workspace_id, source_synthesis_run_id);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
