@@ -609,7 +609,7 @@ func (s *Store) knowledgeBaseSummary(ctx context.Context, workspaceID int) (Know
 	err := s.dbx.QueryRowContext(ctx, `
 		SELECT COUNT(*),
 			COUNT(*) FILTER (WHERE BTRIM(markdown)<>''),
-			MAX(updated_at)
+			MAX(generated_at)
 		FROM strategic_documents
 		WHERE workspace_id=$1
 	`, workspaceID).Scan(&summary.DocumentsTotal, &summary.DocumentsFilled, &updatedAt)
