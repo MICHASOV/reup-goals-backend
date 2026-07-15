@@ -1056,6 +1056,111 @@ var migrations = []Migration{
 			);
 		`,
 	},
+	{
+		ID: "20260715_021_tactics_readiness_pipeline",
+		SQL: `
+			ALTER TABLE v2_tactical_plans
+				ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1;
+
+			CREATE TABLE IF NOT EXISTS v2_tactics_readiness_runs (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				tactical_plan_id INTEGER NOT NULL REFERENCES v2_tactical_plans(id) ON DELETE CASCADE,
+				strategy_id INTEGER NOT NULL REFERENCES v2_strategies(id) ON DELETE CASCADE,
+				course_id INTEGER NULL REFERENCES v2_courses(id) ON DELETE SET NULL,
+				session_revision INTEGER NOT NULL,
+				tactical_plan_revision INTEGER NOT NULL,
+				validated_through_message_id INTEGER NOT NULL,
+				status TEXT NOT NULL DEFAULT 'queued',
+				verdict TEXT NOT NULL DEFAULT '',
+				can_activate BOOLEAN NOT NULL DEFAULT FALSE,
+				overall_score INTEGER NOT NULL DEFAULT 0,
+				confidence TEXT NOT NULL DEFAULT '',
+				report_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				model TEXT NOT NULL DEFAULT '',
+				prompt_version TEXT NOT NULL DEFAULT '',
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				duration_ms BIGINT NOT NULL DEFAULT 0,
+				error TEXT NOT NULL DEFAULT '',
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				started_at TIMESTAMPTZ NULL,
+				completed_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactics_readiness_runs_workspace
+				ON v2_tactics_readiness_runs (workspace_id, created_at DESC, id DESC);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactics_readiness_runs_active
+				ON v2_tactics_readiness_runs (workspace_id, status, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_tactics_readiness_queue (
+				workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+				tactical_plan_id INTEGER NOT NULL REFERENCES v2_tactical_plans(id) ON DELETE CASCADE,
+				strategy_id INTEGER NOT NULL REFERENCES v2_strategies(id) ON DELETE CASCADE,
+				course_id INTEGER NULL REFERENCES v2_courses(id) ON DELETE SET NULL,
+				session_revision INTEGER NOT NULL,
+				tactical_plan_revision INTEGER NOT NULL,
+				through_message_id INTEGER NOT NULL,
+				requested_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				not_before TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactics_readiness_queue_due
+				ON v2_tactics_readiness_queue (not_before, updated_at);
+
+			CREATE OR REPLACE FUNCTION reup_touch_tactical_plan_revision()
+			RETURNS TRIGGER AS $$
+			DECLARE
+				plan_id INTEGER;
+			BEGIN
+				IF TG_TABLE_NAME = 'v2_tactical_workstreams' THEN
+					plan_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.tactical_plan_id ELSE NEW.tactical_plan_id END;
+				ELSIF TG_TABLE_NAME = 'v2_tactical_projects' THEN
+					SELECT tactical_plan_id INTO plan_id
+					FROM v2_tactical_workstreams
+					WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.workstream_id ELSE NEW.workstream_id END;
+				ELSE
+					plan_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.tactical_plan_id ELSE NEW.tactical_plan_id END;
+				END IF;
+
+				IF plan_id IS NOT NULL THEN
+					UPDATE v2_tactical_plans
+					SET revision=revision + 1, updated_at=NOW()
+					WHERE id=plan_id;
+				END IF;
+
+				IF TG_OP = 'DELETE' THEN
+					RETURN OLD;
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+
+			DROP TRIGGER IF EXISTS trg_touch_tactical_plan_from_workstream ON v2_tactical_workstreams;
+			CREATE TRIGGER trg_touch_tactical_plan_from_workstream
+				AFTER INSERT OR UPDATE OR DELETE ON v2_tactical_workstreams
+				FOR EACH ROW EXECUTE FUNCTION reup_touch_tactical_plan_revision();
+
+			DROP TRIGGER IF EXISTS trg_touch_tactical_plan_from_project ON v2_tactical_projects;
+			CREATE TRIGGER trg_touch_tactical_plan_from_project
+				AFTER INSERT OR UPDATE OR DELETE ON v2_tactical_projects
+				FOR EACH ROW EXECUTE FUNCTION reup_touch_tactical_plan_revision();
+
+			DROP TRIGGER IF EXISTS trg_touch_tactical_plan_from_risk ON v2_tactical_risks;
+			CREATE TRIGGER trg_touch_tactical_plan_from_risk
+				AFTER INSERT OR UPDATE OR DELETE ON v2_tactical_risks
+				FOR EACH ROW EXECUTE FUNCTION reup_touch_tactical_plan_revision();
+
+			DROP TRIGGER IF EXISTS trg_touch_tactical_plan_from_opportunity ON v2_tactical_opportunities;
+			CREATE TRIGGER trg_touch_tactical_plan_from_opportunity
+				AFTER INSERT OR UPDATE OR DELETE ON v2_tactical_opportunities
+				FOR EACH ROW EXECUTE FUNCTION reup_touch_tactical_plan_revision();
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

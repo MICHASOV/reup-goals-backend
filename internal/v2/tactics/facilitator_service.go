@@ -22,6 +22,11 @@ type FacilitatorService struct {
 	memoryService    *strategicmemory.Service
 	ai               *ai.OpenAIClient
 	compactThreshold int
+	readiness        *TacticsReadinessService
+}
+
+func (s *FacilitatorService) SetReadinessService(readiness *TacticsReadinessService) {
+	s.readiness = readiness
 }
 
 func NewFacilitatorService(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *FacilitatorService {
@@ -74,6 +79,14 @@ func (s *FacilitatorService) State(ctx context.Context, workspaceID int, userID 
 	if err != nil {
 		return TacticsFacilitatorState{}, err
 	}
+	var readiness *TacticsReadinessRun
+	if s.readiness != nil {
+		latest, readinessErr := s.readiness.Latest(ctx, workspaceID)
+		if readinessErr != nil {
+			return TacticsFacilitatorState{}, readinessErr
+		}
+		readiness = latest.Run
+	}
 	return TacticsFacilitatorState{
 		WorkspaceID:    workspaceID,
 		Current:        current,
@@ -84,6 +97,7 @@ func (s *FacilitatorService) State(ctx context.Context, workspaceID int, userID 
 		Communication:  communication,
 		RecentMessages: messages,
 		Session:        session,
+		Readiness:      readiness,
 	}, nil
 }
 
@@ -96,10 +110,19 @@ func (s *FacilitatorService) History(ctx context.Context, workspaceID int) (Tact
 	if err != nil {
 		return TacticsFacilitatorHistoryState{}, err
 	}
+	var readiness *TacticsReadinessRun
+	if s.readiness != nil {
+		latest, readinessErr := s.readiness.Latest(ctx, workspaceID)
+		if readinessErr != nil {
+			return TacticsFacilitatorHistoryState{}, readinessErr
+		}
+		readiness = latest.Run
+	}
 	return TacticsFacilitatorHistoryState{
 		WorkspaceID:    workspaceID,
 		RecentMessages: messages,
 		Session:        session,
+		Readiness:      readiness,
 	}, nil
 }
 
@@ -209,6 +232,12 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
+	if s.readiness != nil && sessionState.FacilitatorStatus == FacilitatorStatusCandidateReady && state.Current.TacticalPlan != nil {
+		plan, planErr := s.store.planByID(ctx, workspaceID, state.Current.TacticalPlan.ID)
+		if planErr == nil {
+			_, _ = s.readiness.QueueCandidate(ctx, sessionState, plan, false)
+		}
+	}
 	messages, err := s.store.ChatMessages(ctx, workspaceID, 100)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
@@ -255,9 +284,10 @@ func buildTacticsFreshInput(message string, request TacticsFacilitatorMessageReq
 			"uncovered":     state.Current.Uncovered,
 			"session_state": state.Session,
 		},
-		"communication_profile": state.Communication,
-		"recent_dialogue":       state.RecentMessages,
-		"instruction":           "Continue as a tactical consultant. Reply naturally to the latest user message and make the next move that most improves the company's system of changes for realizing its active course.",
+		"communication_profile":   state.Communication,
+		"recent_dialogue":         state.RecentMessages,
+		"latest_quality_feedback": compactTacticsReadinessFeedback(state.Readiness),
+		"instruction":             "Continue as a tactical consultant. Reply naturally to the latest user message and make the next move that most improves the company's system of changes for realizing its active course.",
 	}
 	raw, _ := json.Marshal(contextPack)
 	return "Context for the tactical session in JSON:\n" + string(raw)
@@ -271,11 +301,33 @@ func buildTacticsTurnInput(message string, request TacticsFacilitatorMessageRequ
 			"request": request.Scope,
 			"entity":  scopeContext,
 		},
-		"session_state": state.Session,
-		"instruction":   "Continue the same tactical conversation. Respond naturally, preserve the active course as the governing constraint, and do not expose internal status mechanics.",
+		"session_state":           state.Session,
+		"latest_quality_feedback": compactTacticsReadinessFeedback(state.Readiness),
+		"instruction":             "Continue the same tactical conversation. Respond naturally, preserve the active course as the governing constraint, and do not expose internal status mechanics.",
 	}
 	raw, _ := json.Marshal(turn)
 	return string(raw)
+}
+
+func compactTacticsReadinessFeedback(run *TacticsReadinessRun) any {
+	if run == nil || run.Report == nil {
+		return nil
+	}
+	return map[string]any{
+		"audited_session_revision":       run.SessionRevision,
+		"audited_tactical_plan_revision": run.TacticalPlanRevision,
+		"verdict":                        run.Report.Verdict,
+		"can_activate":                   run.Report.CanActivate,
+		"overall_score":                  run.Report.OverallScore,
+		"executive_summary":              run.Report.ExecutiveSummary,
+		"blocking_gaps":                  run.Report.BlockingGaps,
+		"weak_zones":                     run.Report.WeakZones,
+		"contradictions":                 run.Report.Contradictions,
+		"additional_perspectives":        run.Report.AdditionalPerspectives,
+		"facilitator_guidance":           run.Report.FacilitatorGuidance,
+		"needs_strategy_review":          run.Report.NeedsStrategyReview,
+		"strategy_review_reason":         run.Report.StrategyReviewReason,
+	}
 }
 
 func parseTacticsFacilitatorOutput(raw string) (tacticsFacilitatorModelOutput, error) {

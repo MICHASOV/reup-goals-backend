@@ -39,6 +39,7 @@ const (
 	SourceManual = "manual"
 
 	TacticsFacilitatorPromptVersion = "tactics_facilitator_openai_native_v0_1_0"
+	TacticsReadinessPromptVersion   = "tactics_quality_readiness_auditor_v0_1_0"
 
 	FacilitatorStatusInProgress     = "in_progress"
 	FacilitatorStatusCandidateReady = "candidate_ready"
@@ -51,6 +52,7 @@ type TacticalPlan struct {
 	StrategyID  int        `json:"strategy_id"`
 	CourseID    *int       `json:"course_id"`
 	Status      string     `json:"status"`
+	Revision    int        `json:"revision"`
 	Title       string     `json:"title"`
 	Summary     string     `json:"summary"`
 	Source      string     `json:"source"`
@@ -235,12 +237,14 @@ type TacticsFacilitatorState struct {
 	Communication  strategicmemory.CommunicationProfile `json:"communication_profile"`
 	RecentMessages []TacticsChatMessage                 `json:"recent_messages"`
 	Session        TacticsSessionState                  `json:"session"`
+	Readiness      *TacticsReadinessRun                 `json:"readiness,omitempty"`
 }
 
 type TacticsFacilitatorHistoryState struct {
 	WorkspaceID    int                  `json:"workspace_id"`
 	RecentMessages []TacticsChatMessage `json:"recent_messages"`
 	Session        TacticsSessionState  `json:"session"`
+	Readiness      *TacticsReadinessRun `json:"readiness,omitempty"`
 }
 
 type TacticsMessageScope struct {
@@ -272,6 +276,158 @@ type tacticsFacilitatorModelOutput struct {
 	OpenQuestions        []string     `json:"open_questions"`
 	NeedsStrategyReview  bool         `json:"needs_strategy_review"`
 	StrategyReviewReason string       `json:"strategy_review_reason"`
+}
+
+const (
+	TacticsReadinessRunQueued     = "queued"
+	TacticsReadinessRunRunning    = "running"
+	TacticsReadinessRunCompleted  = "completed"
+	TacticsReadinessRunFailed     = "failed"
+	TacticsReadinessRunSuperseded = "superseded"
+
+	TacticsReadinessVerdictReady              = "ready"
+	TacticsReadinessVerdictConditionallyReady = "conditionally_ready"
+	TacticsReadinessVerdictNotReady           = "not_ready"
+)
+
+type TacticsReadinessRun struct {
+	ID                        int                     `json:"id"`
+	WorkspaceID               int                     `json:"workspace_id"`
+	TacticalPlanID            int                     `json:"tactical_plan_id"`
+	StrategyID                int                     `json:"strategy_id"`
+	CourseID                  *int                    `json:"course_id,omitempty"`
+	SessionRevision           int                     `json:"session_revision"`
+	TacticalPlanRevision      int                     `json:"tactical_plan_revision"`
+	ValidatedThroughMessageID int                     `json:"validated_through_message_id"`
+	Status                    string                  `json:"status"`
+	Verdict                   string                  `json:"verdict"`
+	CanActivate               bool                    `json:"can_activate"`
+	OverallScore              int                     `json:"overall_score"`
+	Confidence                string                  `json:"confidence"`
+	Report                    *TacticsReadinessReport `json:"report,omitempty"`
+	Model                     string                  `json:"model"`
+	PromptVersion             string                  `json:"prompt_version"`
+	InputTokens               int                     `json:"input_tokens"`
+	OutputTokens              int                     `json:"output_tokens"`
+	DurationMS                int64                   `json:"duration_ms"`
+	Error                     string                  `json:"error,omitempty"`
+	CreatedBy                 *int                    `json:"created_by,omitempty"`
+	CreatedAt                 time.Time               `json:"created_at"`
+	StartedAt                 *time.Time              `json:"started_at,omitempty"`
+	CompletedAt               *time.Time              `json:"completed_at,omitempty"`
+}
+
+type TacticsReadinessReport struct {
+	Verdict                    string                             `json:"verdict"`
+	CanActivate                bool                               `json:"can_activate"`
+	OverallScore               int                                `json:"overall_score"`
+	Confidence                 string                             `json:"confidence"`
+	ValidatedThroughMessageID  int                                `json:"validated_through_message_id"`
+	SessionRevision            int                                `json:"session_revision"`
+	TacticalPlanRevision       int                                `json:"tactical_plan_revision"`
+	ExecutiveSummary           string                             `json:"executive_summary"`
+	CriteriaAssessment         []TacticsReadinessCriterion        `json:"criteria_assessment"`
+	CourseCoverage             []TacticsCourseCoverage            `json:"course_coverage"`
+	EntityAssessments          []TacticsEntityAssessment          `json:"entity_assessments"`
+	BlockingGaps               []TacticsReadinessIssue            `json:"blocking_gaps"`
+	WeakZones                  []TacticsReadinessIssue            `json:"weak_zones"`
+	Contradictions             []TacticsReadinessIssue            `json:"contradictions"`
+	CriticalAssumptions        []TacticsReadinessAssumption       `json:"critical_assumptions"`
+	RedundantOrMisalignedItems []TacticsMisalignedInitiative      `json:"redundant_or_misaligned_initiatives"`
+	AdditionalPerspectives     []TacticsReadinessPerspective      `json:"additional_perspectives"`
+	FacilitatorGuidance        []TacticsReadinessFacilitatorGuide `json:"facilitator_guidance"`
+	ActivationGuidance         TacticsReadinessActivationGuidance `json:"activation_guidance"`
+	NeedsStrategyReview        bool                               `json:"needs_strategy_review"`
+	StrategyReviewReason       string                             `json:"strategy_review_reason"`
+}
+
+type TacticsReadinessCriterion struct {
+	CriterionCode string   `json:"criterion_code"`
+	Score         int      `json:"score"`
+	Assessment    string   `json:"assessment"`
+	Strengths     []string `json:"strengths"`
+	Gaps          []string `json:"gaps"`
+	SourceKeys    []string `json:"source_keys"`
+}
+
+type TacticsCourseCoverage struct {
+	CourseElement string   `json:"course_element"`
+	Coverage      string   `json:"coverage"`
+	Assessment    string   `json:"assessment"`
+	SourceKeys    []string `json:"source_keys"`
+}
+
+type TacticsEntityAssessment struct {
+	EntityType string   `json:"entity_type"`
+	EntityID   int      `json:"entity_id"`
+	Title      string   `json:"title"`
+	Status     string   `json:"status"`
+	Assessment string   `json:"assessment"`
+	SourceKeys []string `json:"source_keys"`
+}
+
+type TacticsReadinessIssue struct {
+	Area         string   `json:"area"`
+	Issue        string   `json:"issue"`
+	Impact       string   `json:"impact"`
+	NextEvidence string   `json:"next_evidence"`
+	SourceKeys   []string `json:"source_keys"`
+}
+
+type TacticsReadinessAssumption struct {
+	Assumption     string   `json:"assumption"`
+	EvidenceStatus string   `json:"evidence_status"`
+	TacticalImpact string   `json:"tactical_impact"`
+	SourceKeys     []string `json:"source_keys"`
+}
+
+type TacticsMisalignedInitiative struct {
+	EntityType        string   `json:"entity_type"`
+	EntityID          int      `json:"entity_id"`
+	Title             string   `json:"title"`
+	Reason            string   `json:"reason"`
+	RecommendedAction string   `json:"recommended_action"`
+	SourceKeys        []string `json:"source_keys"`
+}
+
+type TacticsReadinessPerspective struct {
+	Perspective  string   `json:"perspective"`
+	WhyItMatters string   `json:"why_it_matters"`
+	IsBlocking   bool     `json:"is_blocking"`
+	SourceKeys   []string `json:"source_keys"`
+}
+
+type TacticsReadinessFacilitatorGuide struct {
+	Priority       string `json:"priority"`
+	Area           string `json:"area"`
+	ResearchGoal   string `json:"research_goal"`
+	WhyItMatters   string `json:"why_it_matters"`
+	ContextToCarry string `json:"context_to_carry"`
+	Blocking       bool   `json:"blocking"`
+}
+
+type TacticsReadinessActivationGuidance struct {
+	ConditionsToActivate []string `json:"conditions_to_activate"`
+	WarningsToPreserve   []string `json:"warnings_to_preserve"`
+	FirstReviewSignals   []string `json:"first_review_signals"`
+}
+
+type TacticsReadinessQueueItem struct {
+	WorkspaceID          int       `json:"workspace_id"`
+	TacticalPlanID       int       `json:"tactical_plan_id"`
+	StrategyID           int       `json:"strategy_id"`
+	CourseID             *int      `json:"course_id,omitempty"`
+	SessionRevision      int       `json:"session_revision"`
+	TacticalPlanRevision int       `json:"tactical_plan_revision"`
+	ThroughMessageID     int       `json:"through_message_id"`
+	RequestedBy          *int      `json:"requested_by,omitempty"`
+	NotBefore            time.Time `json:"not_before"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+type TacticsReadinessResponse struct {
+	Run       *TacticsReadinessRun `json:"run"`
+	IsCurrent bool                 `json:"is_current"`
 }
 
 type Uncovered struct {

@@ -19,13 +19,19 @@ type Handler struct {
 	store       *Store
 	workspaces  *workspaces.Store
 	facilitator *FacilitatorService
+	readiness   *TacticsReadinessService
 }
 
 func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *Handler {
+	readiness := NewTacticsReadinessService(dbx, aiClient, compactThreshold)
+	facilitator := NewFacilitatorService(dbx, aiClient, compactThreshold)
+	facilitator.SetReadinessService(readiness)
+	readiness.StartWorker()
 	return &Handler{
 		store:       NewStore(dbx),
 		workspaces:  workspaces.NewStore(dbx),
-		facilitator: NewFacilitatorService(dbx, aiClient, compactThreshold),
+		facilitator: facilitator,
+		readiness:   readiness,
 	}
 }
 
@@ -37,8 +43,40 @@ func (h *Handler) Facilitator(w http.ResponseWriter, r *http.Request) {
 		h.facilitatorMessage(w, r)
 	case "/api/v2/tactics-facilitator/files":
 		h.facilitatorFile(w, r)
+	case "/api/v2/tactics-facilitator/readiness":
+		h.tacticsReadiness(w, r)
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
+	}
+}
+
+func (h *Handler) tacticsReadiness(w http.ResponseWriter, r *http.Request) {
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		response, err := h.readiness.Latest(r.Context(), workspace.ID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "tactics_readiness_state_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, response)
+	case http.MethodPost:
+		item, err := h.readiness.ForceCurrent(r.Context(), workspace.ID, userID)
+		if err != nil {
+			switch err.Error() {
+			case "tactics_readiness_no_plan", "tactics_readiness_context_incomplete":
+				api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+			default:
+				api.WriteError(w, http.StatusInternalServerError, "tactics_readiness_start_failed")
+			}
+			return
+		}
+		api.WriteJSON(w, http.StatusAccepted, map[string]any{"queued": item})
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
 }
 
@@ -184,6 +222,32 @@ func (h *Handler) Tactics(w http.ResponseWriter, r *http.Request) {
 	if body.Status != "" && !ValidPlanStatus(body.Status) {
 		api.WriteError(w, http.StatusUnprocessableEntity, "invalid_status")
 		return
+	}
+	if body.Status == PlanStatusActive {
+		currentPlan, err := h.store.planByID(r.Context(), workspace.ID, planID)
+		if errors.Is(err, sql.ErrNoRows) {
+			api.WriteError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "tactics_readiness_check_failed")
+			return
+		}
+		contentChanged := (strings.TrimSpace(body.Title) != "" && strings.TrimSpace(body.Title) != currentPlan.Title) ||
+			(strings.TrimSpace(body.Summary) != "" && strings.TrimSpace(body.Summary) != currentPlan.Summary)
+		if contentChanged {
+			api.WriteError(w, http.StatusConflict, "tactics_readiness_required_after_changes")
+			return
+		}
+		canActivate, err := h.store.CanActivateTacticalPlan(r.Context(), workspace.ID, planID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "tactics_readiness_check_failed")
+			return
+		}
+		if !canActivate {
+			api.WriteError(w, http.StatusConflict, "tactics_readiness_required")
+			return
+		}
 	}
 
 	plan, err := h.store.UpdatePlan(r.Context(), workspace.ID, planID, body.Title, body.Summary, body.Status)

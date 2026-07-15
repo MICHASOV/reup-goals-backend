@@ -87,11 +87,18 @@ func (s *Store) UpdatePlan(ctx context.Context, workspaceID int, planID int, tit
 	title = strings.TrimSpace(title)
 	summary = strings.TrimSpace(summary)
 	status = strings.TrimSpace(status)
+	current, err := s.planByID(ctx, workspaceID, planID)
+	if err != nil {
+		return TacticalPlan{}, err
+	}
 	if title == "" {
-		title = "Тактический план"
+		title = current.Title
+	}
+	if summary == "" {
+		summary = current.Summary
 	}
 	if status == "" {
-		status = PlanStatusDraft
+		status = current.Status
 	}
 
 	row := s.dbx.QueryRowContext(ctx, `
@@ -99,10 +106,11 @@ func (s *Store) UpdatePlan(ctx context.Context, workspaceID int, planID int, tit
 		SET title=$1,
 			summary=$2,
 			status=$3,
+			revision=revision + CASE WHEN title IS DISTINCT FROM $1 OR summary IS DISTINCT FROM $2 THEN 1 ELSE 0 END,
 			activated_at=CASE WHEN $3=$4 THEN COALESCE(activated_at, NOW()) ELSE activated_at END,
 			updated_at=NOW()
 		WHERE id=$5 AND workspace_id=$6 AND archived_at IS NULL
-		RETURNING id, workspace_id, strategy_id, course_id, status, title, summary, source, created_by, created_at, updated_at, activated_at
+		RETURNING id, workspace_id, strategy_id, course_id, status, revision, title, summary, source, created_by, created_at, updated_at, activated_at
 	`, title, summary, status, PlanStatusActive, planID, workspaceID)
 
 	return scanPlan(row)
@@ -482,7 +490,7 @@ func (s *Store) getOrCreatePlan(ctx context.Context, workspaceID int, userID int
 		INSERT INTO v2_tactical_plans (workspace_id, strategy_id, course_id, status, title, summary, source, created_by)
 		VALUES ($1, $2, $3, $4, $5, '', $6, $7)
 		ON CONFLICT (workspace_id, strategy_id) DO UPDATE SET updated_at=v2_tactical_plans.updated_at
-		RETURNING id, workspace_id, strategy_id, course_id, status, title, summary, source, created_by, created_at, updated_at, activated_at
+		RETURNING id, workspace_id, strategy_id, course_id, status, revision, title, summary, source, created_by, created_at, updated_at, activated_at
 	`, workspaceID, strategyID, nullableInt(courseID), PlanStatusDraft, "Тактический план", SourceManual, userID)
 
 	plan, err = scanPlan(row)
@@ -516,9 +524,11 @@ func (s *Store) attachActiveCourse(ctx context.Context, workspaceID int, plan Ta
 
 	row := s.dbx.QueryRowContext(ctx, `
 		UPDATE v2_tactical_plans
-		SET course_id=$1, updated_at=NOW()
+		SET course_id=$1,
+			revision=revision + CASE WHEN course_id IS DISTINCT FROM $1 THEN 1 ELSE 0 END,
+			updated_at=NOW()
 		WHERE id=$2 AND workspace_id=$3 AND strategy_id=$4 AND archived_at IS NULL
-		RETURNING id, workspace_id, strategy_id, course_id, status, title, summary, source, created_by, created_at, updated_at, activated_at
+		RETURNING id, workspace_id, strategy_id, course_id, status, revision, title, summary, source, created_by, created_at, updated_at, activated_at
 	`, courseID, plan.ID, workspaceID, plan.StrategyID)
 	return scanPlan(row)
 }
@@ -540,7 +550,7 @@ func activeCourseIDTx(ctx context.Context, tx *sql.Tx, workspaceID int, strategy
 
 func (s *Store) planByStrategy(ctx context.Context, workspaceID int, strategyID int) (TacticalPlan, error) {
 	row := s.dbx.QueryRowContext(ctx, `
-		SELECT id, workspace_id, strategy_id, course_id, status, title, summary, source, created_by, created_at, updated_at, activated_at
+		SELECT id, workspace_id, strategy_id, course_id, status, revision, title, summary, source, created_by, created_at, updated_at, activated_at
 		FROM v2_tactical_plans
 		WHERE workspace_id=$1 AND strategy_id=$2 AND archived_at IS NULL
 	`, workspaceID, strategyID)
@@ -549,7 +559,7 @@ func (s *Store) planByStrategy(ctx context.Context, workspaceID int, strategyID 
 
 func (s *Store) planByID(ctx context.Context, workspaceID int, planID int) (TacticalPlan, error) {
 	row := s.dbx.QueryRowContext(ctx, `
-		SELECT id, workspace_id, strategy_id, course_id, status, title, summary, source, created_by, created_at, updated_at, activated_at
+		SELECT id, workspace_id, strategy_id, course_id, status, revision, title, summary, source, created_by, created_at, updated_at, activated_at
 		FROM v2_tactical_plans
 		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
 	`, planID, workspaceID)
@@ -950,7 +960,7 @@ func scanPlan(scanner scanner) (TacticalPlan, error) {
 	var createdBy sql.NullInt64
 	var activatedAt sql.NullTime
 	err := scanner.Scan(
-		&plan.ID, &plan.WorkspaceID, &plan.StrategyID, &courseID, &plan.Status, &plan.Title,
+		&plan.ID, &plan.WorkspaceID, &plan.StrategyID, &courseID, &plan.Status, &plan.Revision, &plan.Title,
 		&plan.Summary, &plan.Source, &createdBy, &plan.CreatedAt, &plan.UpdatedAt, &activatedAt,
 	)
 	if err != nil {

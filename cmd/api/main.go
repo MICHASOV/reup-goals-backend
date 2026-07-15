@@ -131,6 +131,7 @@ func main() {
 	mux.Handle("/api/v2/tactics-facilitator/state", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
 	mux.Handle("/api/v2/tactics-facilitator/messages", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
 	mux.Handle("/api/v2/tactics-facilitator/files", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/readiness", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
 	mux.Handle("/api/v2/tactics/workstreams", v2api.RequireAuth(jwtSecret, tacticsHandler.Workstreams))
 	mux.Handle("/api/v2/tactics/workstreams/", v2api.RequireAuth(jwtSecret, tacticsHandler.Workstreams))
 	mux.Handle("/api/v2/tactics/projects", v2api.RequireAuth(jwtSecret, tacticsHandler.Projects))
