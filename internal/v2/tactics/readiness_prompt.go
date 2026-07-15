@@ -39,9 +39,18 @@ Use these verdicts:
 - conditionally_ready: it can be activated with explicit conditions, warnings, or near-term validation;
 - not_ready: one or more blocking gaps make activation misleading or unsafe.
 
+Use the same deterministic thresholds as the product:
+- below 65, or with any blocking gap: not_ready and can_activate=false;
+- 65 through 79, with no blocking gaps: conditionally_ready and can_activate=true;
+- 80 or higher, with no blocking gaps: ready and can_activate=true.
+
 Always provide feedback to the facilitator. Even a ready plan can contain useful perspectives, follow-up signals, or questions for a later review.
 
 For every factual claim or criticism, cite source_keys from source_catalog. Never invent a source key. If evidence is absent, state that it is absent instead of manufacturing a citation.
+
+Write every human-readable field in the primary language used in the tactical-session transcript. Do not mix languages unless a business term, product name, or source is naturally written in another language.
+
+Keep citations exclusively in the structured source_keys arrays. Never append source keys, citation labels, or technical field names to executive_summary, assessment, issue, impact, guidance, or any other human-readable text.
 
 Return valid JSON only with this exact top-level structure:
 {
