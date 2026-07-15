@@ -59,7 +59,7 @@ func main() {
 	knowledgeHandler := knowledge.NewHandler(database)
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
-	tacticsHandler := tactics.NewHandler(database)
+	tacticsHandler := tactics.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	tasksV2Handler := tasksv2.NewHandler(database)
 
 	mux := http.NewServeMux()
@@ -128,6 +128,9 @@ func main() {
 	mux.Handle("/api/v2/course/current", v2api.RequireAuth(jwtSecret, courseHandler.Current))
 	mux.Handle("/api/v2/course/", v2api.RequireAuth(jwtSecret, courseHandler.Course))
 	mux.Handle("/api/v2/tactics/current", v2api.RequireAuth(jwtSecret, tacticsHandler.Current))
+	mux.Handle("/api/v2/tactics-facilitator/state", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/messages", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/files", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
 	mux.Handle("/api/v2/tactics/workstreams", v2api.RequireAuth(jwtSecret, tacticsHandler.Workstreams))
 	mux.Handle("/api/v2/tactics/workstreams/", v2api.RequireAuth(jwtSecret, tacticsHandler.Workstreams))
 	mux.Handle("/api/v2/tactics/projects", v2api.RequireAuth(jwtSecret, tacticsHandler.Projects))

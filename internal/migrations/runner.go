@@ -1012,6 +1012,50 @@ var migrations = []Migration{
 				ON v2_courses (workspace_id, source_synthesis_run_id);
 		`,
 	},
+	{
+		ID: "20260715_020_tactics_facilitator_chat",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_tactics_chat_messages (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				role TEXT NOT NULL,
+				content TEXT NOT NULL DEFAULT '',
+				metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactics_chat_messages_workspace
+				ON v2_tactics_chat_messages (workspace_id, created_at DESC, id DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_tactics_openai_sessions (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				previous_response_id TEXT NOT NULL DEFAULT '',
+				compact_threshold INTEGER NOT NULL DEFAULT 120000,
+				prompt_cache_key TEXT NOT NULL DEFAULT '',
+				context_fingerprint TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id)
+			);
+
+			CREATE TABLE IF NOT EXISTS v2_tactics_session_state (
+				workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+				revision INTEGER NOT NULL DEFAULT 0,
+				last_user_message_id INTEGER NOT NULL DEFAULT 0,
+				last_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				facilitator_status TEXT NOT NULL DEFAULT 'in_progress',
+				status_reason TEXT NOT NULL DEFAULT '',
+				current_focus_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				decisions_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				open_questions_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				needs_strategy_review BOOLEAN NOT NULL DEFAULT FALSE,
+				strategy_review_reason TEXT NOT NULL DEFAULT '',
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

@@ -32,12 +32,16 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	if err != nil {
 		return CurrentResponse{}, err
 	}
+	course, courseErr := s.activeCourse(ctx, workspaceID, strategy.ID)
+	if courseErr != nil && !errors.Is(courseErr, sql.ErrNoRows) {
+		return CurrentResponse{}, courseErr
+	}
 
 	plan, err := s.getOrCreatePlan(ctx, workspaceID, userID, strategy.ID)
 	if err != nil {
 		return CurrentResponse{}, err
 	}
-	if plan.CourseID == nil {
+	if courseErr == nil && (plan.CourseID == nil || *plan.CourseID != course.ID) {
 		plan, err = s.attachActiveCourse(ctx, workspaceID, plan)
 		if err != nil {
 			return CurrentResponse{}, err
@@ -61,7 +65,7 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 
 	hydrateWorkstreams(workstreams, risks, opportunities)
 
-	return CurrentResponse{
+	response := CurrentResponse{
 		TacticalPlan: &plan,
 		Strategy:     &strategy,
 		Workstreams:  workstreams,
@@ -69,7 +73,14 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 			Risks:         uncoveredRisks(risks),
 			Opportunities: uncoveredOpportunities(opportunities),
 		},
-	}, nil
+	}
+	if courseErr == nil {
+		response.Course = &course
+	} else {
+		response.Reason = "no_active_course"
+		response.Message = "Для создания тактики нужен активный курс."
+	}
+	return response, nil
 }
 
 func (s *Store) UpdatePlan(ctx context.Context, workspaceID int, planID int, title string, summary string, status string) (TacticalPlan, error) {
@@ -400,6 +411,47 @@ func (s *Store) activeStrategy(ctx context.Context, workspaceID int) (StrategySu
 		LIMIT 1
 	`, workspaceID).Scan(&strategy.ID, &strategy.Status, &strategy.Title, &strategy.Summary, &strategy.Version, &strategy.UpdatedAt)
 	return strategy, err
+}
+
+func (s *Store) activeCourse(ctx context.Context, workspaceID int, strategyID int) (CourseSummary, error) {
+	var course CourseSummary
+	var endDate sql.NullString
+	var activatedAt sql.NullTime
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id, strategy_id, status, title, direction, strategic_goal, meaning,
+			horizon, horizon_unit, start_date::TEXT, end_date::TEXT, key_metric,
+			success_criterion, updated_at, activated_at
+		FROM v2_courses
+		WHERE workspace_id=$1 AND strategy_id=$2 AND status='active' AND archived_at IS NULL
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 1
+	`, workspaceID, strategyID).Scan(
+		&course.ID,
+		&course.StrategyID,
+		&course.Status,
+		&course.Title,
+		&course.Direction,
+		&course.StrategicGoal,
+		&course.Meaning,
+		&course.Horizon,
+		&course.HorizonUnit,
+		&course.StartDate,
+		&endDate,
+		&course.KeyMetric,
+		&course.SuccessCriterion,
+		&course.UpdatedAt,
+		&activatedAt,
+	)
+	if err != nil {
+		return CourseSummary{}, err
+	}
+	if endDate.Valid {
+		course.EndDate = endDate.String
+	}
+	if activatedAt.Valid {
+		course.ActivatedAt = &activatedAt.Time
+	}
+	return course, nil
 }
 
 func (s *Store) getOrCreatePlan(ctx context.Context, workspaceID int, userID int, strategyID int) (TacticalPlan, error) {

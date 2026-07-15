@@ -1,6 +1,11 @@
 package tactics
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+
+	"reup-goals-backend/internal/v2/strategicmemory"
+)
 
 const (
 	PlanStatusDraft    = "draft"
@@ -32,6 +37,12 @@ const (
 	CoverageIgnored          = "ignored"
 
 	SourceManual = "manual"
+
+	TacticsFacilitatorPromptVersion = "tactics_facilitator_openai_native_v0_1_0"
+
+	FacilitatorStatusInProgress     = "in_progress"
+	FacilitatorStatusCandidateReady = "candidate_ready"
+	FacilitatorStatusBlocked        = "blocked"
 )
 
 type TacticalPlan struct {
@@ -56,6 +67,24 @@ type StrategySummary struct {
 	Summary   string `json:"summary"`
 	Version   int    `json:"version"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+type CourseSummary struct {
+	ID               int        `json:"id"`
+	StrategyID       int        `json:"strategy_id"`
+	Status           string     `json:"status"`
+	Title            string     `json:"title"`
+	Direction        string     `json:"direction"`
+	StrategicGoal    string     `json:"strategic_goal"`
+	Meaning          string     `json:"meaning"`
+	Horizon          int        `json:"horizon"`
+	HorizonUnit      string     `json:"horizon_unit"`
+	StartDate        string     `json:"start_date"`
+	EndDate          string     `json:"end_date"`
+	KeyMetric        string     `json:"key_metric"`
+	SuccessCriterion string     `json:"success_criterion"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	ActivatedAt      *time.Time `json:"activated_at,omitempty"`
 }
 
 type Workstream struct {
@@ -139,10 +168,110 @@ type Opportunity struct {
 type CurrentResponse struct {
 	TacticalPlan *TacticalPlan    `json:"tactical_plan"`
 	Strategy     *StrategySummary `json:"strategy"`
+	Course       *CourseSummary   `json:"course,omitempty"`
 	Workstreams  []Workstream     `json:"workstreams"`
 	Uncovered    Uncovered        `json:"uncovered"`
 	Reason       string           `json:"reason,omitempty"`
 	Message      string           `json:"message,omitempty"`
+}
+
+type TacticsChatMessage struct {
+	ID        int       `json:"id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type TacticsFocus struct {
+	EntityType   string `json:"entity_type"`
+	EntityID     *int   `json:"entity_id,omitempty"`
+	Title        string `json:"title"`
+	ResearchGoal string `json:"research_goal"`
+}
+
+type TacticsSessionState struct {
+	WorkspaceID          int          `json:"workspace_id"`
+	Revision             int          `json:"revision"`
+	LastUserMessageID    int          `json:"last_user_message_id"`
+	LastUserID           *int         `json:"last_user_id,omitempty"`
+	FacilitatorStatus    string       `json:"facilitator_status"`
+	StatusReason         string       `json:"status_reason"`
+	CurrentFocus         TacticsFocus `json:"current_focus"`
+	Decisions            []string     `json:"decisions"`
+	OpenQuestions        []string     `json:"open_questions"`
+	NeedsStrategyReview  bool         `json:"needs_strategy_review"`
+	StrategyReviewReason string       `json:"strategy_review_reason"`
+	UpdatedAt            time.Time    `json:"updated_at"`
+}
+
+type TacticsOpenAISession struct {
+	ID                 int       `json:"id"`
+	WorkspaceID        int       `json:"workspace_id"`
+	PreviousResponseID string    `json:"previous_response_id,omitempty"`
+	CompactThreshold   int       `json:"compact_threshold"`
+	PromptCacheKey     string    `json:"prompt_cache_key,omitempty"`
+	ContextFingerprint string    `json:"context_fingerprint,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type TacticsStrategyDocument struct {
+	RunID         int             `json:"run_id"`
+	DocumentType  string          `json:"document_type"`
+	Title         string          `json:"title"`
+	Status        string          `json:"status"`
+	Content       string          `json:"content"`
+	SourceRefs    json.RawMessage `json:"source_refs,omitempty"`
+	OpenQuestions json.RawMessage `json:"open_questions,omitempty"`
+}
+
+type TacticsFacilitatorState struct {
+	WorkspaceID    int                                  `json:"workspace_id"`
+	Current        CurrentResponse                      `json:"current"`
+	StrategyDocs   []TacticsStrategyDocument            `json:"strategy_documents"`
+	KnowledgeDocs  []strategicmemory.StrategicDocument  `json:"knowledge_documents"`
+	KnowledgeAudit *strategicmemory.QualityReport       `json:"knowledge_quality,omitempty"`
+	Files          []strategicmemory.StrategicFile      `json:"files,omitempty"`
+	Communication  strategicmemory.CommunicationProfile `json:"communication_profile"`
+	RecentMessages []TacticsChatMessage                 `json:"recent_messages"`
+	Session        TacticsSessionState                  `json:"session"`
+}
+
+type TacticsFacilitatorHistoryState struct {
+	WorkspaceID    int                  `json:"workspace_id"`
+	RecentMessages []TacticsChatMessage `json:"recent_messages"`
+	Session        TacticsSessionState  `json:"session"`
+}
+
+type TacticsMessageScope struct {
+	EntityType string `json:"entity_type"`
+	EntityID   int    `json:"entity_id"`
+	Label      string `json:"label"`
+}
+
+type TacticsFacilitatorMessageRequest struct {
+	Message         string               `json:"message"`
+	ParticipantRole string               `json:"participant_role,omitempty"`
+	Scope           *TacticsMessageScope `json:"scope,omitempty"`
+}
+
+type TacticsFacilitatorMessageResponse struct {
+	WorkspaceID      int                  `json:"workspace_id"`
+	AssistantMessage string               `json:"assistant_message"`
+	RecentMessages   []TacticsChatMessage `json:"recent_messages"`
+	OpenAIResponseID string               `json:"openai_response_id,omitempty"`
+	Session          TacticsSessionState  `json:"session"`
+}
+
+type tacticsFacilitatorModelOutput struct {
+	Message              string       `json:"message"`
+	SessionStatus        string       `json:"session_status"`
+	StatusReason         string       `json:"status_reason"`
+	CurrentFocus         TacticsFocus `json:"current_focus"`
+	DecisionsDetected    []string     `json:"decisions_detected"`
+	OpenQuestions        []string     `json:"open_questions"`
+	NeedsStrategyReview  bool         `json:"needs_strategy_review"`
+	StrategyReviewReason string       `json:"strategy_review_reason"`
 }
 
 type Uncovered struct {
