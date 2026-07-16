@@ -1,6 +1,9 @@
 package tasks
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	StatusFree       = "free"
@@ -14,6 +17,16 @@ const (
 	SourceRisk         = "risk"
 	SourceOpportunity  = "opportunity"
 	SourceAISuggestion = "ai_suggestion"
+
+	EvaluationQueued  = "queued"
+	EvaluationRunning = "running"
+	EvaluationReady   = "ready"
+	EvaluationFailed  = "failed"
+
+	RecommendationKeep    = "keep"
+	RecommendationClarify = "clarify"
+	RecommendationRework  = "rework"
+	RecommendationRemove  = "remove"
 )
 
 type CourseSummary struct {
@@ -86,29 +99,58 @@ type Opportunity struct {
 }
 
 type Task struct {
-	ID             int        `json:"id"`
-	WorkspaceID    int        `json:"workspace_id"`
-	CourseID       int        `json:"course_id"`
-	TacticalPlanID int        `json:"tactical_plan_id"`
-	WorkstreamID   int        `json:"workstream_id"`
-	ProjectID      *int       `json:"project_id"`
-	RiskID         *int       `json:"risk_id"`
-	OpportunityID  *int       `json:"opportunity_id"`
-	Title          string     `json:"title"`
-	Description    string     `json:"description"`
-	Status         string     `json:"status"`
-	PriorityOrder  *int       `json:"priority_order"`
-	OwnerUserID    *int       `json:"owner_user_id"`
-	DueDate        *string    `json:"due_date"`
-	SourceType     string     `json:"source_type"`
-	SourceID       *int       `json:"source_id"`
-	CreatedBy      *int       `json:"created_by,omitempty"`
-	UpdatedBy      *int       `json:"updated_by,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	StartedAt      *time.Time `json:"started_at"`
-	CompletedAt    *time.Time `json:"completed_at"`
-	ArchivedAt     *time.Time `json:"archived_at"`
+	ID                     int             `json:"id"`
+	WorkspaceID            int             `json:"workspace_id"`
+	CourseID               int             `json:"course_id"`
+	TacticalPlanID         int             `json:"tactical_plan_id"`
+	WorkstreamID           int             `json:"workstream_id"`
+	ProjectID              *int            `json:"project_id"`
+	RiskID                 *int            `json:"risk_id"`
+	OpportunityID          *int            `json:"opportunity_id"`
+	Title                  string          `json:"title"`
+	Description            string          `json:"description"`
+	ExpectedResult         string          `json:"expected_result"`
+	SuccessCriteria        string          `json:"success_criteria"`
+	WhyNow                 string          `json:"why_now"`
+	Status                 string          `json:"status"`
+	PriorityOrder          *int            `json:"priority_order"`
+	OwnerUserID            *int            `json:"owner_user_id"`
+	DueDate                *string         `json:"due_date"`
+	SourceType             string          `json:"source_type"`
+	SourceID               *int            `json:"source_id"`
+	CreatedBy              *int            `json:"created_by,omitempty"`
+	UpdatedBy              *int            `json:"updated_by,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	UpdatedAt              time.Time       `json:"updated_at"`
+	StartedAt              *time.Time      `json:"started_at"`
+	CompletedAt            *time.Time      `json:"completed_at"`
+	ArchivedAt             *time.Time      `json:"archived_at"`
+	Evaluation             *TaskEvaluation `json:"evaluation,omitempty"`
+	EvaluationStatus       string          `json:"evaluation_status"`
+	ManualPriorityScore    *int            `json:"manual_priority_score,omitempty"`
+	ManualPriorityTier     string          `json:"manual_priority_tier,omitempty"`
+	EffectivePriorityScore int             `json:"effective_priority_score"`
+	EffectivePriorityTier  string          `json:"effective_priority_tier"`
+	PrioritySource         string          `json:"priority_source"`
+}
+
+type TaskEvaluation struct {
+	ID                    int       `json:"id"`
+	TaskID                int       `json:"task_id"`
+	StrategicRelevance    int       `json:"strategic_relevance"`
+	CourseAlignment       int       `json:"course_alignment"`
+	TacticalAlignment     int       `json:"tactical_alignment"`
+	ExpectedImpact        int       `json:"expected_impact"`
+	Urgency               int       `json:"urgency"`
+	Effort                int       `json:"effort"`
+	Confidence            int       `json:"confidence"`
+	PriorityScore         int       `json:"priority_score"`
+	PriorityTier          string    `json:"priority_tier"`
+	Recommendation        string    `json:"recommendation"`
+	PriorityReason        string    `json:"priority_reason"`
+	ClarificationQuestion string    `json:"clarification_question"`
+	MissingInformation    []string  `json:"missing_information"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type TasksSummary struct {
@@ -123,6 +165,7 @@ type OverviewResponse struct {
 	Course       *CourseSummary       `json:"course"`
 	TacticalPlan *TacticalPlanSummary `json:"tactical_plan"`
 	Workstreams  []WorkstreamSummary  `json:"workstreams"`
+	Tasks        []Task               `json:"tasks"`
 	Reason       string               `json:"reason,omitempty"`
 	Message      string               `json:"message,omitempty"`
 }
@@ -141,41 +184,150 @@ type WorkstreamResponse struct {
 }
 
 type TaskInput struct {
-	WorkstreamID  int     `json:"workstream_id"`
-	ProjectID     *int    `json:"project_id"`
-	RiskID        *int    `json:"risk_id"`
-	OpportunityID *int    `json:"opportunity_id"`
-	Title         *string `json:"title"`
-	Description   *string `json:"description"`
-	Status        *string `json:"status"`
-	PriorityOrder *int    `json:"priority_order"`
-	OwnerUserID   *int    `json:"owner_user_id"`
-	DueDate       *string `json:"due_date"`
-	SourceType    *string `json:"source_type"`
-	SourceID      *int    `json:"source_id"`
+	WorkstreamID    int     `json:"workstream_id"`
+	ProjectID       *int    `json:"project_id"`
+	ClearProject    bool    `json:"clear_project"`
+	RiskID          *int    `json:"risk_id"`
+	OpportunityID   *int    `json:"opportunity_id"`
+	Title           *string `json:"title"`
+	Description     *string `json:"description"`
+	ExpectedResult  *string `json:"expected_result"`
+	SuccessCriteria *string `json:"success_criteria"`
+	WhyNow          *string `json:"why_now"`
+	Status          *string `json:"status"`
+	PriorityOrder   *int    `json:"priority_order"`
+	OwnerUserID     *int    `json:"owner_user_id"`
+	DueDate         *string `json:"due_date"`
+	SourceType      *string `json:"source_type"`
+	SourceID        *int    `json:"source_id"`
 }
 
-type TaskSuggestionRequest struct {
-	WorkstreamID  int    `json:"workstream_id"`
-	ProjectID     *int   `json:"project_id,omitempty"`
-	RiskID        *int   `json:"risk_id,omitempty"`
-	OpportunityID *int   `json:"opportunity_id,omitempty"`
-	Instruction   string `json:"instruction,omitempty"`
+type BrainstormMessage struct {
+	ID        int                `json:"id"`
+	Role      string             `json:"role"`
+	Content   string             `json:"content"`
+	Actions   []BrainstormAction `json:"actions"`
+	Applied   []int              `json:"applied_action_indices"`
+	CreatedAt time.Time          `json:"created_at"`
 }
 
-type TaskSuggestion struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	WhyNow      string `json:"why_now"`
-	Priority    int    `json:"priority"`
-	DueInDays   *int   `json:"due_in_days,omitempty"`
+type BrainstormAction struct {
+	ActionType      string `json:"action_type"`
+	TaskID          *int   `json:"task_id,omitempty"`
+	Title           string `json:"title"`
+	Description     string `json:"description"`
+	ExpectedResult  string `json:"expected_result"`
+	SuccessCriteria string `json:"success_criteria"`
+	WhyNow          string `json:"why_now"`
+	ProjectID       *int   `json:"project_id,omitempty"`
+	RiskID          *int   `json:"risk_id,omitempty"`
+	OpportunityID   *int   `json:"opportunity_id,omitempty"`
+	DueInDays       *int   `json:"due_in_days,omitempty"`
+	Reason          string `json:"reason"`
 }
 
-type TaskSuggestionResponse struct {
-	Summary      string           `json:"summary"`
-	Suggestions  []TaskSuggestion `json:"suggestions"`
-	InputTokens  int              `json:"input_tokens,omitempty"`
-	OutputTokens int              `json:"output_tokens,omitempty"`
+type BrainstormHistoryResponse struct {
+	WorkspaceID int                 `json:"workspace_id"`
+	Workstream  *WorkstreamSummary  `json:"workstream"`
+	Messages    []BrainstormMessage `json:"messages"`
+}
+
+type BrainstormMessageRequest struct {
+	WorkstreamID int    `json:"workstream_id"`
+	Message      string `json:"message"`
+}
+
+type BrainstormMessageResponse struct {
+	WorkspaceID      int               `json:"workspace_id"`
+	AssistantMessage string            `json:"assistant_message"`
+	UserMessage      BrainstormMessage `json:"user_message"`
+	Message          BrainstormMessage `json:"message"`
+	InputTokens      int               `json:"input_tokens,omitempty"`
+	OutputTokens     int               `json:"output_tokens,omitempty"`
+}
+
+type ApplyBrainstormActionsRequest struct {
+	WorkstreamID  int   `json:"workstream_id"`
+	MessageID     int   `json:"message_id"`
+	ActionIndices []int `json:"action_indices"`
+}
+
+type ApplyBrainstormActionsResponse struct {
+	Tasks   []Task `json:"tasks"`
+	Applied []int  `json:"applied_action_indices"`
+}
+
+type TaskEvaluationJob struct {
+	ID          int
+	WorkspaceID int
+	TaskID      int
+	RequestedBy *int
+	Attempts    int
+	Revision    int
+}
+
+type taskEvaluatorModelOutput struct {
+	StrategicRelevance    int      `json:"strategic_relevance"`
+	CourseAlignment       int      `json:"course_alignment"`
+	TacticalAlignment     int      `json:"tactical_alignment"`
+	ExpectedImpact        int      `json:"expected_impact"`
+	Urgency               int      `json:"urgency"`
+	Effort                int      `json:"effort"`
+	Confidence            int      `json:"confidence"`
+	Recommendation        string   `json:"recommendation"`
+	PriorityReason        string   `json:"priority_reason"`
+	ClarificationQuestion string   `json:"clarification_question"`
+	MissingInformation    []string `json:"missing_information"`
+}
+
+type brainstormModelOutput struct {
+	Message string             `json:"message"`
+	Actions []BrainstormAction `json:"task_actions"`
+}
+
+type BrainstormSession struct {
+	PreviousResponseID string
+	CompactThreshold   int
+	PromptCacheKey     string
+	ContextFingerprint string
+}
+
+type compactContextDocument struct {
+	Type    string `json:"type"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+type taskContextPack struct {
+	BusinessSnapshot  json.RawMessage          `json:"business_snapshot,omitempty"`
+	BusinessStage     string                   `json:"business_stage,omitempty"`
+	BusinessDocuments []compactContextDocument `json:"business_documents,omitempty"`
+	StrategySummary   string                   `json:"strategy_summary,omitempty"`
+	StrategyDocuments []compactContextDocument `json:"strategy_documents,omitempty"`
+	Course            *CourseSummary           `json:"active_course"`
+	TacticalPlan      *TacticalPlanSummary     `json:"tactical_plan"`
+	Workstream        *WorkstreamSummary       `json:"workstream"`
+	Projects          []Project                `json:"projects"`
+	Risks             []Risk                   `json:"risks"`
+	Opportunities     []Opportunity            `json:"opportunities"`
+	ExistingTasks     []taskContextItem        `json:"existing_tasks"`
+	Communication     any                      `json:"communication_profile,omitempty"`
+	RecentMessages    []BrainstormMessage      `json:"recent_messages,omitempty"`
+}
+
+type taskContextItem struct {
+	ID                     int    `json:"id"`
+	ProjectID              *int   `json:"project_id,omitempty"`
+	RiskID                 *int   `json:"risk_id,omitempty"`
+	OpportunityID          *int   `json:"opportunity_id,omitempty"`
+	Title                  string `json:"title"`
+	Description            string `json:"description"`
+	ExpectedResult         string `json:"expected_result"`
+	SuccessCriteria        string `json:"success_criteria"`
+	Status                 string `json:"status"`
+	EffectivePriorityScore int    `json:"priority_score"`
+	EffectivePriorityTier  string `json:"priority_tier"`
+	Recommendation         string `json:"recommendation,omitempty"`
 }
 
 func ValidStatus(status string) bool {

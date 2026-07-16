@@ -15,16 +15,20 @@ import (
 )
 
 type Handler struct {
-	store       *Store
-	workspaces  *workspaces.Store
-	suggestions *TaskSuggestionService
+	store      *Store
+	workspaces *workspaces.Store
+	brainstorm *BrainstormService
+	evaluator  *TaskEvaluatorService
 }
 
-func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient) *Handler {
+func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *Handler {
+	evaluator := NewTaskEvaluatorService(dbx, aiClient)
+	evaluator.StartWorker()
 	return &Handler{
-		store:       NewStore(dbx),
-		workspaces:  workspaces.NewStore(dbx),
-		suggestions: NewTaskSuggestionService(dbx, aiClient),
+		store:      NewStore(dbx),
+		workspaces: workspaces.NewStore(dbx),
+		brainstorm: NewBrainstormService(dbx, aiClient, evaluator, compactThreshold),
+		evaluator:  evaluator,
 	}
 }
 
@@ -39,8 +43,12 @@ func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 		h.tasks(w, r, workspace.ID, userID)
 	case r.URL.Path == "/api/v2/tasks/overview":
 		h.overview(w, r, workspace.ID)
-	case r.URL.Path == "/api/v2/tasks/suggestions":
-		h.taskSuggestions(w, r, workspace.ID)
+	case r.URL.Path == "/api/v2/tasks/brainstorm":
+		h.brainstormHistory(w, r, workspace.ID)
+	case r.URL.Path == "/api/v2/tasks/brainstorm/messages":
+		h.brainstormMessage(w, r, workspace.ID, userID)
+	case r.URL.Path == "/api/v2/tasks/brainstorm/actions/apply":
+		h.applyBrainstormActions(w, r, workspace.ID, userID)
 	case strings.HasPrefix(r.URL.Path, "/api/v2/tasks/workstreams/"):
 		h.workstream(w, r, workspace.ID)
 	case strings.HasPrefix(r.URL.Path, "/api/v2/tasks/"):
@@ -50,27 +58,76 @@ func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) taskSuggestions(w http.ResponseWriter, r *http.Request, workspaceID int) {
-	if r.Method != http.MethodPost {
+func (h *Handler) brainstormHistory(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	if r.Method != http.MethodGet {
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	var request TaskSuggestionRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+	workstreamID, ok := intQuery(r, "workstream_id")
+	if !ok {
+		api.WriteError(w, http.StatusBadRequest, "invalid_workstream_id")
 		return
 	}
-	response, err := h.suggestions.Generate(r.Context(), workspaceID, request)
+	response, err := h.brainstorm.History(r.Context(), workspaceID, workstreamID)
 	if errors.Is(err, ErrForbidden) || errors.Is(err, sql.ErrNoRows) {
 		api.WriteError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	if err != nil {
-		if err.Error() == "invalid_task_suggestion_request" {
-			api.WriteError(w, http.StatusBadRequest, err.Error())
+		api.WriteError(w, http.StatusInternalServerError, "task_brainstorm_history_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) brainstormMessage(w http.ResponseWriter, r *http.Request, workspaceID int, userID int) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	var request BrainstormMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	response, err := h.brainstorm.HandleMessage(r.Context(), workspaceID, userID, request)
+	if errors.Is(err, ErrForbidden) || errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if err != nil {
+		switch err.Error() {
+		case "invalid_brainstorm_message", "brainstorm_message_too_long":
+			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		default:
+			api.WriteError(w, http.StatusBadGateway, "task_brainstorm_failed")
+		}
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) applyBrainstormActions(w http.ResponseWriter, r *http.Request, workspaceID int, userID int) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	var request ApplyBrainstormActionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	response, err := h.brainstorm.ApplyActions(r.Context(), workspaceID, userID, request)
+	if errors.Is(err, ErrForbidden) || errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "invalid_brainstorm_") {
+			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 			return
 		}
-		api.WriteError(w, http.StatusBadGateway, "task_suggestions_failed")
+		api.WriteError(w, http.StatusInternalServerError, "task_brainstorm_apply_failed")
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, response)
@@ -140,6 +197,10 @@ func (h *Handler) tasks(w http.ResponseWriter, r *http.Request, workspaceID int,
 			return
 		}
 		task, err := h.store.Create(r.Context(), workspaceID, userID, input)
+		if err == nil {
+			_ = h.evaluator.Queue(r.Context(), workspaceID, userID, task.ID, true)
+			task, _ = h.store.Get(r.Context(), workspaceID, task.ID)
+		}
 		writeTask(w, task, err, "task_create_failed")
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -148,6 +209,26 @@ func (h *Handler) tasks(w http.ResponseWriter, r *http.Request, workspaceID int,
 
 func (h *Handler) task(w http.ResponseWriter, r *http.Request, workspaceID int, userID int) {
 	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v2/tasks/")
+	if strings.HasSuffix(trimmed, "/evaluate") {
+		idPart := strings.TrimSuffix(trimmed, "/evaluate")
+		taskID, err := strconv.Atoi(strings.Trim(idPart, "/"))
+		if err != nil || taskID <= 0 {
+			api.WriteError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		h.evaluateTask(w, r, workspaceID, userID, taskID)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/priority") {
+		idPart := strings.TrimSuffix(trimmed, "/priority")
+		taskID, err := strconv.Atoi(strings.Trim(idPart, "/"))
+		if err != nil || taskID <= 0 {
+			api.WriteError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		h.manualPriority(w, r, workspaceID, userID, taskID)
+		return
+	}
 	if strings.HasSuffix(trimmed, "/status") {
 		idPart := strings.TrimSuffix(trimmed, "/status")
 		taskID, err := strconv.Atoi(strings.Trim(idPart, "/"))
@@ -185,10 +266,43 @@ func (h *Handler) task(w http.ResponseWriter, r *http.Request, workspaceID int, 
 			return
 		}
 		task, err := h.store.Update(r.Context(), workspaceID, userID, taskID, input)
+		if err == nil {
+			_ = h.evaluator.Queue(r.Context(), workspaceID, userID, task.ID, true)
+			task, _ = h.store.Get(r.Context(), workspaceID, task.ID)
+		}
 		writeTask(w, task, err, "task_update_failed")
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
+}
+
+func (h *Handler) evaluateTask(w http.ResponseWriter, r *http.Request, workspaceID int, userID int, taskID int) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	if err := h.evaluator.Queue(r.Context(), workspaceID, userID, taskID, true); err != nil {
+		writeTask(w, Task{}, err, "task_evaluation_queue_failed")
+		return
+	}
+	task, err := h.store.Get(r.Context(), workspaceID, taskID)
+	writeTask(w, task, err, "task_get_failed")
+}
+
+func (h *Handler) manualPriority(w http.ResponseWriter, r *http.Request, workspaceID int, userID int, taskID int) {
+	if r.Method != http.MethodPatch {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	var body struct {
+		Score *int `json:"score"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	task, err := h.store.SetManualPriority(r.Context(), workspaceID, userID, taskID, body.Score)
+	writeTask(w, task, err, "task_priority_update_failed")
 }
 
 func (h *Handler) updateStatus(w http.ResponseWriter, r *http.Request, workspaceID int, userID int, taskID int) {

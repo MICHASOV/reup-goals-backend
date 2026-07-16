@@ -1232,6 +1232,223 @@ var migrations = []Migration{
 			$$ LANGUAGE plpgsql;
 		`,
 	},
+	{
+		ID: "20260716_023_tasks_intelligence_v2",
+		SQL: `
+			ALTER TABLE v2_tasks
+				ADD COLUMN IF NOT EXISTS expected_result TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS success_criteria TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS why_now TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS manual_priority_score INTEGER NULL,
+				ADD COLUMN IF NOT EXISTS manual_priority_tier TEXT NULL;
+
+			CREATE TABLE IF NOT EXISTS v2_task_brainstorm_messages (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				workstream_id INTEGER NOT NULL REFERENCES v2_tactical_workstreams(id) ON DELETE CASCADE,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				role TEXT NOT NULL,
+				content TEXT NOT NULL DEFAULT '',
+				actions_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_task_brainstorm_messages_scope
+				ON v2_task_brainstorm_messages (workspace_id, workstream_id, created_at, id);
+
+			CREATE TABLE IF NOT EXISTS v2_task_brainstorm_sessions (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				workstream_id INTEGER NOT NULL REFERENCES v2_tactical_workstreams(id) ON DELETE CASCADE,
+				previous_response_id TEXT NOT NULL DEFAULT '',
+				compact_threshold INTEGER NOT NULL DEFAULT 120000,
+				prompt_cache_key TEXT NOT NULL DEFAULT '',
+				context_fingerprint TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id, workstream_id)
+			);
+
+			CREATE TABLE IF NOT EXISTS v2_task_brainstorm_action_applications (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				workstream_id INTEGER NOT NULL REFERENCES v2_tactical_workstreams(id) ON DELETE CASCADE,
+				message_id INTEGER NOT NULL REFERENCES v2_task_brainstorm_messages(id) ON DELETE CASCADE,
+				action_index INTEGER NOT NULL,
+				action_type TEXT NOT NULL,
+				task_id INTEGER NULL REFERENCES v2_tasks(id) ON DELETE SET NULL,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				status TEXT NOT NULL DEFAULT 'applied',
+				error_text TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(message_id, action_index)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_task_brainstorm_applications_scope
+				ON v2_task_brainstorm_action_applications (workspace_id, workstream_id, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_task_evaluation_jobs (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				requested_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				status TEXT NOT NULL DEFAULT 'queued',
+				attempts INTEGER NOT NULL DEFAULT 0,
+				revision INTEGER NOT NULL DEFAULT 1,
+				running_revision INTEGER NOT NULL DEFAULT 0,
+				not_before TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				error_text TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(task_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_task_evaluation_jobs_due
+				ON v2_task_evaluation_jobs (status, not_before, id);
+
+			CREATE TABLE IF NOT EXISTS v2_task_evaluations (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				model TEXT NOT NULL DEFAULT '',
+				prompt_version TEXT NOT NULL DEFAULT '',
+				strategic_relevance INTEGER NOT NULL,
+				course_alignment INTEGER NOT NULL,
+				tactical_alignment INTEGER NOT NULL,
+				expected_impact INTEGER NOT NULL,
+				urgency INTEGER NOT NULL,
+				effort INTEGER NOT NULL,
+				confidence INTEGER NOT NULL,
+				priority_score INTEGER NOT NULL,
+				priority_tier TEXT NOT NULL,
+				recommendation TEXT NOT NULL,
+				priority_reason TEXT NOT NULL DEFAULT '',
+				clarification_question TEXT NOT NULL DEFAULT '',
+				missing_information_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				context_fingerprint TEXT NOT NULL DEFAULT '',
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				duration_ms BIGINT NOT NULL DEFAULT 0,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_task_evaluations_latest
+				ON v2_task_evaluations (workspace_id, task_id, created_at DESC, id DESC);
+
+			CREATE OR REPLACE FUNCTION reup_queue_task_evaluations_from_context()
+			RETURNS TRIGGER AS $$
+			BEGIN
+				IF TG_TABLE_NAME = 'v2_courses' THEN
+					INSERT INTO v2_task_evaluation_jobs (workspace_id, task_id, status, attempts, not_before, error_text)
+					SELECT task.workspace_id, task.id, 'queued', 0, NOW(), ''
+					FROM v2_tasks task
+					WHERE task.course_id=NEW.id AND task.archived_at IS NULL
+					ON CONFLICT (task_id) DO UPDATE SET
+						status=CASE WHEN v2_task_evaluation_jobs.status='running' THEN 'running' ELSE 'queued' END,
+						attempts=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.attempts ELSE 0 END,
+						revision=v2_task_evaluation_jobs.revision + 1,
+						not_before=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.not_before ELSE NOW() END,
+						error_text='', updated_at=NOW();
+				ELSIF TG_TABLE_NAME = 'v2_strategies' THEN
+					INSERT INTO v2_task_evaluation_jobs (workspace_id, task_id, status, attempts, not_before, error_text)
+					SELECT task.workspace_id, task.id, 'queued', 0, NOW(), ''
+					FROM v2_tasks task
+					JOIN v2_tactical_plans plan ON plan.id=task.tactical_plan_id
+					WHERE plan.strategy_id=NEW.id AND task.archived_at IS NULL
+					ON CONFLICT (task_id) DO UPDATE SET
+						status=CASE WHEN v2_task_evaluation_jobs.status='running' THEN 'running' ELSE 'queued' END,
+						attempts=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.attempts ELSE 0 END,
+						revision=v2_task_evaluation_jobs.revision + 1,
+						not_before=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.not_before ELSE NOW() END,
+						error_text='', updated_at=NOW();
+				ELSIF TG_TABLE_NAME = 'v2_tactical_workstreams' THEN
+					INSERT INTO v2_task_evaluation_jobs (workspace_id, task_id, status, attempts, not_before, error_text)
+					SELECT task.workspace_id, task.id, 'queued', 0, NOW(), ''
+					FROM v2_tasks task
+					WHERE task.workstream_id=NEW.id AND task.archived_at IS NULL
+					ON CONFLICT (task_id) DO UPDATE SET
+						status=CASE WHEN v2_task_evaluation_jobs.status='running' THEN 'running' ELSE 'queued' END,
+						attempts=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.attempts ELSE 0 END,
+						revision=v2_task_evaluation_jobs.revision + 1,
+						not_before=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.not_before ELSE NOW() END,
+						error_text='', updated_at=NOW();
+				ELSIF TG_TABLE_NAME = 'v2_tactical_projects' THEN
+					INSERT INTO v2_task_evaluation_jobs (workspace_id, task_id, status, attempts, not_before, error_text)
+					SELECT task.workspace_id, task.id, 'queued', 0, NOW(), ''
+					FROM v2_tasks task
+					WHERE task.project_id=NEW.id AND task.archived_at IS NULL
+					ON CONFLICT (task_id) DO UPDATE SET
+						status=CASE WHEN v2_task_evaluation_jobs.status='running' THEN 'running' ELSE 'queued' END,
+						attempts=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.attempts ELSE 0 END,
+						revision=v2_task_evaluation_jobs.revision + 1,
+						not_before=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.not_before ELSE NOW() END,
+						error_text='', updated_at=NOW();
+				ELSIF TG_TABLE_NAME = 'v2_tactical_risks' THEN
+					INSERT INTO v2_task_evaluation_jobs (workspace_id, task_id, status, attempts, not_before, error_text)
+					SELECT task.workspace_id, task.id, 'queued', 0, NOW(), ''
+					FROM v2_tasks task
+					WHERE task.risk_id=NEW.id AND task.archived_at IS NULL
+					ON CONFLICT (task_id) DO UPDATE SET
+						status=CASE WHEN v2_task_evaluation_jobs.status='running' THEN 'running' ELSE 'queued' END,
+						attempts=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.attempts ELSE 0 END,
+						revision=v2_task_evaluation_jobs.revision + 1,
+						not_before=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.not_before ELSE NOW() END,
+						error_text='', updated_at=NOW();
+				ELSIF TG_TABLE_NAME = 'v2_tactical_opportunities' THEN
+					INSERT INTO v2_task_evaluation_jobs (workspace_id, task_id, status, attempts, not_before, error_text)
+					SELECT task.workspace_id, task.id, 'queued', 0, NOW(), ''
+					FROM v2_tasks task
+					WHERE task.opportunity_id=NEW.id AND task.archived_at IS NULL
+					ON CONFLICT (task_id) DO UPDATE SET
+						status=CASE WHEN v2_task_evaluation_jobs.status='running' THEN 'running' ELSE 'queued' END,
+						attempts=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.attempts ELSE 0 END,
+						revision=v2_task_evaluation_jobs.revision + 1,
+						not_before=CASE WHEN v2_task_evaluation_jobs.status='running' THEN v2_task_evaluation_jobs.not_before ELSE NOW() END,
+						error_text='', updated_at=NOW();
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_course ON v2_courses;
+			CREATE TRIGGER trg_queue_task_eval_from_course
+				AFTER UPDATE OF direction, strategic_goal, key_metric, success_criterion, status ON v2_courses
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_strategy ON v2_strategies;
+			CREATE TRIGGER trg_queue_task_eval_from_strategy
+				AFTER UPDATE OF summary, status ON v2_strategies
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_workstream ON v2_tactical_workstreams;
+			CREATE TRIGGER trg_queue_task_eval_from_workstream
+				AFTER UPDATE OF title, description, goal, ckp, reason, metric_name, metric_current, metric_target, status ON v2_tactical_workstreams
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_project ON v2_tactical_projects;
+			CREATE TRIGGER trg_queue_task_eval_from_project
+				AFTER UPDATE OF title, description, why_needed, success_criteria, failure_criteria, metric_name, status ON v2_tactical_projects
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_risk ON v2_tactical_risks;
+			CREATE TRIGGER trg_queue_task_eval_from_risk
+				AFTER UPDATE OF title, description, severity, status, coverage_status ON v2_tactical_risks
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_opportunity ON v2_tactical_opportunities;
+			CREATE TRIGGER trg_queue_task_eval_from_opportunity
+				AFTER UPDATE OF title, description, potential_impact, status, coverage_status ON v2_tactical_opportunities
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+
+			INSERT INTO v2_task_evaluation_jobs (workspace_id, task_id, requested_by, status, attempts, not_before, error_text)
+			SELECT workspace_id, id, updated_by, 'queued', 0, NOW(), ''
+			FROM v2_tasks
+			WHERE archived_at IS NULL
+			ON CONFLICT (task_id) DO NOTHING;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

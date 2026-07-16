@@ -60,7 +60,7 @@ func main() {
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	tacticsHandler := tactics.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
-	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient)
+	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 
 	mux := http.NewServeMux()
 
