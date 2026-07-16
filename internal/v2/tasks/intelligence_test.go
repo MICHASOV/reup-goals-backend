@@ -85,4 +85,19 @@ func TestParseTaskEvaluatorOutputNormalizesValues(t *testing.T) {
 	if len(result.MissingInformation) != 1 || result.MissingInformation[0] != "критерий успеха" {
 		t.Fatalf("missing information was not cleaned: %#v", result.MissingInformation)
 	}
+	if result.BacklogCategory != BacklogQuestionable {
+		t.Fatalf("clarification must enter questionable backlog, got %q", result.BacklogCategory)
+	}
+	if !containsString(result.Flags, TaskFlagNeedsClarification) {
+		t.Fatalf("clarification flag was not derived: %#v", result.Flags)
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

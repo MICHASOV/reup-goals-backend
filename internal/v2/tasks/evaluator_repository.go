@@ -80,18 +80,18 @@ func (s *Store) SaveTaskEvaluation(
 			strategic_relevance, course_alignment, tactical_alignment,
 			expected_impact, urgency, effort, confidence,
 			priority_score, priority_tier, recommendation, priority_reason,
-			clarification_question, missing_information_json, context_fingerprint,
+			clarification_question, missing_information_json, flags_json, backlog_category, context_fingerprint,
 			input_tokens, output_tokens, duration_ms
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			$12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+			$12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
 		)
 	`, job.WorkspaceID, job.TaskID, strings.TrimSpace(model), taskEvaluatorPromptVersion,
 		output.StrategicRelevance, output.CourseAlignment, output.TacticalAlignment,
 		output.ExpectedImpact, output.Urgency, output.Effort, output.Confidence,
 		priorityScore, priorityTier, output.Recommendation, output.PriorityReason,
-		output.ClarificationQuestion, taskJSON(output.MissingInformation), fingerprint,
+		output.ClarificationQuestion, taskJSON(output.MissingInformation), taskJSON(output.Flags), output.BacklogCategory, fingerprint,
 		inputTokens, outputTokens, durationMS)
 	return err
 }

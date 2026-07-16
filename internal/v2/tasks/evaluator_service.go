@@ -182,10 +182,65 @@ func parseTaskEvaluatorOutput(raw string) (taskEvaluatorModelOutput, error) {
 		}
 	}
 	output.MissingInformation = cleanMissing
+	output.Flags = normalizeTaskFlags(output)
+	output.BacklogCategory = normalizeBacklogCategory(output.BacklogCategory)
+	if output.BacklogCategory == "" {
+		switch output.Recommendation {
+		case RecommendationRemove:
+			output.BacklogCategory = BacklogRecommendedDelete
+		case RecommendationClarify, RecommendationRework:
+			output.BacklogCategory = BacklogQuestionable
+		}
+	}
 	if output.PriorityReason == "" {
 		return taskEvaluatorModelOutput{}, fmt.Errorf("empty_task_priority_reason")
 	}
 	return output, nil
+}
+
+func normalizeTaskFlags(output taskEvaluatorModelOutput) []string {
+	allowed := map[string]bool{
+		TaskFlagWeakStrategyLink:   true,
+		TaskFlagLowImpact:          true,
+		TaskFlagHighEffort:         true,
+		TaskFlagDuplicate:          true,
+		TaskFlagNeedsClarification: true,
+	}
+	seen := map[string]bool{}
+	flags := make([]string, 0, len(output.Flags)+3)
+	add := func(flag string) {
+		flag = strings.ToLower(strings.TrimSpace(flag))
+		if allowed[flag] && !seen[flag] {
+			seen[flag] = true
+			flags = append(flags, flag)
+		}
+	}
+	for _, flag := range output.Flags {
+		add(flag)
+	}
+	if output.StrategicRelevance < 50 || output.CourseAlignment < 50 || output.TacticalAlignment < 50 {
+		add(TaskFlagWeakStrategyLink)
+	}
+	if output.ExpectedImpact < 40 {
+		add(TaskFlagLowImpact)
+	}
+	if output.Effort >= 75 {
+		add(TaskFlagHighEffort)
+	}
+	if output.Recommendation == RecommendationClarify || len(output.MissingInformation) > 0 {
+		add(TaskFlagNeedsClarification)
+	}
+	return flags
+}
+
+func normalizeBacklogCategory(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case BacklogFutureStage, BacklogQuestionable, BacklogRecommendedDelete:
+		return value
+	default:
+		return ""
+	}
 }
 
 func CalculateTaskPriority(output taskEvaluatorModelOutput) int {

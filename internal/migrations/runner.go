@@ -1545,6 +1545,32 @@ var migrations = []Migration{
 				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
 		`,
 	},
+	{
+		ID: "20260716_027_task_product_fields",
+		SQL: `
+			ALTER TABLE v2_tasks
+				ADD COLUMN IF NOT EXISTS blocked BOOLEAN NOT NULL DEFAULT FALSE,
+				ADD COLUMN IF NOT EXISTS backlog_category TEXT NOT NULL DEFAULT '';
+
+			ALTER TABLE v2_task_evaluations
+				ADD COLUMN IF NOT EXISTS flags_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				ADD COLUMN IF NOT EXISTS backlog_category TEXT NOT NULL DEFAULT '';
+
+			CREATE TABLE IF NOT EXISTS v2_task_secondary_workstreams (
+				task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				workstream_id INTEGER NOT NULL REFERENCES v2_tactical_workstreams(id) ON DELETE CASCADE,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (task_id, workstream_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_task_secondary_workstreams_scope
+				ON v2_task_secondary_workstreams (workspace_id, workstream_id, task_id);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tasks_workspace_backlog
+				ON v2_tasks (workspace_id, backlog_category, status, updated_at DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

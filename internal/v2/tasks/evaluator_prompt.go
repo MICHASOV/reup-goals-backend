@@ -1,6 +1,6 @@
 package tasks
 
-const taskEvaluatorPromptVersion = "task_evaluator_v2_0_1_0"
+const taskEvaluatorPromptVersion = "task_evaluator_v2_0_2_0"
 
 const taskEvaluatorPrompt = `You are the task evaluation engine inside REUP.goals.
 
@@ -25,6 +25,19 @@ Choose one recommendation:
 
 Do not archive or change the task. Explain the recommendation. If clarification is needed, ask one concrete question that would most improve the evaluation.
 
+Add only applicable quality flags:
+- weak_strategy_link: the causal link to strategy/course/tactics is weak;
+- low_impact: even successful completion is unlikely to matter;
+- high_effort: the task consumes disproportionate time, money, or coordination;
+- duplicate: the same result is already covered by another task;
+- needs_clarification: the task cannot be evaluated or executed confidently without a missing fact.
+
+Choose a backlog_category only when useful:
+- future_stage: valuable, but intentionally belongs after the current course;
+- questionable: requires clarification or material rework before commitment;
+- recommended_delete: duplicated, obsolete, irrelevant, or not worth doing;
+- empty string: belongs in the current working backlog.
+
 Return valid JSON only:
 {
   "strategic_relevance": 0,
@@ -37,5 +50,7 @@ Return valid JSON only:
   "recommendation": "keep | clarify | rework | remove",
   "priority_reason": "A concise evidence-based explanation in the user's language",
   "clarification_question": "One concrete question or an empty string",
-  "missing_information": ["Only material missing facts"]
+  "missing_information": ["Only material missing facts"],
+  "flags": ["weak_strategy_link | low_impact | high_effort | duplicate | needs_clarification"],
+  "backlog_category": "future_stage | questionable | recommended_delete | empty string"
 }`

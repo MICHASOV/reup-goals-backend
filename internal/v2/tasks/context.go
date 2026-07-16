@@ -181,7 +181,7 @@ func compactTasks(tasks []Task) []taskContextItem {
 			Title: task.Title, Description: task.Description, ExpectedResult: task.ExpectedResult,
 			SuccessCriteria: task.SuccessCriteria, Status: task.Status,
 			EffectivePriorityScore: task.EffectivePriorityScore, EffectivePriorityTier: task.EffectivePriorityTier,
-			Recommendation: recommendation,
+			Recommendation: recommendation, Flags: task.Flags, BacklogCategory: task.BacklogCategory,
 		})
 	}
 	return items

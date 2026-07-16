@@ -27,6 +27,17 @@ const (
 	RecommendationClarify = "clarify"
 	RecommendationRework  = "rework"
 	RecommendationRemove  = "remove"
+
+	TaskFlagBlocked            = "blocked"
+	TaskFlagWeakStrategyLink   = "weak_strategy_link"
+	TaskFlagLowImpact          = "low_impact"
+	TaskFlagHighEffort         = "high_effort"
+	TaskFlagDuplicate          = "duplicate"
+	TaskFlagNeedsClarification = "needs_clarification"
+
+	BacklogFutureStage       = "future_stage"
+	BacklogQuestionable      = "questionable"
+	BacklogRecommendedDelete = "recommended_delete"
 )
 
 type CourseSummary struct {
@@ -123,6 +134,10 @@ type Task struct {
 	SuccessCriteria        string          `json:"success_criteria"`
 	WhyNow                 string          `json:"why_now"`
 	Status                 string          `json:"status"`
+	Blocked                bool            `json:"blocked"`
+	BacklogCategory        string          `json:"backlog_category"`
+	Flags                  []string        `json:"flags"`
+	SecondaryWorkstreamIDs []int           `json:"secondary_workstream_ids"`
 	PriorityOrder          *int            `json:"priority_order"`
 	OwnerUserID            *int            `json:"owner_user_id"`
 	DueDate                *string         `json:"due_date"`
@@ -160,6 +175,8 @@ type TaskEvaluation struct {
 	PriorityReason        string    `json:"priority_reason"`
 	ClarificationQuestion string    `json:"clarification_question"`
 	MissingInformation    []string  `json:"missing_information"`
+	Flags                 []string  `json:"flags"`
+	BacklogCategory       string    `json:"backlog_category"`
 	CreatedAt             time.Time `json:"created_at"`
 }
 
@@ -194,22 +211,25 @@ type WorkstreamResponse struct {
 }
 
 type TaskInput struct {
-	WorkstreamID    int     `json:"workstream_id"`
-	ProjectID       *int    `json:"project_id"`
-	ClearProject    bool    `json:"clear_project"`
-	RiskID          *int    `json:"risk_id"`
-	OpportunityID   *int    `json:"opportunity_id"`
-	Title           *string `json:"title"`
-	Description     *string `json:"description"`
-	ExpectedResult  *string `json:"expected_result"`
-	SuccessCriteria *string `json:"success_criteria"`
-	WhyNow          *string `json:"why_now"`
-	Status          *string `json:"status"`
-	PriorityOrder   *int    `json:"priority_order"`
-	OwnerUserID     *int    `json:"owner_user_id"`
-	DueDate         *string `json:"due_date"`
-	SourceType      *string `json:"source_type"`
-	SourceID        *int    `json:"source_id"`
+	WorkstreamID           int     `json:"workstream_id"`
+	ProjectID              *int    `json:"project_id"`
+	ClearProject           bool    `json:"clear_project"`
+	RiskID                 *int    `json:"risk_id"`
+	OpportunityID          *int    `json:"opportunity_id"`
+	Title                  *string `json:"title"`
+	Description            *string `json:"description"`
+	ExpectedResult         *string `json:"expected_result"`
+	SuccessCriteria        *string `json:"success_criteria"`
+	WhyNow                 *string `json:"why_now"`
+	Status                 *string `json:"status"`
+	Blocked                *bool   `json:"blocked"`
+	BacklogCategory        *string `json:"backlog_category"`
+	SecondaryWorkstreamIDs []int   `json:"secondary_workstream_ids"`
+	PriorityOrder          *int    `json:"priority_order"`
+	OwnerUserID            *int    `json:"owner_user_id"`
+	DueDate                *string `json:"due_date"`
+	SourceType             *string `json:"source_type"`
+	SourceID               *int    `json:"source_id"`
 }
 
 type BrainstormMessage struct {
@@ -288,6 +308,8 @@ type taskEvaluatorModelOutput struct {
 	PriorityReason        string   `json:"priority_reason"`
 	ClarificationQuestion string   `json:"clarification_question"`
 	MissingInformation    []string `json:"missing_information"`
+	Flags                 []string `json:"flags"`
+	BacklogCategory       string   `json:"backlog_category"`
 }
 
 type brainstormModelOutput struct {
@@ -326,18 +348,20 @@ type taskContextPack struct {
 }
 
 type taskContextItem struct {
-	ID                     int    `json:"id"`
-	ProjectID              *int   `json:"project_id,omitempty"`
-	RiskID                 *int   `json:"risk_id,omitempty"`
-	OpportunityID          *int   `json:"opportunity_id,omitempty"`
-	Title                  string `json:"title"`
-	Description            string `json:"description"`
-	ExpectedResult         string `json:"expected_result"`
-	SuccessCriteria        string `json:"success_criteria"`
-	Status                 string `json:"status"`
-	EffectivePriorityScore int    `json:"priority_score"`
-	EffectivePriorityTier  string `json:"priority_tier"`
-	Recommendation         string `json:"recommendation,omitempty"`
+	ID                     int      `json:"id"`
+	ProjectID              *int     `json:"project_id,omitempty"`
+	RiskID                 *int     `json:"risk_id,omitempty"`
+	OpportunityID          *int     `json:"opportunity_id,omitempty"`
+	Title                  string   `json:"title"`
+	Description            string   `json:"description"`
+	ExpectedResult         string   `json:"expected_result"`
+	SuccessCriteria        string   `json:"success_criteria"`
+	Status                 string   `json:"status"`
+	EffectivePriorityScore int      `json:"priority_score"`
+	EffectivePriorityTier  string   `json:"priority_tier"`
+	Recommendation         string   `json:"recommendation,omitempty"`
+	Flags                  []string `json:"flags,omitempty"`
+	BacklogCategory        string   `json:"backlog_category,omitempty"`
 }
 
 func ValidStatus(status string) bool {

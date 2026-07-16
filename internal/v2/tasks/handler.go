@@ -171,7 +171,10 @@ func (h *Handler) workstream(w http.ResponseWriter, r *http.Request, workspaceID
 func (h *Handler) tasks(w http.ResponseWriter, r *http.Request, workspaceID int, userID int) {
 	switch r.Method {
 	case http.MethodGet:
-		filter := ListFilter{IncludeArchived: r.URL.Query().Get("include_archived") == "true"}
+		filter := ListFilter{
+			IncludeArchived: r.URL.Query().Get("include_archived") == "true",
+			Query:           strings.TrimSpace(r.URL.Query().Get("q")),
+		}
 		if status := strings.TrimSpace(r.URL.Query().Get("status")); status != "" {
 			if !ValidStatus(status) {
 				api.WriteError(w, http.StatusBadRequest, "invalid_status")
