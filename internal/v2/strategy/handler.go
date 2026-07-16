@@ -88,6 +88,40 @@ func (h *Handler) Strategy(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) Versions(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/v2/strategy-versions" {
+		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		versions, err := h.store.ListVersions(r.Context(), workspace.ID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "strategy_versions_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"versions": versions})
+	case http.MethodPost:
+		version, created, err := h.store.CreateNextVersion(r.Context(), workspace.ID, userID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "strategy_version_create_failed")
+			return
+		}
+		status := http.StatusOK
+		if created {
+			status = http.StatusCreated
+		}
+		api.WriteJSON(w, status, map[string]any{"strategy": version, "created": created})
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
+}
+
 func (h *Handler) ResearchRequests(w http.ResponseWriter, r *http.Request) {
 	workspace, userID, ok := h.currentWorkspace(w, r)
 	if !ok {

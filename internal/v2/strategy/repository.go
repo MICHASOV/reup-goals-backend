@@ -43,6 +43,128 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Strat
 	return strategy, artifacts, summary, nil
 }
 
+func (s *Store) ListVersions(ctx context.Context, workspaceID int) ([]Strategy, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT id, workspace_id, status, version, title, summary, source_type,
+			created_by, approved_by, created_at, updated_at, approved_at, activated_at
+		FROM v2_strategies
+		WHERE workspace_id=$1
+		ORDER BY version DESC, created_at DESC, id DESC
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	versions := []Strategy{}
+	for rows.Next() {
+		version, err := scanStrategy(rows)
+		if err != nil {
+			return nil, err
+		}
+		versions = append(versions, version)
+	}
+	return versions, rows.Err()
+}
+
+func (s *Store) CreateNextVersion(ctx context.Context, workspaceID int, userID int) (Strategy, bool, error) {
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return Strategy{}, false, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, workspaceID+2000000); err != nil {
+		return Strategy{}, false, err
+	}
+
+	working, err := workingStrategyTx(ctx, tx, workspaceID)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return Strategy{}, false, err
+		}
+		return working, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Strategy{}, false, err
+	}
+
+	var sourceSummary string
+	var version int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(version), 0) + 1 FROM v2_strategies WHERE workspace_id=$1
+	`, workspaceID).Scan(&version); err != nil {
+		return Strategy{}, false, err
+	}
+	err = tx.QueryRowContext(ctx, `
+		SELECT summary
+		FROM v2_strategies
+		WHERE workspace_id=$1
+		ORDER BY version DESC, created_at DESC, id DESC
+		LIMIT 1
+	`, workspaceID).Scan(&sourceSummary)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Strategy{}, false, err
+	}
+
+	title := fmt.Sprintf("Стратегия v%d", version)
+	row := tx.QueryRowContext(ctx, `
+		INSERT INTO v2_strategies (workspace_id, status, version, title, summary, source_type, created_by)
+		VALUES ($1, $2, $3, $4, $5, 'revision', $6)
+		RETURNING id, workspace_id, status, version, title, summary, source_type,
+			created_by, approved_by, created_at, updated_at, approved_at, activated_at
+	`, workspaceID, StatusDraft, version, title, strings.TrimSpace(sourceSummary), userID)
+	strategy, err := scanStrategy(row)
+	if err != nil {
+		return Strategy{}, false, err
+	}
+
+	for _, definition := range artifactDefinitions {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO v2_strategy_artifacts (
+				strategy_id, workspace_id, type, title, description, status, sort_order, source
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, strategy.ID, workspaceID, definition.Type, definition.Title, definition.Description,
+			ArtifactStatusEmpty, definition.SortOrder, SourceManual); err != nil {
+			return Strategy{}, false, err
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO v2_strategy_session_state (
+			workspace_id, revision, facilitator_status, status_reason, remaining_uncertainties_json
+		)
+		VALUES ($1, 1, $2, 'A new strategy version was created.', '[]'::jsonb)
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			revision=v2_strategy_session_state.revision + 1,
+			facilitator_status=$2,
+			status_reason='A new strategy version was created.',
+			remaining_uncertainties_json='[]'::jsonb,
+			last_audited_revision=0,
+			last_readiness_run_id=NULL,
+			last_synthesis_run_id=NULL,
+			updated_at=NOW()
+	`, workspaceID, FacilitatorStatusContinue); err != nil {
+		return Strategy{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE v2_strategy_openai_sessions
+		SET previous_response_id='', updated_at=NOW()
+		WHERE workspace_id=$1
+	`, workspaceID); err != nil {
+		return Strategy{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM v2_strategy_readiness_queue WHERE workspace_id=$1`, workspaceID); err != nil {
+		return Strategy{}, false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Strategy{}, false, err
+	}
+	return strategy, true, nil
+}
+
 func (s *Store) Update(ctx context.Context, workspaceID int, strategyID int, title string, summary string) (Strategy, error) {
 	title = strings.TrimSpace(title)
 	summary = strings.TrimSpace(summary)
@@ -285,8 +407,8 @@ func (s *Store) getCurrent(ctx context.Context, workspaceID int) (Strategy, erro
 		WHERE workspace_id=$1 AND archived_at IS NULL AND status IN ($2, $3, $4)
 		ORDER BY
 			CASE status
-				WHEN $4 THEN 1
-				WHEN $3 THEN 2
+				WHEN $2 THEN 1
+				WHEN $3 THEN 1
 				ELSE 3
 			END,
 			version DESC,
@@ -365,8 +487,8 @@ func currentTx(ctx context.Context, tx *sql.Tx, workspaceID int) (Strategy, erro
 		WHERE workspace_id=$1 AND archived_at IS NULL AND status IN ($2, $3, $4)
 		ORDER BY
 			CASE status
-				WHEN $4 THEN 1
-				WHEN $3 THEN 2
+				WHEN $2 THEN 1
+				WHEN $3 THEN 1
 				ELSE 3
 			END,
 			version DESC,
@@ -374,6 +496,18 @@ func currentTx(ctx context.Context, tx *sql.Tx, workspaceID int) (Strategy, erro
 		LIMIT 1
 	`, workspaceID, StatusDraft, StatusReadyForReview, StatusActive)
 
+	return scanStrategy(row)
+}
+
+func workingStrategyTx(ctx context.Context, tx *sql.Tx, workspaceID int) (Strategy, error) {
+	row := tx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, status, version, title, summary, source_type,
+			created_by, approved_by, created_at, updated_at, approved_at, activated_at
+		FROM v2_strategies
+		WHERE workspace_id=$1 AND archived_at IS NULL AND status IN ($2, $3)
+		ORDER BY version DESC, created_at DESC, id DESC
+		LIMIT 1
+	`, workspaceID, StatusDraft, StatusReadyForReview)
 	return scanStrategy(row)
 }
 

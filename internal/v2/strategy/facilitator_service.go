@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -65,7 +66,7 @@ func (s *FacilitatorService) State(ctx context.Context, workspaceID int, userID 
 	if err != nil {
 		return StrategyFacilitatorState{}, err
 	}
-	readinessRun, err := s.store.LatestCompletedReadinessAudit(ctx, workspaceID)
+	readinessRun, err := s.store.LatestCompletedReadinessAudit(ctx, workspaceID, strategy.ID)
 	if err != nil {
 		return StrategyFacilitatorState{}, err
 	}
@@ -95,7 +96,18 @@ func (s *FacilitatorService) History(ctx context.Context, workspaceID int) (Stra
 	if err != nil {
 		return StrategyFacilitatorHistoryState{}, err
 	}
-	readinessRun, err := s.store.LatestReadinessAudit(ctx, workspaceID)
+	strategy, err := s.store.getCurrent(ctx, workspaceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StrategyFacilitatorHistoryState{
+			WorkspaceID:    workspaceID,
+			RecentMessages: messages,
+			Session:        sessionState,
+		}, nil
+	}
+	if err != nil {
+		return StrategyFacilitatorHistoryState{}, err
+	}
+	readinessRun, err := s.store.LatestReadinessAudit(ctx, workspaceID, strategy.ID)
 	if err != nil {
 		return StrategyFacilitatorHistoryState{}, err
 	}

@@ -373,15 +373,15 @@ func (s *Store) SupersedeReadinessAudit(ctx context.Context, run StrategyReadine
 	return err
 }
 
-func (s *Store) LatestReadinessAudit(ctx context.Context, workspaceID int) (*StrategyReadinessRun, error) {
-	return s.latestReadinessAudit(ctx, workspaceID, false)
+func (s *Store) LatestReadinessAudit(ctx context.Context, workspaceID int, strategyID int) (*StrategyReadinessRun, error) {
+	return s.latestReadinessAudit(ctx, workspaceID, strategyID, false)
 }
 
-func (s *Store) LatestCompletedReadinessAudit(ctx context.Context, workspaceID int) (*StrategyReadinessRun, error) {
-	return s.latestReadinessAudit(ctx, workspaceID, true)
+func (s *Store) LatestCompletedReadinessAudit(ctx context.Context, workspaceID int, strategyID int) (*StrategyReadinessRun, error) {
+	return s.latestReadinessAudit(ctx, workspaceID, strategyID, true)
 }
 
-func (s *Store) latestReadinessAudit(ctx context.Context, workspaceID int, completedOnly bool) (*StrategyReadinessRun, error) {
+func (s *Store) latestReadinessAudit(ctx context.Context, workspaceID int, strategyID int, completedOnly bool) (*StrategyReadinessRun, error) {
 	completedFilter := ""
 	if completedOnly {
 		completedFilter = " AND status='completed'"
@@ -391,10 +391,10 @@ func (s *Store) latestReadinessAudit(ctx context.Context, workspaceID int, compl
 			status, verdict, can_synthesize, confidence, report_json, model, prompt_version,
 			input_tokens, output_tokens, duration_ms, error, created_by, created_at, started_at, completed_at
 		FROM v2_strategy_readiness_runs
-		WHERE workspace_id=$1 AND status<>$2`+completedFilter+`
+		WHERE workspace_id=$1 AND strategy_id=$2 AND status<>$3`+completedFilter+`
 		ORDER BY created_at DESC, id DESC
 		LIMIT 1
-	`, workspaceID, ReadinessRunSuperseded)
+	`, workspaceID, strategyID, ReadinessRunSuperseded)
 	run, err := scanStrategyReadinessRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

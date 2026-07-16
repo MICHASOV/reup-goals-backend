@@ -248,16 +248,16 @@ func (s *Store) FailSynthesisRun(ctx context.Context, workspaceID int, runID int
 	return err
 }
 
-func (s *Store) LatestSynthesis(ctx context.Context, workspaceID int) (StrategySynthesisResponse, error) {
+func (s *Store) LatestSynthesis(ctx context.Context, workspaceID int, strategyID int) (StrategySynthesisResponse, error) {
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT id, workspace_id, strategy_id, version, session_revision, through_message_id, status, model, prompt_version,
 			summary, openai_response_id, input_tokens, output_tokens, duration_ms,
 			error, created_by, created_at, started_at, completed_at
 		FROM v2_strategy_synthesis_runs
-		WHERE workspace_id=$1
+		WHERE workspace_id=$1 AND strategy_id=$2
 		ORDER BY created_at DESC, id DESC
 		LIMIT 1
-	`, workspaceID)
+	`, workspaceID, strategyID)
 	run, err := scanSynthesisRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StrategySynthesisResponse{Documents: []StrategySynthesisDocument{}}, nil
@@ -271,7 +271,7 @@ func (s *Store) LatestSynthesis(ctx context.Context, workspaceID int) (StrategyS
 		return StrategySynthesisResponse{}, err
 	}
 	if len(documents) == 0 {
-		completed, completedErr := s.latestCompletedSynthesis(ctx, workspaceID)
+		completed, completedErr := s.latestCompletedSynthesis(ctx, workspaceID, strategyID)
 		if completedErr != nil && !errors.Is(completedErr, sql.ErrNoRows) {
 			return StrategySynthesisResponse{}, completedErr
 		}
@@ -296,16 +296,16 @@ func (s *Store) LatestSynthesis(ctx context.Context, workspaceID int) (StrategyS
 	}, nil
 }
 
-func (s *Store) latestCompletedSynthesis(ctx context.Context, workspaceID int) (StrategySynthesisRun, error) {
+func (s *Store) latestCompletedSynthesis(ctx context.Context, workspaceID int, strategyID int) (StrategySynthesisRun, error) {
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT id, workspace_id, strategy_id, version, session_revision, through_message_id, status, model, prompt_version,
 			summary, openai_response_id, input_tokens, output_tokens, duration_ms,
 			error, created_by, created_at, started_at, completed_at
 		FROM v2_strategy_synthesis_runs
-		WHERE workspace_id=$1 AND status=$2
+		WHERE workspace_id=$1 AND strategy_id=$2 AND status=$3
 		ORDER BY created_at DESC, id DESC
 		LIMIT 1
-	`, workspaceID, SynthesisStatusCompleted)
+	`, workspaceID, strategyID, SynthesisStatusCompleted)
 	return scanSynthesisRun(row)
 }
 

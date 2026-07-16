@@ -59,7 +59,14 @@ func (s *ReadinessService) StartWorker() {
 }
 
 func (s *ReadinessService) Latest(ctx context.Context, workspaceID int) (*StrategyReadinessRun, error) {
-	return s.store.LatestReadinessAudit(ctx, workspaceID)
+	strategy, err := s.store.getCurrent(ctx, workspaceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.store.LatestReadinessAudit(ctx, workspaceID, strategy.ID)
 }
 
 func (s *ReadinessService) QueueCandidate(

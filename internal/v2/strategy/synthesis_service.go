@@ -51,11 +51,15 @@ func NewSynthesisService(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshol
 }
 
 func (s *SynthesisService) Start(ctx context.Context, workspaceID int, userID int) (StrategySynthesisResponse, error) {
+	strategy, _, _, err := s.store.Current(ctx, workspaceID, userID)
+	if err != nil {
+		return StrategySynthesisResponse{}, err
+	}
 	state, err := s.store.SessionState(ctx, workspaceID)
 	if err != nil {
 		return StrategySynthesisResponse{}, err
 	}
-	readiness, err := s.store.LatestCompletedReadinessAudit(ctx, workspaceID)
+	readiness, err := s.store.LatestCompletedReadinessAudit(ctx, workspaceID, strategy.ID)
 	if err != nil {
 		return StrategySynthesisResponse{}, err
 	}
@@ -110,7 +114,14 @@ func (s *SynthesisService) StartForRevision(
 }
 
 func (s *SynthesisService) Latest(ctx context.Context, workspaceID int) (StrategySynthesisResponse, error) {
-	return s.store.LatestSynthesis(ctx, workspaceID)
+	strategy, err := s.store.getCurrent(ctx, workspaceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StrategySynthesisResponse{Documents: []StrategySynthesisDocument{}}, nil
+	}
+	if err != nil {
+		return StrategySynthesisResponse{}, err
+	}
+	return s.store.LatestSynthesis(ctx, workspaceID, strategy.ID)
 }
 
 func (s *SynthesisService) executeDetached(workspaceID int, runID int, strategy Strategy) {
