@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"reup-goals-backend/internal/ai"
@@ -54,6 +55,8 @@ func (h *Handler) StrategicMemory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case strings.HasPrefix(r.URL.Path, "/api/v2/strategic-memory/claims/"):
+		h.claimLifecycle(w, r, workspace.ID)
 	case strings.HasPrefix(r.URL.Path, "/api/v2/strategic-memory/documents/"):
 		h.documentChat(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/strategic-memory/snapshot":
@@ -212,12 +215,59 @@ func (h *Handler) claims(w http.ResponseWriter, r *http.Request, workspaceID int
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	claims, err := h.store.ListClaims(r.Context(), workspaceID, 500)
+	claims, err := h.store.ListAllClaims(r.Context(), workspaceID, 500)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "strategic_memory_claims_failed")
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspaceID, "claims": claims})
+}
+
+func (h *Handler) claimLifecycle(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	if r.Method != http.MethodPatch {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	claimID, err := strconv.Atoi(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v2/strategic-memory/claims/"), "/"))
+	if err != nil || claimID <= 0 {
+		api.WriteError(w, http.StatusNotFound, "claim_not_found")
+		return
+	}
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		api.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req struct {
+		Status              string `json:"status"`
+		Reason              string `json:"reason"`
+		SupersededByClaimID *int   `json:"superseded_by_claim_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	claim, err := h.store.UpdateClaimLifecycle(
+		r.Context(),
+		workspaceID,
+		claimID,
+		userID,
+		req.Status,
+		req.Reason,
+		req.SupersededByClaimID,
+	)
+	if err != nil {
+		switch err.Error() {
+		case "claim_not_found", "superseding_claim_not_found":
+			api.WriteError(w, http.StatusNotFound, err.Error())
+		case "invalid_claim_status", "invalid_superseding_claim":
+			api.WriteError(w, http.StatusBadRequest, err.Error())
+		default:
+			api.WriteError(w, http.StatusInternalServerError, "claim_lifecycle_update_failed")
+		}
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspaceID, "claim": claim})
 }
 
 func (h *Handler) agenda(w http.ResponseWriter, r *http.Request, workspaceID int) {

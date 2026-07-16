@@ -14,7 +14,11 @@ const (
 
 	ConversationStateCollectingContext = "collecting_context"
 
-	ClaimStatusActive = "active"
+	ClaimStatusSuggested  = "suggested"
+	ClaimStatusConfirmed  = "confirmed"
+	ClaimStatusRejected   = "rejected"
+	ClaimStatusConflicted = "conflicted"
+	ClaimStatusOutdated   = "outdated"
 
 	DefaultCommunicationTone       = "direct"
 	DefaultAddressStyle            = "ты"
@@ -45,6 +49,10 @@ type Claim struct {
 	Confidence    string          `json:"confidence"`
 	SourceIDs     json.RawMessage `json:"source_ids_json,omitempty"`
 	Status        string          `json:"status"`
+	StatusReason  string          `json:"status_reason,omitempty"`
+	SupersededBy  *int            `json:"superseded_by_claim_id,omitempty"`
+	ReviewedBy    *int            `json:"reviewed_by,omitempty"`
+	ReviewedAt    *time.Time      `json:"reviewed_at,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
 }

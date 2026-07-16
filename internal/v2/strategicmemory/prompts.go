@@ -116,6 +116,8 @@ Use these document types as the primary storage map:
 
 For every extracted item choose one primary document. Related documents can be listed, but avoid duplicating the same detail everywhere.
 
+When relation_to_existing is confirms, extends, replaces, contradicts, or makes_historical, set existing_claim_id to the exact ID of the affected claim from current_memory.claims. Otherwise set it to 0. Never invent an ID.
+
 When preferred_document_type is present, the message comes from that document's dedicated conversation. Use that document as the primary destination when the fact belongs there, while still routing genuinely cross-cutting facts to their correct primary documents. Never treat the selected document itself or the assistant reply as a new fact; extract facts only from the user's new source.
 
 When facts_only is true, accept only business reality stated in the user's new source: current or historical facts, existing processes, observed problems or constraints, metrics, and results. Exclude strategic choices made during the session, goals, plans, hypotheses, assumptions, opinions, opportunities, future risks, recommendations, and open questions. An explicit uncertainty about a factual statement must remain uncertainty and must never be promoted into a fact.
@@ -133,7 +135,8 @@ Return valid JSON only with this shape:
       "related_documents": ["document_type"],
       "time_context": "current|historical|future|unknown",
       "importance": "low|medium|high|critical",
-      "relation_to_existing": "new|confirms|extends|replaces|contradicts|makes_historical|unknown"
+      "relation_to_existing": "new|confirms|extends|replaces|contradicts|makes_historical|unknown",
+      "existing_claim_id": 0
     }
   ],
   "document_brief": [

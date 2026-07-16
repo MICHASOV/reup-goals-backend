@@ -108,6 +108,7 @@ func main() {
 	}
 	mux.Handle("/api/v2/strategic-memory/snapshot", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/claims", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/claims/", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/agenda", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/documents", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/documents/", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))

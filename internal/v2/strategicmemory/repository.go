@@ -212,17 +212,38 @@ func (s *Store) RelevantMessages(ctx context.Context, workspaceID int, query str
 func (s *Store) ListClaims(ctx context.Context, workspaceID int, limit int) ([]Claim, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, workspace_id, claim_text, claim_type, topic_key, evidence_level,
-			confidence, source_ids_json, status, created_at, updated_at
+			confidence, source_ids_json, status, status_reason, superseded_by,
+			reviewed_by, reviewed_at, created_at, updated_at
 		FROM strategic_claims
-		WHERE workspace_id=$1 AND status=$2
+		WHERE workspace_id=$1 AND status IN ($2, $3, $4)
 		ORDER BY updated_at DESC, id DESC
-		LIMIT $3
-	`, workspaceID, ClaimStatusActive, limit)
+		LIMIT $5
+	`, workspaceID, ClaimStatusConfirmed, ClaimStatusSuggested, ClaimStatusConflicted, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanClaims(rows)
+}
 
+func (s *Store) ListAllClaims(ctx context.Context, workspaceID int, limit int) ([]Claim, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT id, workspace_id, claim_text, claim_type, topic_key, evidence_level,
+			confidence, source_ids_json, status, status_reason, superseded_by,
+			reviewed_by, reviewed_at, created_at, updated_at
+		FROM strategic_claims
+		WHERE workspace_id=$1
+		ORDER BY updated_at DESC, id DESC
+		LIMIT $2
+	`, workspaceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanClaims(rows)
+}
+
+func scanClaims(rows *sql.Rows) ([]Claim, error) {
 	claims := []Claim{}
 	for rows.Next() {
 		var item Claim
@@ -236,6 +257,10 @@ func (s *Store) ListClaims(ctx context.Context, workspaceID int, limit int) ([]C
 			&item.Confidence,
 			&item.SourceIDs,
 			&item.Status,
+			&item.StatusReason,
+			&item.SupersededBy,
+			&item.ReviewedBy,
+			&item.ReviewedAt,
 			&item.CreatedAt,
 			&item.UpdatedAt,
 		); err != nil {
@@ -247,7 +272,13 @@ func (s *Store) ListClaims(ctx context.Context, workspaceID int, limit int) ([]C
 }
 
 func (s *Store) InsertClaims(ctx context.Context, workspaceID int, sourceID int, claims []aiMemoryResponseClaim) (int, int, error) {
-	existing, err := s.claimKeys(ctx, workspaceID)
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	existing, err := claimKeys(ctx, tx, workspaceID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -265,12 +296,15 @@ func (s *Store) InsertClaims(ctx context.Context, workspaceID int, sourceID int,
 			skipped += 1
 			continue
 		}
-		_, err := s.dbx.ExecContext(ctx, `
+		status := claimStatusForMaterializedClaim(claim)
+		var claimID int
+		err := tx.QueryRowContext(ctx, `
 			INSERT INTO strategic_claims (
 				workspace_id, claim_text, claim_type, topic_key, evidence_level,
-				confidence, source_ids_json, status
+				confidence, source_ids_json, status, status_reason
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			RETURNING id
 		`,
 			workspaceID,
 			text,
@@ -279,13 +313,22 @@ func (s *Store) InsertClaims(ctx context.Context, workspaceID int, sourceID int,
 			normalizeEvidenceLevel(claim.EvidenceLevel),
 			normalizeConfidence(claim.Confidence),
 			sourceIDs,
-			ClaimStatusActive,
-		)
+			status,
+			claimLifecycleReason(claim),
+		).Scan(&claimID)
 		if err != nil {
 			return added, skipped, err
 		}
+		if claim.ExistingID > 0 {
+			if err := applyClaimRelation(ctx, tx, workspaceID, claimID, claim); err != nil {
+				return added, skipped, err
+			}
+		}
 		existing[key] = true
 		added += 1
+	}
+	if err := tx.Commit(); err != nil {
+		return added, skipped, err
 	}
 	return added, skipped, nil
 }
@@ -296,13 +339,19 @@ type aiMemoryResponseClaim struct {
 	TopicKey      string
 	EvidenceLevel string
 	Confidence    string
+	Relation      string
+	ExistingID    int
 }
 
-func (s *Store) claimKeys(ctx context.Context, workspaceID int) (map[string]bool, error) {
-	rows, err := s.dbx.QueryContext(ctx, `
+type claimQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func claimKeys(ctx context.Context, dbx claimQueryer, workspaceID int) (map[string]bool, error) {
+	rows, err := dbx.QueryContext(ctx, `
 		SELECT claim_text FROM strategic_claims
-		WHERE workspace_id=$1 AND status=$2
-	`, workspaceID, ClaimStatusActive)
+		WHERE workspace_id=$1 AND status IN ($2, $3, $4)
+	`, workspaceID, ClaimStatusConfirmed, ClaimStatusSuggested, ClaimStatusConflicted)
 	if err != nil {
 		return nil, err
 	}
@@ -317,6 +366,140 @@ func (s *Store) claimKeys(ctx context.Context, workspaceID int) (map[string]bool
 		result[claimKey(text)] = true
 	}
 	return result, rows.Err()
+}
+
+func claimStatusForMaterializedClaim(claim aiMemoryResponseClaim) string {
+	relation := strings.ToLower(strings.TrimSpace(claim.Relation))
+	if relation == "contradicts" {
+		return ClaimStatusConflicted
+	}
+	if normalizeConfidence(claim.Confidence) == "low" && relation != "confirms" && relation != "replaces" {
+		return ClaimStatusSuggested
+	}
+	return ClaimStatusConfirmed
+}
+
+func claimLifecycleReason(claim aiMemoryResponseClaim) string {
+	switch strings.ToLower(strings.TrimSpace(claim.Relation)) {
+	case "contradicts":
+		return "Contradicts an existing claim and requires clarification."
+	case "replaces":
+		return "Replaces an earlier claim with newer information."
+	case "makes_historical":
+		return "Makes an earlier claim historical."
+	default:
+		if claimStatusForMaterializedClaim(claim) == ClaimStatusSuggested {
+			return "Extracted with low confidence and requires verification."
+		}
+		return "Automatically confirmed from user-provided business context."
+	}
+}
+
+func applyClaimRelation(ctx context.Context, tx *sql.Tx, workspaceID int, newClaimID int, claim aiMemoryResponseClaim) error {
+	relation := strings.ToLower(strings.TrimSpace(claim.Relation))
+	switch relation {
+	case "replaces", "makes_historical":
+		result, err := tx.ExecContext(ctx, `
+			UPDATE strategic_claims
+			SET status=$1, status_reason=$2, superseded_by=$3, reviewed_at=NOW(), updated_at=NOW()
+			WHERE id=$4 AND workspace_id=$5 AND status IN ($6, $7, $8)
+		`, ClaimStatusOutdated, "Superseded by newer business context.", newClaimID, claim.ExistingID, workspaceID,
+			ClaimStatusConfirmed, ClaimStatusSuggested, ClaimStatusConflicted)
+		if err != nil {
+			return err
+		}
+		return requireAffectedClaim(result)
+	case "contradicts":
+		result, err := tx.ExecContext(ctx, `
+			UPDATE strategic_claims
+			SET status=$1, status_reason=$2, reviewed_at=NOW(), updated_at=NOW()
+			WHERE id=$3 AND workspace_id=$4 AND status IN ($5, $6, $7)
+		`, ClaimStatusConflicted, "Conflicts with newer business context and requires clarification.", claim.ExistingID, workspaceID,
+			ClaimStatusConfirmed, ClaimStatusSuggested, ClaimStatusConflicted)
+		if err != nil {
+			return err
+		}
+		return requireAffectedClaim(result)
+	default:
+		return nil
+	}
+}
+
+func requireAffectedClaim(result sql.Result) error {
+	_, err := result.RowsAffected()
+	return err
+}
+
+func validClaimStatus(status string) bool {
+	switch status {
+	case ClaimStatusSuggested, ClaimStatusConfirmed, ClaimStatusRejected, ClaimStatusConflicted, ClaimStatusOutdated:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Store) UpdateClaimLifecycle(
+	ctx context.Context,
+	workspaceID int,
+	claimID int,
+	userID int,
+	status string,
+	reason string,
+	supersededBy *int,
+) (*Claim, error) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if !validClaimStatus(status) {
+		return nil, fmt.Errorf("invalid_claim_status")
+	}
+	if supersededBy != nil && *supersededBy == claimID {
+		return nil, fmt.Errorf("invalid_superseding_claim")
+	}
+	if supersededBy != nil {
+		var exists bool
+		if err := s.dbx.QueryRowContext(ctx, `
+			SELECT EXISTS(SELECT 1 FROM strategic_claims WHERE id=$1 AND workspace_id=$2)
+		`, *supersededBy, workspaceID).Scan(&exists); err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, fmt.Errorf("superseding_claim_not_found")
+		}
+	}
+
+	var item Claim
+	err := s.dbx.QueryRowContext(ctx, `
+		UPDATE strategic_claims
+		SET status=$1, status_reason=$2, superseded_by=$3, reviewed_by=$4,
+			reviewed_at=NOW(), updated_at=NOW()
+		WHERE id=$5 AND workspace_id=$6
+		RETURNING id, workspace_id, claim_text, claim_type, topic_key, evidence_level,
+			confidence, source_ids_json, status, status_reason, superseded_by,
+			reviewed_by, reviewed_at, created_at, updated_at
+	`, status, cleanText(reason), supersededBy, userID, claimID, workspaceID).Scan(
+		&item.ID,
+		&item.WorkspaceID,
+		&item.ClaimText,
+		&item.ClaimType,
+		&item.TopicKey,
+		&item.EvidenceLevel,
+		&item.Confidence,
+		&item.SourceIDs,
+		&item.Status,
+		&item.StatusReason,
+		&item.SupersededBy,
+		&item.ReviewedBy,
+		&item.ReviewedAt,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("claim_not_found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
 }
 
 func (s *Store) LatestSnapshot(ctx context.Context, workspaceID int) (*MemorySnapshot, error) {

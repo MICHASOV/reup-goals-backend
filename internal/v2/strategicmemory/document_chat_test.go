@@ -73,3 +73,41 @@ func TestFactsOnlyMaterializationDropsStrategyContent(t *testing.T) {
 		t.Fatalf("unexpected document brief: %#v", result.DocumentBrief)
 	}
 }
+
+func TestClaimStatusForMaterializedClaim(t *testing.T) {
+	tests := []struct {
+		name  string
+		claim aiMemoryResponseClaim
+		want  string
+	}{
+		{name: "normal user fact is confirmed", claim: aiMemoryResponseClaim{Confidence: "high", Relation: "new"}, want: ClaimStatusConfirmed},
+		{name: "low confidence item is suggested", claim: aiMemoryResponseClaim{Confidence: "low", Relation: "new"}, want: ClaimStatusSuggested},
+		{name: "explicit confirmation stays confirmed", claim: aiMemoryResponseClaim{Confidence: "low", Relation: "confirms"}, want: ClaimStatusConfirmed},
+		{name: "contradiction is conflicted", claim: aiMemoryResponseClaim{Confidence: "high", Relation: "contradicts"}, want: ClaimStatusConflicted},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := claimStatusForMaterializedClaim(test.claim); got != test.want {
+				t.Fatalf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestValidClaimStatus(t *testing.T) {
+	for _, status := range []string{
+		ClaimStatusSuggested,
+		ClaimStatusConfirmed,
+		ClaimStatusRejected,
+		ClaimStatusConflicted,
+		ClaimStatusOutdated,
+	} {
+		if !validClaimStatus(status) {
+			t.Fatalf("expected %q to be valid", status)
+		}
+	}
+	if validClaimStatus("active") {
+		t.Fatal("legacy active status must not remain valid")
+	}
+}

@@ -1603,6 +1603,30 @@ var migrations = []Migration{
 				ON v2_strategy_research_requests (workspace_id, strategy_id, status, priority, updated_at DESC);
 		`,
 	},
+	{
+		ID: "20260716_029_strategic_claim_lifecycle",
+		SQL: `
+			UPDATE strategic_claims
+			SET status='confirmed'
+			WHERE status='active';
+
+			ALTER TABLE strategic_claims
+				ALTER COLUMN status SET DEFAULT 'confirmed',
+				ADD COLUMN IF NOT EXISTS status_reason TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS reviewed_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ NULL;
+
+			ALTER TABLE strategic_claims
+				DROP CONSTRAINT IF EXISTS strategic_claims_status_check;
+			ALTER TABLE strategic_claims
+				ADD CONSTRAINT strategic_claims_status_check
+				CHECK (status IN ('suggested', 'confirmed', 'rejected', 'conflicted', 'outdated'));
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_claims_superseded_by
+				ON strategic_claims (workspace_id, superseded_by)
+				WHERE superseded_by IS NOT NULL;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

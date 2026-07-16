@@ -36,6 +36,7 @@ type materializerItem struct {
 	TimeContext        string   `json:"time_context"`
 	Importance         string   `json:"importance"`
 	RelationToExisting string   `json:"relation_to_existing"`
+	ExistingClaimID    int      `json:"existing_claim_id"`
 }
 
 type materializerDocumentNote struct {
@@ -371,6 +372,8 @@ func materializerItemsToClaims(items []materializerItem) []aiMemoryResponseClaim
 			TopicKey:      normalizeDocumentType(item.PrimaryDocument),
 			EvidenceLevel: item.EvidenceLevel,
 			Confidence:    item.Confidence,
+			Relation:      item.RelationToExisting,
+			ExistingID:    item.ExistingClaimID,
 		})
 	}
 	return claims
