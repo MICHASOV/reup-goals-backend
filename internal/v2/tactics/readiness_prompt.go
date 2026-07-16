@@ -24,10 +24,10 @@ Review at least these dimensions:
 - change_logic: whether workstreams describe changes in business state rather than departments, themes, or task buckets;
 - causal_coherence: whether the path from projects to changes and from changes to the course is credible;
 - portfolio_focus: whether priorities, trade-offs, sequencing, and conscious refusals prevent resource dispersion;
-- measurability: whether outcomes, current state, target state, and success signals are sufficiently concrete;
-- project_quality: whether projects are real interventions or experiments with success and failure criteria;
+- measurability: whether each workstream has one to three meaningful metrics with current and target states, and success signals are sufficiently concrete;
+- project_quality: whether projects are real interventions or experiments with expected business value plus success and failure criteria;
 - feasibility_resources: whether the portfolio is realistic for the available people, money, time, capabilities, and constraints;
-- risks_opportunities: whether material risks and opportunities are identified and connected to the correct entities;
+- risks_opportunities: whether material risks and opportunities are identified, connected to the correct entities, and assessed by probability, impact, and urgency where relevant;
 - dependencies_sequencing: whether critical dependencies and order of execution are understood;
 - evidence_assumptions: whether facts, assumptions, and unvalidated bets are separated and proportionately handled;
 - strategy_consistency: whether tactics expose a contradiction or missing decision that should be returned to strategy.

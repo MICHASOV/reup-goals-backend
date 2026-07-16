@@ -39,8 +39,8 @@ const (
 	SourceManual       = "manual"
 	SourceAISuggestion = "ai_suggestion"
 
-	TacticsFacilitatorPromptVersion = "tactics_facilitator_openai_native_v0_1_0"
-	TacticsReadinessPromptVersion   = "tactics_quality_readiness_auditor_v0_1_1"
+	TacticsFacilitatorPromptVersion = "tactics_facilitator_openai_native_v0_1_1"
+	TacticsReadinessPromptVersion   = "tactics_quality_readiness_auditor_v0_1_2"
 
 	FacilitatorStatusInProgress     = "in_progress"
 	FacilitatorStatusCandidateReady = "candidate_ready"
@@ -93,31 +93,38 @@ type CourseSummary struct {
 }
 
 type Workstream struct {
-	ID               int           `json:"id"`
-	WorkspaceID      int           `json:"-"`
-	TacticalPlanID   int           `json:"tactical_plan_id"`
-	StrategyID       int           `json:"strategy_id"`
-	CourseID         *int          `json:"course_id"`
-	Title            string        `json:"title"`
-	Description      string        `json:"description"`
-	Goal             string        `json:"goal"`
-	CKP              string        `json:"ckp"`
-	Reason           string        `json:"reason"`
-	ClosesRisk       string        `json:"closes_risk"`
-	MetricName       string        `json:"metric_name"`
-	MetricCurrent    string        `json:"metric_current"`
-	MetricTarget     string        `json:"metric_target"`
-	Status           string        `json:"status"`
-	HealthStatus     string        `json:"health_status"`
-	ContributionType string        `json:"contribution_type"`
-	Confidence       *float64      `json:"confidence"`
-	Source           string        `json:"source"`
-	SortOrder        int           `json:"sort_order"`
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
-	Projects         []Project     `json:"projects"`
-	Risks            []Risk        `json:"risks"`
-	Opportunities    []Opportunity `json:"opportunities"`
+	ID               int            `json:"id"`
+	WorkspaceID      int            `json:"-"`
+	TacticalPlanID   int            `json:"tactical_plan_id"`
+	StrategyID       int            `json:"strategy_id"`
+	CourseID         *int           `json:"course_id"`
+	Title            string         `json:"title"`
+	Description      string         `json:"description"`
+	Goal             string         `json:"goal"`
+	CKP              string         `json:"ckp"`
+	Reason           string         `json:"reason"`
+	ClosesRisk       string         `json:"closes_risk"`
+	MetricName       string         `json:"metric_name"`
+	MetricCurrent    string         `json:"metric_current"`
+	MetricTarget     string         `json:"metric_target"`
+	Metrics          []TacticMetric `json:"metrics"`
+	Status           string         `json:"status"`
+	HealthStatus     string         `json:"health_status"`
+	ContributionType string         `json:"contribution_type"`
+	Confidence       *float64       `json:"confidence"`
+	Source           string         `json:"source"`
+	SortOrder        int            `json:"sort_order"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
+	Projects         []Project      `json:"projects"`
+	Risks            []Risk         `json:"risks"`
+	Opportunities    []Opportunity  `json:"opportunities"`
+}
+
+type TacticMetric struct {
+	Name    string `json:"name"`
+	Current string `json:"current"`
+	Target  string `json:"target"`
 }
 
 type Project struct {
@@ -130,6 +137,7 @@ type Project struct {
 	SuccessCriteria string    `json:"success_criteria"`
 	FailureCriteria string    `json:"failure_criteria"`
 	MetricName      string    `json:"metric_name"`
+	ExpectedValue   string    `json:"expected_value"`
 	Status          string    `json:"status"`
 	Confidence      *float64  `json:"confidence"`
 	Source          string    `json:"source"`
@@ -147,6 +155,7 @@ type Risk struct {
 	Title          string    `json:"title"`
 	Description    string    `json:"description"`
 	Severity       string    `json:"severity"`
+	Probability    string    `json:"probability"`
 	Status         string    `json:"status"`
 	CoverageStatus string    `json:"coverage_status"`
 	Source         string    `json:"source"`
@@ -163,6 +172,7 @@ type Opportunity struct {
 	Title           string    `json:"title"`
 	Description     string    `json:"description"`
 	PotentialImpact string    `json:"potential_impact"`
+	Urgency         string    `json:"urgency"`
 	Status          string    `json:"status"`
 	CoverageStatus  string    `json:"coverage_status"`
 	Source          string    `json:"source"`
@@ -287,29 +297,33 @@ type ApplyTacticsChangesResponse struct {
 }
 
 type TacticsDraftChange struct {
-	Apply            bool   `json:"apply"`
-	Operation        string `json:"operation"`
-	EntityType       string `json:"entity_type"`
-	EntityID         *int   `json:"entity_id,omitempty"`
-	DraftKey         string `json:"draft_key,omitempty"`
-	ParentEntityType string `json:"parent_entity_type,omitempty"`
-	ParentEntityID   *int   `json:"parent_entity_id,omitempty"`
-	ParentDraftKey   string `json:"parent_draft_key,omitempty"`
-	Title            string `json:"title"`
-	Description      string `json:"description,omitempty"`
-	Goal             string `json:"goal,omitempty"`
-	CKP              string `json:"ckp,omitempty"`
-	Reason           string `json:"reason,omitempty"`
-	ClosesRisk       string `json:"closes_risk,omitempty"`
-	MetricName       string `json:"metric_name,omitempty"`
-	MetricCurrent    string `json:"metric_current,omitempty"`
-	MetricTarget     string `json:"metric_target,omitempty"`
-	WhyNeeded        string `json:"why_needed,omitempty"`
-	SuccessCriteria  string `json:"success_criteria,omitempty"`
-	FailureCriteria  string `json:"failure_criteria,omitempty"`
-	Severity         string `json:"severity,omitempty"`
-	PotentialImpact  string `json:"potential_impact,omitempty"`
-	CoverageStatus   string `json:"coverage_status,omitempty"`
+	Apply            bool           `json:"apply"`
+	Operation        string         `json:"operation"`
+	EntityType       string         `json:"entity_type"`
+	EntityID         *int           `json:"entity_id,omitempty"`
+	DraftKey         string         `json:"draft_key,omitempty"`
+	ParentEntityType string         `json:"parent_entity_type,omitempty"`
+	ParentEntityID   *int           `json:"parent_entity_id,omitempty"`
+	ParentDraftKey   string         `json:"parent_draft_key,omitempty"`
+	Title            string         `json:"title"`
+	Description      string         `json:"description,omitempty"`
+	Goal             string         `json:"goal,omitempty"`
+	CKP              string         `json:"ckp,omitempty"`
+	Reason           string         `json:"reason,omitempty"`
+	ClosesRisk       string         `json:"closes_risk,omitempty"`
+	MetricName       string         `json:"metric_name,omitempty"`
+	MetricCurrent    string         `json:"metric_current,omitempty"`
+	MetricTarget     string         `json:"metric_target,omitempty"`
+	Metrics          []TacticMetric `json:"metrics,omitempty"`
+	WhyNeeded        string         `json:"why_needed,omitempty"`
+	SuccessCriteria  string         `json:"success_criteria,omitempty"`
+	FailureCriteria  string         `json:"failure_criteria,omitempty"`
+	ExpectedValue    string         `json:"expected_value,omitempty"`
+	Severity         string         `json:"severity,omitempty"`
+	Probability      string         `json:"probability,omitempty"`
+	PotentialImpact  string         `json:"potential_impact,omitempty"`
+	Urgency          string         `json:"urgency,omitempty"`
+	CoverageStatus   string         `json:"coverage_status,omitempty"`
 }
 
 type AppliedTacticsChange struct {
@@ -487,8 +501,20 @@ type TacticsReadinessResponse struct {
 }
 
 type Uncovered struct {
-	Risks         []Risk        `json:"risks"`
-	Opportunities []Opportunity `json:"opportunities"`
+	Risks                   []Risk               `json:"risks"`
+	Opportunities           []Opportunity        `json:"opportunities"`
+	WorkstreamsWithoutTasks []TacticsCoverageGap `json:"workstreams_without_tasks"`
+	ProjectsWithoutTasks    []TacticsCoverageGap `json:"projects_without_tasks"`
+	MissingMetrics          []TacticsCoverageGap `json:"missing_metrics"`
+	MissingCKP              []TacticsCoverageGap `json:"missing_ckp"`
+	MissingSuccessCriteria  []TacticsCoverageGap `json:"missing_success_criteria"`
+}
+
+type TacticsCoverageGap struct {
+	EntityType string `json:"entity_type"`
+	EntityID   int    `json:"entity_id"`
+	Title      string `json:"title"`
+	Reason     string `json:"reason"`
 }
 
 func ValidPlanStatus(status string) bool {

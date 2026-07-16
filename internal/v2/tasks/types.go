@@ -44,22 +44,29 @@ type TacticalPlanSummary struct {
 }
 
 type WorkstreamSummary struct {
-	ID            int           `json:"id"`
-	Title         string        `json:"title"`
-	Description   string        `json:"description"`
-	Goal          string        `json:"goal"`
-	CKP           string        `json:"ckp"`
-	Reason        string        `json:"reason"`
-	ClosesRisk    string        `json:"closes_risk"`
-	MetricName    string        `json:"metric_name"`
-	MetricCurrent string        `json:"metric_current"`
-	MetricTarget  string        `json:"metric_target"`
-	HealthStatus  string        `json:"health_status"`
-	Projects      []Project     `json:"projects"`
-	Risks         []Risk        `json:"risks"`
-	Opportunities []Opportunity `json:"opportunities"`
-	TasksSummary  TasksSummary  `json:"tasks_summary"`
-	TopTasks      []Task        `json:"top_tasks"`
+	ID            int            `json:"id"`
+	Title         string         `json:"title"`
+	Description   string         `json:"description"`
+	Goal          string         `json:"goal"`
+	CKP           string         `json:"ckp"`
+	Reason        string         `json:"reason"`
+	ClosesRisk    string         `json:"closes_risk"`
+	MetricName    string         `json:"metric_name"`
+	MetricCurrent string         `json:"metric_current"`
+	MetricTarget  string         `json:"metric_target"`
+	Metrics       []TacticMetric `json:"metrics"`
+	HealthStatus  string         `json:"health_status"`
+	Projects      []Project      `json:"projects"`
+	Risks         []Risk         `json:"risks"`
+	Opportunities []Opportunity  `json:"opportunities"`
+	TasksSummary  TasksSummary   `json:"tasks_summary"`
+	TopTasks      []Task         `json:"top_tasks"`
+}
+
+type TacticMetric struct {
+	Name    string `json:"name"`
+	Current string `json:"current"`
+	Target  string `json:"target"`
 }
 
 type Project struct {
@@ -71,6 +78,7 @@ type Project struct {
 	SuccessCriteria string `json:"success_criteria"`
 	FailureCriteria string `json:"failure_criteria"`
 	MetricName      string `json:"metric_name"`
+	ExpectedValue   string `json:"expected_value"`
 	Status          string `json:"status"`
 }
 
@@ -82,6 +90,7 @@ type Risk struct {
 	Title          string `json:"title"`
 	Description    string `json:"description"`
 	Severity       string `json:"severity"`
+	Probability    string `json:"probability"`
 	Status         string `json:"status"`
 	CoverageStatus string `json:"coverage_status"`
 }
@@ -94,6 +103,7 @@ type Opportunity struct {
 	Title           string `json:"title"`
 	Description     string `json:"description"`
 	PotentialImpact string `json:"potential_impact"`
+	Urgency         string `json:"urgency"`
 	Status          string `json:"status"`
 	CoverageStatus  string `json:"coverage_status"`
 }

@@ -3,6 +3,7 @@ package tactics
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 )
@@ -24,7 +25,7 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 			TacticalPlan: nil,
 			Strategy:     nil,
 			Workstreams:  []Workstream{},
-			Uncovered:    Uncovered{Risks: []Risk{}, Opportunities: []Opportunity{}},
+			Uncovered:    emptyUncovered(),
 			Reason:       "no_active_strategy",
 			Message:      "Для создания тактики нужна активная стратегия.",
 		}, nil
@@ -64,15 +65,18 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	}
 
 	hydrateWorkstreams(workstreams, risks, opportunities)
+	coverage, err := s.coverageGaps(ctx, workspaceID, plan.ID, workstreams)
+	if err != nil {
+		return CurrentResponse{}, err
+	}
+	coverage.Risks = uncoveredRisks(risks)
+	coverage.Opportunities = uncoveredOpportunities(opportunities)
 
 	response := CurrentResponse{
 		TacticalPlan: &plan,
 		Strategy:     &strategy,
 		Workstreams:  workstreams,
-		Uncovered: Uncovered{
-			Risks:         uncoveredRisks(risks),
-			Opportunities: uncoveredOpportunities(opportunities),
-		},
+		Uncovered:    coverage,
 	}
 	if courseErr == nil {
 		response.Course = &course
@@ -181,16 +185,16 @@ func (s *Store) createWorkstream(ctx context.Context, workspaceID int, userID in
 	row := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_tactical_workstreams (
 			workspace_id, tactical_plan_id, strategy_id, title, description, goal, ckp,
-			reason, closes_risk, metric_name, metric_current, metric_target, status,
+			reason, closes_risk, metric_name, metric_current, metric_target, metrics_json, status,
 			health_status, contribution_type, source, sort_order, created_by
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		RETURNING
 			id, workspace_id, tactical_plan_id, strategy_id, course_id, title, description,
-			goal, ckp, reason, closes_risk, metric_name, metric_current, metric_target,
+			goal, ckp, reason, closes_risk, metric_name, metric_current, metric_target, metrics_json,
 			status, health_status, contribution_type, confidence, source, sort_order, created_at, updated_at
 	`, workspaceID, plan.ID, plan.StrategyID, input.Title, input.Description, input.Goal, input.CKP, input.Reason,
-		input.ClosesRisk, input.MetricName, input.MetricCurrent, input.MetricTarget, input.Status,
+		input.ClosesRisk, input.MetricName, input.MetricCurrent, input.MetricTarget, tacticsJSON(input.Metrics), input.Status,
 		input.HealthStatus, input.ContributionType, source, sortOrder, userID)
 
 	return scanWorkstream(row)
@@ -220,15 +224,23 @@ func (s *Store) UpdateWorkstream(ctx context.Context, workspaceID int, workstrea
 	if input.ClosesRisk == "" {
 		input.ClosesRisk = current.ClosesRisk
 	}
-	if input.MetricName == "" {
-		input.MetricName = current.MetricName
+	if input.Metrics == nil {
+		input.Metrics = current.Metrics
+		if input.MetricName == "" {
+			input.MetricName = current.MetricName
+		}
+		if input.MetricCurrent == "" {
+			input.MetricCurrent = current.MetricCurrent
+		}
+		if input.MetricTarget == "" {
+			input.MetricTarget = current.MetricTarget
+		}
+	} else {
+		input.MetricName = ""
+		input.MetricCurrent = ""
+		input.MetricTarget = ""
 	}
-	if input.MetricCurrent == "" {
-		input.MetricCurrent = current.MetricCurrent
-	}
-	if input.MetricTarget == "" {
-		input.MetricTarget = current.MetricTarget
-	}
+	input.syncLegacyMetric()
 	if input.HealthStatus == "" {
 		input.HealthStatus = current.HealthStatus
 	}
@@ -250,17 +262,18 @@ func (s *Store) UpdateWorkstream(ctx context.Context, workspaceID int, workstrea
 			metric_name=$7,
 			metric_current=$8,
 			metric_target=$9,
-			status=$10,
-			health_status=$11,
-			contribution_type=$12,
+			metrics_json=$10,
+			status=$11,
+			health_status=$12,
+			contribution_type=$13,
 			updated_at=NOW()
-		WHERE id=$13 AND workspace_id=$14 AND archived_at IS NULL
+		WHERE id=$14 AND workspace_id=$15 AND archived_at IS NULL
 		RETURNING
 			id, workspace_id, tactical_plan_id, strategy_id, course_id, title, description,
-			goal, ckp, reason, closes_risk, metric_name, metric_current, metric_target,
+			goal, ckp, reason, closes_risk, metric_name, metric_current, metric_target, metrics_json,
 			status, health_status, contribution_type, confidence, source, sort_order, created_at, updated_at
 	`, input.Title, input.Description, input.Goal, input.CKP, input.Reason, input.ClosesRisk, input.MetricName,
-		input.MetricCurrent, input.MetricTarget, input.Status, input.HealthStatus, input.ContributionType,
+		input.MetricCurrent, input.MetricTarget, tacticsJSON(input.Metrics), input.Status, input.HealthStatus, input.ContributionType,
 		workstreamID, workspaceID)
 
 	return scanWorkstream(row)
@@ -285,15 +298,15 @@ func (s *Store) createProject(ctx context.Context, workspaceID int, userID int, 
 	row := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_tactical_projects (
 			workspace_id, workstream_id, title, description, why_needed, success_criteria,
-			failure_criteria, metric_name, status, source, sort_order, created_by
+			failure_criteria, metric_name, expected_value, status, source, sort_order, created_by
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING
 			id, workspace_id, workstream_id, title, description, why_needed,
-			success_criteria, failure_criteria, metric_name, status, confidence,
+			success_criteria, failure_criteria, metric_name, expected_value, status, confidence,
 			source, sort_order, created_at, updated_at
 	`, workspaceID, workstream.ID, input.Title, input.Description, input.WhyNeeded, input.SuccessCriteria,
-		input.FailureCriteria, input.MetricName, input.Status, source, sortOrder, userID)
+		input.FailureCriteria, input.MetricName, input.ExpectedValue, input.Status, source, sortOrder, userID)
 
 	return scanProject(row)
 }
@@ -322,6 +335,9 @@ func (s *Store) UpdateProject(ctx context.Context, workspaceID int, projectID in
 	if input.MetricName == "" {
 		input.MetricName = current.MetricName
 	}
+	if input.ExpectedValue == "" {
+		input.ExpectedValue = current.ExpectedValue
+	}
 	if input.Status == "" {
 		input.Status = current.Status
 	}
@@ -334,15 +350,16 @@ func (s *Store) UpdateProject(ctx context.Context, workspaceID int, projectID in
 			success_criteria=$4,
 			failure_criteria=$5,
 			metric_name=$6,
-			status=$7,
+			expected_value=$7,
+			status=$8,
 			updated_at=NOW()
-		WHERE id=$8 AND workspace_id=$9 AND archived_at IS NULL
+		WHERE id=$9 AND workspace_id=$10 AND archived_at IS NULL
 		RETURNING
 			id, workspace_id, workstream_id, title, description, why_needed,
-			success_criteria, failure_criteria, metric_name, status, confidence,
+			success_criteria, failure_criteria, metric_name, expected_value, status, confidence,
 			source, sort_order, created_at, updated_at
 	`, input.Title, input.Description, input.WhyNeeded, input.SuccessCriteria, input.FailureCriteria,
-		input.MetricName, input.Status, projectID, workspaceID)
+		input.MetricName, input.ExpectedValue, input.Status, projectID, workspaceID)
 
 	return scanProject(row)
 }
@@ -361,14 +378,14 @@ func (s *Store) createRisk(ctx context.Context, workspaceID int, userID int, inp
 	row := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_tactical_risks (
 			workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			severity, status, coverage_status, source, created_by
+			severity, probability, status, coverage_status, source, created_by
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING
 			id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			severity, status, coverage_status, source, created_at, updated_at
+			severity, probability, status, coverage_status, source, created_at, updated_at
 	`, workspaceID, planID, input.EntityType, input.EntityID, input.Title, input.Description,
-		input.Severity, input.Status, input.CoverageStatus, source, userID)
+		input.Severity, input.Probability, input.Status, input.CoverageStatus, source, userID)
 
 	return scanRisk(row)
 }
@@ -388,6 +405,9 @@ func (s *Store) UpdateRisk(ctx context.Context, workspaceID int, riskID int, inp
 	if input.Severity == "" {
 		input.Severity = current.Severity
 	}
+	if input.Probability == "" {
+		input.Probability = current.Probability
+	}
 	if input.Status == "" {
 		input.Status = current.Status
 	}
@@ -400,14 +420,15 @@ func (s *Store) UpdateRisk(ctx context.Context, workspaceID int, riskID int, inp
 		SET title=$1,
 			description=$2,
 			severity=$3,
-			status=$4,
-			coverage_status=$5,
+			probability=$4,
+			status=$5,
+			coverage_status=$6,
 			updated_at=NOW()
-		WHERE id=$6 AND workspace_id=$7 AND archived_at IS NULL
+		WHERE id=$7 AND workspace_id=$8 AND archived_at IS NULL
 		RETURNING
 			id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			severity, status, coverage_status, source, created_at, updated_at
-	`, input.Title, input.Description, input.Severity, input.Status, input.CoverageStatus, riskID, workspaceID)
+			severity, probability, status, coverage_status, source, created_at, updated_at
+	`, input.Title, input.Description, input.Severity, input.Probability, input.Status, input.CoverageStatus, riskID, workspaceID)
 
 	return scanRisk(row)
 }
@@ -426,14 +447,14 @@ func (s *Store) createOpportunity(ctx context.Context, workspaceID int, userID i
 	row := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_tactical_opportunities (
 			workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			potential_impact, status, coverage_status, source, created_by
+			potential_impact, urgency, status, coverage_status, source, created_by
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING
 			id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			potential_impact, status, coverage_status, source, created_at, updated_at
+			potential_impact, urgency, status, coverage_status, source, created_at, updated_at
 	`, workspaceID, planID, input.EntityType, input.EntityID, input.Title, input.Description,
-		input.PotentialImpact, input.Status, input.CoverageStatus, source, userID)
+		input.PotentialImpact, input.Urgency, input.Status, input.CoverageStatus, source, userID)
 
 	return scanOpportunity(row)
 }
@@ -453,6 +474,9 @@ func (s *Store) UpdateOpportunity(ctx context.Context, workspaceID int, opportun
 	if input.PotentialImpact == "" {
 		input.PotentialImpact = current.PotentialImpact
 	}
+	if input.Urgency == "" {
+		input.Urgency = current.Urgency
+	}
 	if input.Status == "" {
 		input.Status = current.Status
 	}
@@ -465,14 +489,15 @@ func (s *Store) UpdateOpportunity(ctx context.Context, workspaceID int, opportun
 		SET title=$1,
 			description=$2,
 			potential_impact=$3,
-			status=$4,
-			coverage_status=$5,
+			urgency=$4,
+			status=$5,
+			coverage_status=$6,
 			updated_at=NOW()
-		WHERE id=$6 AND workspace_id=$7 AND archived_at IS NULL
+		WHERE id=$7 AND workspace_id=$8 AND archived_at IS NULL
 		RETURNING
 			id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			potential_impact, status, coverage_status, source, created_at, updated_at
-	`, input.Title, input.Description, input.PotentialImpact, input.Status, input.CoverageStatus, opportunityID, workspaceID)
+			potential_impact, urgency, status, coverage_status, source, created_at, updated_at
+	`, input.Title, input.Description, input.PotentialImpact, input.Urgency, input.Status, input.CoverageStatus, opportunityID, workspaceID)
 
 	return scanOpportunity(row)
 }
@@ -640,7 +665,7 @@ func (s *Store) workstreamByID(ctx context.Context, workspaceID int, workstreamI
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT
 			id, workspace_id, tactical_plan_id, strategy_id, course_id, title, description,
-			goal, ckp, reason, closes_risk, metric_name, metric_current, metric_target,
+			goal, ckp, reason, closes_risk, metric_name, metric_current, metric_target, metrics_json,
 			status, health_status, contribution_type, confidence, source, sort_order, created_at, updated_at
 		FROM v2_tactical_workstreams
 		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
@@ -652,7 +677,7 @@ func (s *Store) projectByID(ctx context.Context, workspaceID int, projectID int)
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT
 			id, workspace_id, workstream_id, title, description, why_needed,
-			success_criteria, failure_criteria, metric_name, status, confidence,
+			success_criteria, failure_criteria, metric_name, expected_value, status, confidence,
 			source, sort_order, created_at, updated_at
 		FROM v2_tactical_projects
 		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
@@ -663,7 +688,7 @@ func (s *Store) projectByID(ctx context.Context, workspaceID int, projectID int)
 func (s *Store) riskByID(ctx context.Context, workspaceID int, riskID int) (Risk, error) {
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			severity, status, coverage_status, source, created_at, updated_at
+			severity, probability, status, coverage_status, source, created_at, updated_at
 		FROM v2_tactical_risks
 		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
 	`, riskID, workspaceID)
@@ -673,7 +698,7 @@ func (s *Store) riskByID(ctx context.Context, workspaceID int, riskID int) (Risk
 func (s *Store) opportunityByID(ctx context.Context, workspaceID int, opportunityID int) (Opportunity, error) {
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			potential_impact, status, coverage_status, source, created_at, updated_at
+			potential_impact, urgency, status, coverage_status, source, created_at, updated_at
 		FROM v2_tactical_opportunities
 		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
 	`, opportunityID, workspaceID)
@@ -691,7 +716,7 @@ func (s *Store) listWorkstreams(ctx context.Context, workspaceID int, planID int
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT
 			id, workspace_id, tactical_plan_id, strategy_id, course_id, title, description,
-			goal, ckp, reason, closes_risk, metric_name, metric_current, metric_target,
+			goal, ckp, reason, closes_risk, metric_name, metric_current, metric_target, metrics_json,
 			status, health_status, contribution_type, confidence, source, sort_order, created_at, updated_at
 		FROM v2_tactical_workstreams
 		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL
@@ -740,7 +765,7 @@ func (s *Store) listProjects(ctx context.Context, workspaceID int, workstreams [
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT
 			id, workspace_id, workstream_id, title, description, why_needed,
-			success_criteria, failure_criteria, metric_name, status, confidence,
+			success_criteria, failure_criteria, metric_name, expected_value, status, confidence,
 			source, sort_order, created_at, updated_at
 		FROM v2_tactical_projects
 		WHERE workspace_id=$1 AND archived_at IS NULL
@@ -772,7 +797,7 @@ func (s *Store) listProjects(ctx context.Context, workspaceID int, workstreams [
 func (s *Store) listRisks(ctx context.Context, workspaceID int, planID int) ([]Risk, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			severity, status, coverage_status, source, created_at, updated_at
+			severity, probability, status, coverage_status, source, created_at, updated_at
 		FROM v2_tactical_risks
 		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL
 		ORDER BY id ASC
@@ -796,7 +821,7 @@ func (s *Store) listRisks(ctx context.Context, workspaceID int, planID int) ([]R
 func (s *Store) listOpportunities(ctx context.Context, workspaceID int, planID int) ([]Opportunity, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			potential_impact, status, coverage_status, source, created_at, updated_at
+			potential_impact, urgency, status, coverage_status, source, created_at, updated_at
 		FROM v2_tactical_opportunities
 		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL
 		ORDER BY id ASC
@@ -880,24 +905,109 @@ func uncoveredOpportunities(opportunities []Opportunity) []Opportunity {
 	return result
 }
 
+func emptyUncovered() Uncovered {
+	return Uncovered{
+		Risks:                   []Risk{},
+		Opportunities:           []Opportunity{},
+		WorkstreamsWithoutTasks: []TacticsCoverageGap{},
+		ProjectsWithoutTasks:    []TacticsCoverageGap{},
+		MissingMetrics:          []TacticsCoverageGap{},
+		MissingCKP:              []TacticsCoverageGap{},
+		MissingSuccessCriteria:  []TacticsCoverageGap{},
+	}
+}
+
+func (s *Store) coverageGaps(ctx context.Context, workspaceID int, planID int, workstreams []Workstream) (Uncovered, error) {
+	result := emptyUncovered()
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT workstream_id, project_id, COUNT(*)
+		FROM v2_tasks
+		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL AND status <> 'archived'
+		GROUP BY workstream_id, project_id
+	`, workspaceID, planID)
+	if err != nil {
+		return Uncovered{}, err
+	}
+	defer rows.Close()
+
+	workstreamTasks := map[int]int{}
+	projectTasks := map[int]int{}
+	for rows.Next() {
+		var workstreamID int
+		var projectID sql.NullInt64
+		var count int
+		if err := rows.Scan(&workstreamID, &projectID, &count); err != nil {
+			return Uncovered{}, err
+		}
+		workstreamTasks[workstreamID] += count
+		if projectID.Valid {
+			projectTasks[int(projectID.Int64)] += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return Uncovered{}, err
+	}
+
+	for _, workstream := range workstreams {
+		if workstreamTasks[workstream.ID] == 0 {
+			result.WorkstreamsWithoutTasks = append(result.WorkstreamsWithoutTasks, TacticsCoverageGap{
+				EntityType: EntityWorkstream, EntityID: workstream.ID, Title: workstream.Title,
+				Reason: "У направления нет активных задач.",
+			})
+		}
+		if strings.TrimSpace(workstream.CKP) == "" {
+			result.MissingCKP = append(result.MissingCKP, TacticsCoverageGap{
+				EntityType: EntityWorkstream, EntityID: workstream.ID, Title: workstream.Title,
+				Reason: "Не определён ценный конечный продукт направления.",
+			})
+		}
+		if len(workstream.Metrics) == 0 {
+			result.MissingMetrics = append(result.MissingMetrics, TacticsCoverageGap{
+				EntityType: EntityWorkstream, EntityID: workstream.ID, Title: workstream.Title,
+				Reason: "Не определена измеримая метрика направления.",
+			})
+		}
+		for _, project := range workstream.Projects {
+			if projectTasks[project.ID] == 0 {
+				result.ProjectsWithoutTasks = append(result.ProjectsWithoutTasks, TacticsCoverageGap{
+					EntityType: EntityProject, EntityID: project.ID, Title: project.Title,
+					Reason: "У проекта нет активных задач.",
+				})
+			}
+			if strings.TrimSpace(project.SuccessCriteria) == "" {
+				result.MissingSuccessCriteria = append(result.MissingSuccessCriteria, TacticsCoverageGap{
+					EntityType: EntityProject, EntityID: project.ID, Title: project.Title,
+					Reason: "Не определён критерий успеха проекта.",
+				})
+			}
+		}
+	}
+	return result, nil
+}
+
 type WorkstreamInput struct {
-	TacticalPlanID   int    `json:"tactical_plan_id"`
-	Title            string `json:"title"`
-	Description      string `json:"description"`
-	Goal             string `json:"goal"`
-	CKP              string `json:"ckp"`
-	Reason           string `json:"reason"`
-	ClosesRisk       string `json:"closes_risk"`
-	MetricName       string `json:"metric_name"`
-	MetricCurrent    string `json:"metric_current"`
-	MetricTarget     string `json:"metric_target"`
-	Status           string `json:"status"`
-	HealthStatus     string `json:"health_status"`
-	ContributionType string `json:"contribution_type"`
+	TacticalPlanID   int            `json:"tactical_plan_id"`
+	Title            string         `json:"title"`
+	Description      string         `json:"description"`
+	Goal             string         `json:"goal"`
+	CKP              string         `json:"ckp"`
+	Reason           string         `json:"reason"`
+	ClosesRisk       string         `json:"closes_risk"`
+	MetricName       string         `json:"metric_name"`
+	MetricCurrent    string         `json:"metric_current"`
+	MetricTarget     string         `json:"metric_target"`
+	Metrics          []TacticMetric `json:"metrics"`
+	Status           string         `json:"status"`
+	HealthStatus     string         `json:"health_status"`
+	ContributionType string         `json:"contribution_type"`
 }
 
 func (i *WorkstreamInput) normalize() {
 	i.trim()
+	if i.Metrics == nil && i.MetricName != "" {
+		i.Metrics = []TacticMetric{{Name: i.MetricName, Current: i.MetricCurrent, Target: i.MetricTarget}}
+	}
+	i.syncLegacyMetric()
 	if i.Status == "" {
 		i.Status = WorkstreamStatusActive
 	}
@@ -916,9 +1026,34 @@ func (i *WorkstreamInput) trim() {
 	i.MetricName = strings.TrimSpace(i.MetricName)
 	i.MetricCurrent = strings.TrimSpace(i.MetricCurrent)
 	i.MetricTarget = strings.TrimSpace(i.MetricTarget)
+	if i.Metrics != nil {
+		metrics := make([]TacticMetric, 0, len(i.Metrics))
+		for _, metric := range i.Metrics {
+			metric.Name = strings.TrimSpace(metric.Name)
+			metric.Current = strings.TrimSpace(metric.Current)
+			metric.Target = strings.TrimSpace(metric.Target)
+			if metric.Name == "" && metric.Current == "" && metric.Target == "" {
+				continue
+			}
+			metrics = append(metrics, metric)
+			if len(metrics) == 3 {
+				break
+			}
+		}
+		i.Metrics = metrics
+	}
 	i.Status = strings.TrimSpace(i.Status)
 	i.HealthStatus = strings.TrimSpace(i.HealthStatus)
 	i.ContributionType = strings.TrimSpace(i.ContributionType)
+}
+
+func (i *WorkstreamInput) syncLegacyMetric() {
+	if len(i.Metrics) == 0 {
+		return
+	}
+	i.MetricName = i.Metrics[0].Name
+	i.MetricCurrent = i.Metrics[0].Current
+	i.MetricTarget = i.Metrics[0].Target
 }
 
 type ProjectInput struct {
@@ -929,6 +1064,7 @@ type ProjectInput struct {
 	SuccessCriteria string `json:"success_criteria"`
 	FailureCriteria string `json:"failure_criteria"`
 	MetricName      string `json:"metric_name"`
+	ExpectedValue   string `json:"expected_value"`
 	Status          string `json:"status"`
 }
 
@@ -946,6 +1082,7 @@ func (i *ProjectInput) trim() {
 	i.SuccessCriteria = strings.TrimSpace(i.SuccessCriteria)
 	i.FailureCriteria = strings.TrimSpace(i.FailureCriteria)
 	i.MetricName = strings.TrimSpace(i.MetricName)
+	i.ExpectedValue = strings.TrimSpace(i.ExpectedValue)
 	i.Status = strings.TrimSpace(i.Status)
 }
 
@@ -955,6 +1092,7 @@ type RiskInput struct {
 	Title          string `json:"title"`
 	Description    string `json:"description"`
 	Severity       string `json:"severity"`
+	Probability    string `json:"probability"`
 	Status         string `json:"status"`
 	CoverageStatus string `json:"coverage_status"`
 }
@@ -963,6 +1101,9 @@ func (i *RiskInput) normalize() {
 	i.trim()
 	if i.Severity == "" {
 		i.Severity = "medium"
+	}
+	if i.Probability == "" {
+		i.Probability = "medium"
 	}
 	if i.Status == "" {
 		i.Status = "active"
@@ -977,6 +1118,7 @@ func (i *RiskInput) trim() {
 	i.Title = strings.TrimSpace(i.Title)
 	i.Description = strings.TrimSpace(i.Description)
 	i.Severity = strings.TrimSpace(i.Severity)
+	i.Probability = strings.TrimSpace(i.Probability)
 	i.Status = strings.TrimSpace(i.Status)
 	i.CoverageStatus = strings.TrimSpace(i.CoverageStatus)
 }
@@ -987,6 +1129,7 @@ type OpportunityInput struct {
 	Title           string `json:"title"`
 	Description     string `json:"description"`
 	PotentialImpact string `json:"potential_impact"`
+	Urgency         string `json:"urgency"`
 	Status          string `json:"status"`
 	CoverageStatus  string `json:"coverage_status"`
 }
@@ -995,6 +1138,9 @@ func (i *OpportunityInput) normalize() {
 	i.trim()
 	if i.PotentialImpact == "" {
 		i.PotentialImpact = "medium"
+	}
+	if i.Urgency == "" {
+		i.Urgency = "medium"
 	}
 	if i.Status == "" {
 		i.Status = "active"
@@ -1009,6 +1155,7 @@ func (i *OpportunityInput) trim() {
 	i.Title = strings.TrimSpace(i.Title)
 	i.Description = strings.TrimSpace(i.Description)
 	i.PotentialImpact = strings.TrimSpace(i.PotentialImpact)
+	i.Urgency = strings.TrimSpace(i.Urgency)
 	i.Status = strings.TrimSpace(i.Status)
 	i.CoverageStatus = strings.TrimSpace(i.CoverageStatus)
 }
@@ -1064,11 +1211,12 @@ func scanWorkstream(scanner scanner) (Workstream, error) {
 	var workstream Workstream
 	var courseID sql.NullInt64
 	var confidence sql.NullFloat64
+	var metricsJSON []byte
 	err := scanner.Scan(
 		&workstream.ID, &workstream.WorkspaceID, &workstream.TacticalPlanID, &workstream.StrategyID,
 		&courseID, &workstream.Title, &workstream.Description, &workstream.Goal, &workstream.CKP,
 		&workstream.Reason, &workstream.ClosesRisk, &workstream.MetricName, &workstream.MetricCurrent,
-		&workstream.MetricTarget, &workstream.Status, &workstream.HealthStatus, &workstream.ContributionType,
+		&workstream.MetricTarget, &metricsJSON, &workstream.Status, &workstream.HealthStatus, &workstream.ContributionType,
 		&confidence, &workstream.Source, &workstream.SortOrder, &workstream.CreatedAt, &workstream.UpdatedAt,
 	)
 	if err != nil {
@@ -1082,6 +1230,13 @@ func scanWorkstream(scanner scanner) (Workstream, error) {
 		value := confidence.Float64
 		workstream.Confidence = &value
 	}
+	workstream.Metrics = []TacticMetric{}
+	if len(metricsJSON) > 0 {
+		_ = json.Unmarshal(metricsJSON, &workstream.Metrics)
+	}
+	if len(workstream.Metrics) == 0 && workstream.MetricName != "" {
+		workstream.Metrics = []TacticMetric{{Name: workstream.MetricName, Current: workstream.MetricCurrent, Target: workstream.MetricTarget}}
+	}
 	workstream.Projects = []Project{}
 	workstream.Risks = []Risk{}
 	workstream.Opportunities = []Opportunity{}
@@ -1094,7 +1249,7 @@ func scanProject(scanner scanner) (Project, error) {
 	err := scanner.Scan(
 		&project.ID, &project.WorkspaceID, &project.WorkstreamID, &project.Title, &project.Description,
 		&project.WhyNeeded, &project.SuccessCriteria, &project.FailureCriteria, &project.MetricName,
-		&project.Status, &confidence, &project.Source, &project.SortOrder, &project.CreatedAt, &project.UpdatedAt,
+		&project.ExpectedValue, &project.Status, &confidence, &project.Source, &project.SortOrder, &project.CreatedAt, &project.UpdatedAt,
 	)
 	if err != nil {
 		return Project{}, err
@@ -1110,7 +1265,7 @@ func scanRisk(scanner scanner) (Risk, error) {
 	var risk Risk
 	err := scanner.Scan(
 		&risk.ID, &risk.WorkspaceID, &risk.TacticalPlanID, &risk.EntityType, &risk.EntityID,
-		&risk.Title, &risk.Description, &risk.Severity, &risk.Status, &risk.CoverageStatus,
+		&risk.Title, &risk.Description, &risk.Severity, &risk.Probability, &risk.Status, &risk.CoverageStatus,
 		&risk.Source, &risk.CreatedAt, &risk.UpdatedAt,
 	)
 	return risk, err
@@ -1121,7 +1276,7 @@ func scanOpportunity(scanner scanner) (Opportunity, error) {
 	err := scanner.Scan(
 		&opportunity.ID, &opportunity.WorkspaceID, &opportunity.TacticalPlanID, &opportunity.EntityType,
 		&opportunity.EntityID, &opportunity.Title, &opportunity.Description, &opportunity.PotentialImpact,
-		&opportunity.Status, &opportunity.CoverageStatus, &opportunity.Source, &opportunity.CreatedAt,
+		&opportunity.Urgency, &opportunity.Status, &opportunity.CoverageStatus, &opportunity.Source, &opportunity.CreatedAt,
 		&opportunity.UpdatedAt,
 	)
 	return opportunity, err

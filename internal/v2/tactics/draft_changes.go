@@ -27,11 +27,28 @@ func normalizeTacticsDraftChanges(changes []TacticsDraftChange) []TacticsDraftCh
 		change.MetricName = strings.TrimSpace(change.MetricName)
 		change.MetricCurrent = strings.TrimSpace(change.MetricCurrent)
 		change.MetricTarget = strings.TrimSpace(change.MetricTarget)
+		metrics := make([]TacticMetric, 0, len(change.Metrics))
+		for _, metric := range change.Metrics {
+			metric.Name = strings.TrimSpace(metric.Name)
+			metric.Current = strings.TrimSpace(metric.Current)
+			metric.Target = strings.TrimSpace(metric.Target)
+			if metric.Name == "" && metric.Current == "" && metric.Target == "" {
+				continue
+			}
+			metrics = append(metrics, metric)
+			if len(metrics) == 3 {
+				break
+			}
+		}
+		change.Metrics = metrics
 		change.WhyNeeded = strings.TrimSpace(change.WhyNeeded)
 		change.SuccessCriteria = strings.TrimSpace(change.SuccessCriteria)
 		change.FailureCriteria = strings.TrimSpace(change.FailureCriteria)
+		change.ExpectedValue = strings.TrimSpace(change.ExpectedValue)
 		change.Severity = strings.ToLower(strings.TrimSpace(change.Severity))
+		change.Probability = strings.ToLower(strings.TrimSpace(change.Probability))
 		change.PotentialImpact = strings.ToLower(strings.TrimSpace(change.PotentialImpact))
+		change.Urgency = strings.ToLower(strings.TrimSpace(change.Urgency))
 		change.CoverageStatus = strings.ToLower(strings.TrimSpace(change.CoverageStatus))
 
 		if !change.Apply || (change.Operation != "create" && change.Operation != "update") {
@@ -163,7 +180,7 @@ func (s *Store) applyWorkstreamDraft(ctx context.Context, workspaceID int, userI
 		TacticalPlanID: plan.ID,
 		Title:          change.Title, Description: change.Description, Goal: change.Goal, CKP: change.CKP,
 		Reason: change.Reason, ClosesRisk: change.ClosesRisk, MetricName: change.MetricName,
-		MetricCurrent: change.MetricCurrent, MetricTarget: change.MetricTarget,
+		MetricCurrent: change.MetricCurrent, MetricTarget: change.MetricTarget, Metrics: change.Metrics,
 	}
 	var item Workstream
 	var err error
@@ -203,7 +220,7 @@ func (s *Store) applyProjectDraft(ctx context.Context, workspaceID int, userID i
 	input := ProjectInput{
 		WorkstreamID: parentID, Title: change.Title, Description: change.Description,
 		WhyNeeded: change.WhyNeeded, SuccessCriteria: change.SuccessCriteria,
-		FailureCriteria: change.FailureCriteria, MetricName: change.MetricName,
+		FailureCriteria: change.FailureCriteria, MetricName: change.MetricName, ExpectedValue: change.ExpectedValue,
 	}
 	var item Project
 	var err error
@@ -243,7 +260,7 @@ func (s *Store) applyRiskDraft(ctx context.Context, workspaceID int, userID int,
 			entityID = existingID
 		}
 	}
-	input := RiskInput{EntityType: entityType, EntityID: parentID, Title: change.Title, Description: change.Description, Severity: change.Severity, CoverageStatus: change.CoverageStatus}
+	input := RiskInput{EntityType: entityType, EntityID: parentID, Title: change.Title, Description: change.Description, Severity: change.Severity, Probability: change.Probability, CoverageStatus: change.CoverageStatus}
 	var item Risk
 	var err error
 	if operation == "create" {
@@ -277,7 +294,7 @@ func (s *Store) applyOpportunityDraft(ctx context.Context, workspaceID int, user
 			entityID = existingID
 		}
 	}
-	input := OpportunityInput{EntityType: entityType, EntityID: parentID, Title: change.Title, Description: change.Description, PotentialImpact: change.PotentialImpact, CoverageStatus: change.CoverageStatus}
+	input := OpportunityInput{EntityType: entityType, EntityID: parentID, Title: change.Title, Description: change.Description, PotentialImpact: change.PotentialImpact, Urgency: change.Urgency, CoverageStatus: change.CoverageStatus}
 	var item Opportunity
 	var err error
 	if operation == "create" {

@@ -1504,6 +1504,47 @@ var migrations = []Migration{
 				ON v2_tactics_action_applications (workspace_id, tactical_plan_id, created_at DESC);
 		`,
 	},
+	{
+		ID: "20260716_026_tactics_product_fields",
+		SQL: `
+			ALTER TABLE v2_tactical_workstreams
+				ADD COLUMN IF NOT EXISTS metrics_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+			ALTER TABLE v2_tactical_projects
+				ADD COLUMN IF NOT EXISTS expected_value TEXT NOT NULL DEFAULT '';
+			ALTER TABLE v2_tactical_risks
+				ADD COLUMN IF NOT EXISTS probability TEXT NOT NULL DEFAULT '';
+			ALTER TABLE v2_tactical_opportunities
+				ADD COLUMN IF NOT EXISTS urgency TEXT NOT NULL DEFAULT '';
+
+			UPDATE v2_tactical_workstreams
+			SET metrics_json=jsonb_build_array(jsonb_build_object(
+				'name', metric_name,
+				'current', metric_current,
+				'target', metric_target
+			))
+			WHERE metrics_json='[]'::jsonb AND BTRIM(metric_name) <> '';
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_workstream ON v2_tactical_workstreams;
+			CREATE TRIGGER trg_queue_task_eval_from_workstream
+				AFTER UPDATE OF title, description, goal, ckp, reason, metric_name, metric_current, metric_target, metrics_json, status ON v2_tactical_workstreams
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_project ON v2_tactical_projects;
+			CREATE TRIGGER trg_queue_task_eval_from_project
+				AFTER UPDATE OF title, description, why_needed, success_criteria, failure_criteria, metric_name, expected_value, status ON v2_tactical_projects
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_risk ON v2_tactical_risks;
+			CREATE TRIGGER trg_queue_task_eval_from_risk
+				AFTER UPDATE OF title, description, severity, probability, status, coverage_status ON v2_tactical_risks
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_opportunity ON v2_tactical_opportunities;
+			CREATE TRIGGER trg_queue_task_eval_from_opportunity
+				AFTER UPDATE OF title, description, potential_impact, urgency, status, coverage_status ON v2_tactical_opportunities
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

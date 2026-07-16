@@ -206,11 +206,15 @@ Return valid JSON only. The JSON object must have exactly these fields:
       "metric_name": "Metric name or empty string",
       "metric_current": "Workstream only",
       "metric_target": "Workstream only",
+      "metrics": [{"name": "Workstream metric, one to three total", "current": "Current value", "target": "Target value"}],
       "why_needed": "Project only",
       "success_criteria": "Project only",
       "failure_criteria": "Project only",
+      "expected_value": "Project only: the business value expected if it succeeds",
       "severity": "Risk only: low | medium | high | critical",
+      "probability": "Risk only: low | medium | high",
       "potential_impact": "Opportunity only: low | medium | high",
+      "urgency": "Opportunity only: low | medium | high",
       "coverage_status": "uncovered | partially_covered | covered | accepted | ignored"
     }
   ]

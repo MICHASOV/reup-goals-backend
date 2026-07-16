@@ -498,7 +498,7 @@ func (s *Store) currentPlan(ctx context.Context, workspaceID int, courseID int) 
 func (s *Store) workstreams(ctx context.Context, workspaceID int, planID int) ([]WorkstreamSummary, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, title, description, goal, ckp, reason, closes_risk, metric_name,
-			metric_current, metric_target, health_status
+			metric_current, metric_target, metrics_json, health_status
 		FROM v2_tactical_workstreams
 		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL
 		ORDER BY sort_order ASC, id ASC
@@ -511,10 +511,12 @@ func (s *Store) workstreams(ctx context.Context, workspaceID int, planID int) ([
 	workstreams := []WorkstreamSummary{}
 	for rows.Next() {
 		var item WorkstreamSummary
+		var metricsJSON []byte
 		if err := rows.Scan(&item.ID, &item.Title, &item.Description, &item.Goal, &item.CKP, &item.Reason,
-			&item.ClosesRisk, &item.MetricName, &item.MetricCurrent, &item.MetricTarget, &item.HealthStatus); err != nil {
+			&item.ClosesRisk, &item.MetricName, &item.MetricCurrent, &item.MetricTarget, &metricsJSON, &item.HealthStatus); err != nil {
 			return nil, err
 		}
+		item.Metrics = decodeTacticMetrics(metricsJSON, item.MetricName, item.MetricCurrent, item.MetricTarget)
 		item.Projects = []Project{}
 		item.Risks = []Risk{}
 		item.Opportunities = []Opportunity{}
@@ -563,24 +565,27 @@ func (s *Store) workstreamByID(ctx context.Context, workspaceID int, workstreamI
 
 func (s *Store) workstreamSummaryByID(ctx context.Context, workspaceID int, workstreamID int) (WorkstreamSummary, error) {
 	var item WorkstreamSummary
-	err := s.dbx.QueryRowContext(ctx, `
+	row := s.dbx.QueryRowContext(ctx, `
 		SELECT id, title, description, goal, ckp, reason, closes_risk, metric_name,
-			metric_current, metric_target, health_status
+			metric_current, metric_target, metrics_json, health_status
 		FROM v2_tactical_workstreams
 		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
-	`, workstreamID, workspaceID).Scan(
+	`, workstreamID, workspaceID)
+	var metricsJSON []byte
+	err := row.Scan(
 		&item.ID, &item.Title, &item.Description, &item.Goal, &item.CKP, &item.Reason,
-		&item.ClosesRisk, &item.MetricName, &item.MetricCurrent, &item.MetricTarget, &item.HealthStatus,
+		&item.ClosesRisk, &item.MetricName, &item.MetricCurrent, &item.MetricTarget, &metricsJSON, &item.HealthStatus,
 	)
 	if err != nil {
 		return WorkstreamSummary{}, err
 	}
+	item.Metrics = decodeTacticMetrics(metricsJSON, item.MetricName, item.MetricCurrent, item.MetricTarget)
 	return item, nil
 }
 
 func (s *Store) projects(ctx context.Context, workspaceID int, workstreamID int) ([]Project, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
-		SELECT id, workstream_id, title, description, why_needed, success_criteria, failure_criteria, metric_name, status
+		SELECT id, workstream_id, title, description, why_needed, success_criteria, failure_criteria, metric_name, expected_value, status
 		FROM v2_tactical_projects
 		WHERE workspace_id=$1 AND workstream_id=$2 AND archived_at IS NULL
 		ORDER BY sort_order ASC, id ASC
@@ -594,7 +599,7 @@ func (s *Store) projects(ctx context.Context, workspaceID int, workstreamID int)
 	for rows.Next() {
 		var item Project
 		if err := rows.Scan(&item.ID, &item.WorkstreamID, &item.Title, &item.Description, &item.WhyNeeded,
-			&item.SuccessCriteria, &item.FailureCriteria, &item.MetricName, &item.Status); err != nil {
+			&item.SuccessCriteria, &item.FailureCriteria, &item.MetricName, &item.ExpectedValue, &item.Status); err != nil {
 			return nil, err
 		}
 		projects = append(projects, item)
@@ -608,7 +613,7 @@ func (s *Store) risks(ctx context.Context, workspaceID int, planID int, workstre
 		projectIDs[project.ID] = true
 	}
 	rows, err := s.dbx.QueryContext(ctx, `
-		SELECT id, tactical_plan_id, entity_type, entity_id, title, description, severity, status, coverage_status
+		SELECT id, tactical_plan_id, entity_type, entity_id, title, description, severity, probability, status, coverage_status
 		FROM v2_tactical_risks
 		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL
 		ORDER BY id ASC
@@ -622,7 +627,7 @@ func (s *Store) risks(ctx context.Context, workspaceID int, planID int, workstre
 	for rows.Next() {
 		var item Risk
 		if err := rows.Scan(&item.ID, &item.TacticalPlanID, &item.EntityType, &item.EntityID, &item.Title,
-			&item.Description, &item.Severity, &item.Status, &item.CoverageStatus); err != nil {
+			&item.Description, &item.Severity, &item.Probability, &item.Status, &item.CoverageStatus); err != nil {
 			return nil, err
 		}
 		if item.EntityType == "workstream" && item.EntityID == workstreamID {
@@ -644,7 +649,7 @@ func (s *Store) opportunities(ctx context.Context, workspaceID int, planID int, 
 		projectIDs[project.ID] = true
 	}
 	rows, err := s.dbx.QueryContext(ctx, `
-		SELECT id, tactical_plan_id, entity_type, entity_id, title, description, potential_impact, status, coverage_status
+		SELECT id, tactical_plan_id, entity_type, entity_id, title, description, potential_impact, urgency, status, coverage_status
 		FROM v2_tactical_opportunities
 		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL
 		ORDER BY id ASC
@@ -658,7 +663,7 @@ func (s *Store) opportunities(ctx context.Context, workspaceID int, planID int, 
 	for rows.Next() {
 		var item Opportunity
 		if err := rows.Scan(&item.ID, &item.TacticalPlanID, &item.EntityType, &item.EntityID, &item.Title,
-			&item.Description, &item.PotentialImpact, &item.Status, &item.CoverageStatus); err != nil {
+			&item.Description, &item.PotentialImpact, &item.Urgency, &item.Status, &item.CoverageStatus); err != nil {
 			return nil, err
 		}
 		if item.EntityType == "workstream" && item.EntityID == workstreamID {
@@ -672,6 +677,17 @@ func (s *Store) opportunities(ctx context.Context, workspaceID int, planID int, 
 		}
 	}
 	return opportunities, rows.Err()
+}
+
+func decodeTacticMetrics(raw []byte, legacyName string, legacyCurrent string, legacyTarget string) []TacticMetric {
+	metrics := []TacticMetric{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &metrics)
+	}
+	if len(metrics) == 0 && strings.TrimSpace(legacyName) != "" {
+		metrics = append(metrics, TacticMetric{Name: legacyName, Current: legacyCurrent, Target: legacyTarget})
+	}
+	return metrics
 }
 
 func (s *Store) validateLinks(ctx context.Context, workspaceID int, workstream workstreamRef, input TaskInput) error {
