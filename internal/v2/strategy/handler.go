@@ -88,6 +88,60 @@ func (h *Handler) Strategy(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) ResearchRequests(w http.ResponseWriter, r *http.Request) {
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		if r.URL.Path != "/api/v2/strategy-research-requests" {
+			api.WriteError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		current, _, _, err := h.store.Current(r.Context(), workspace.ID, userID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "strategy_research_requests_failed")
+			return
+		}
+		items, err := h.store.ListResearchRequests(r.Context(), workspace.ID, current.ID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "strategy_research_requests_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"requests": items})
+	case http.MethodPatch:
+		requestID, ok := strategyResearchRequestPath(r.URL.Path)
+		if !ok {
+			api.WriteError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		var input StrategyResearchUpdate
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			api.WriteError(w, http.StatusBadRequest, "invalid_json")
+			return
+		}
+		item, err := h.store.UpdateResearchRequest(r.Context(), workspace.ID, userID, requestID, input)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			api.WriteError(w, http.StatusForbidden, "forbidden")
+		case errors.Is(err, ErrInvalidResearchStatus):
+			api.WriteError(w, http.StatusUnprocessableEntity, "invalid_research_status")
+		case errors.Is(err, ErrInvalidResearchTransition):
+			api.WriteError(w, http.StatusConflict, "invalid_research_transition")
+		case errors.Is(err, ErrResearchResultRequired):
+			api.WriteError(w, http.StatusUnprocessableEntity, "research_result_required")
+		case err != nil:
+			api.WriteError(w, http.StatusInternalServerError, "strategy_research_request_update_failed")
+		default:
+			api.WriteJSON(w, http.StatusOK, map[string]any{"request": item})
+		}
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
+}
+
 func (h *Handler) Artifacts(w http.ResponseWriter, r *http.Request) {
 	artifactID, ok := artifactPath(r.URL.Path)
 	if !ok {
@@ -130,6 +184,16 @@ func (h *Handler) Artifacts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.WriteJSON(w, http.StatusOK, map[string]any{"artifact": artifact})
+}
+
+func strategyResearchRequestPath(path string) (int, bool) {
+	const prefix = "/api/v2/strategy-research-requests/"
+	if !strings.HasPrefix(path, prefix) {
+		return 0, false
+	}
+	value := strings.Trim(strings.TrimPrefix(path, prefix), "/")
+	id, err := strconv.Atoi(value)
+	return id, err == nil && id > 0
 }
 
 func (h *Handler) Facilitator(w http.ResponseWriter, r *http.Request) {

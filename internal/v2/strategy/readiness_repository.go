@@ -283,11 +283,65 @@ func (s *Store) CompleteReadinessAudit(
 		`, run.WorkspaceID, run.SessionRevision, run.ID); err != nil {
 			return false, err
 		}
+		if err := syncStrategyResearchRequestsTx(ctx, tx, run, report); err != nil {
+			return false, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
 	return isCurrent, nil
+}
+
+func syncStrategyResearchRequestsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	run StrategyReadinessRun,
+	report StrategyReadinessReport,
+) error {
+	for _, item := range report.FacilitatorGuidance {
+		goal := strings.TrimSpace(item.ResearchGoal)
+		if goal == "" || (report.Verdict == ReadinessVerdictReady && !item.Blocking && item.Priority == "low") {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO v2_strategy_research_requests (
+				workspace_id, strategy_id, source_readiness_run_id, area, research_goal,
+				why_it_matters, context_to_carry, priority, blocking, created_by
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ON CONFLICT (strategy_id, area, research_goal) DO UPDATE SET
+				source_readiness_run_id=EXCLUDED.source_readiness_run_id,
+				why_it_matters=EXCLUDED.why_it_matters,
+				context_to_carry=EXCLUDED.context_to_carry,
+				priority=EXCLUDED.priority,
+				blocking=EXCLUDED.blocking,
+				updated_at=NOW()
+		`, run.WorkspaceID, run.StrategyID, run.ID, strings.TrimSpace(item.Area), goal,
+			strings.TrimSpace(item.WhyItMatters), strings.TrimSpace(item.ContextToCarry),
+			normalizeResearchPriority(item.Priority), item.Blocking, nullableResearchUser(run.CreatedBy)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeResearchPriority(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "high":
+		return "high"
+	case "low":
+		return "low"
+	default:
+		return "medium"
+	}
+}
+
+func nullableResearchUser(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func (s *Store) LinkSynthesisToSession(ctx context.Context, workspaceID int, revision int, runID int) error {

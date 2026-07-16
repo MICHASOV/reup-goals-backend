@@ -24,6 +24,12 @@ const (
 	StrategyFacilitatorPromptVersion       = "strategy_facilitator_openai_native_v0_2_0"
 	StrategySynthesizerPromptVersion       = "strategy_synthesizer_v0_1_0"
 	StrategyArtifactFormatterPromptVersion = "strategy_artifact_formatter_v0_1_0"
+
+	ResearchStatusProposed   = "proposed"
+	ResearchStatusAccepted   = "accepted"
+	ResearchStatusInProgress = "in_progress"
+	ResearchStatusCompleted  = "completed"
+	ResearchStatusRejected   = "rejected"
 )
 
 type Strategy struct {
@@ -40,6 +46,30 @@ type Strategy struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 	ApprovedAt  *time.Time `json:"approved_at"`
 	ActivatedAt *time.Time `json:"activated_at"`
+}
+
+type StrategyResearchRequest struct {
+	ID                   int        `json:"id"`
+	WorkspaceID          int        `json:"workspace_id"`
+	StrategyID           int        `json:"strategy_id"`
+	SourceReadinessRunID *int       `json:"source_readiness_run_id,omitempty"`
+	Area                 string     `json:"area"`
+	ResearchGoal         string     `json:"research_goal"`
+	WhyItMatters         string     `json:"why_it_matters"`
+	ContextToCarry       string     `json:"context_to_carry"`
+	Priority             string     `json:"priority"`
+	Blocking             bool       `json:"blocking"`
+	Status               string     `json:"status"`
+	AssigneeUserID       *int       `json:"assignee_user_id,omitempty"`
+	ResultText           string     `json:"result_text"`
+	CreatedBy            *int       `json:"created_by,omitempty"`
+	UpdatedBy            *int       `json:"updated_by,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	AcceptedAt           *time.Time `json:"accepted_at,omitempty"`
+	StartedAt            *time.Time `json:"started_at,omitempty"`
+	CompletedAt          *time.Time `json:"completed_at,omitempty"`
+	RejectedAt           *time.Time `json:"rejected_at,omitempty"`
 }
 
 type Artifact struct {

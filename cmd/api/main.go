@@ -115,6 +115,8 @@ func main() {
 	mux.Handle("/api/v2/strategic-memory/ai-runs", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/reset", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategy/current", v2api.RequireAuth(jwtSecret, strategyHandler.Current))
+	mux.Handle("/api/v2/strategy-research-requests", v2api.RequireAuth(jwtSecret, strategyHandler.ResearchRequests))
+	mux.Handle("/api/v2/strategy-research-requests/", v2api.RequireAuth(jwtSecret, strategyHandler.ResearchRequests))
 	mux.Handle("/api/v2/strategy/artifacts/", v2api.RequireAuth(jwtSecret, strategyHandler.Artifacts))
 	mux.Handle("/api/v2/strategy/", v2api.RequireAuth(jwtSecret, strategyHandler.Strategy))
 	mux.Handle("/api/v2/strategy-facilitator/state", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))

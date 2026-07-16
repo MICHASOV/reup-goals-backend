@@ -1571,6 +1571,38 @@ var migrations = []Migration{
 				ON v2_tasks (workspace_id, backlog_category, status, updated_at DESC);
 		`,
 	},
+	{
+		ID: "20260716_028_strategy_research_requests",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_strategy_research_requests (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				strategy_id INTEGER NOT NULL REFERENCES v2_strategies(id) ON DELETE CASCADE,
+				source_readiness_run_id INTEGER NULL REFERENCES v2_strategy_readiness_runs(id) ON DELETE SET NULL,
+				area TEXT NOT NULL DEFAULT '',
+				research_goal TEXT NOT NULL,
+				why_it_matters TEXT NOT NULL DEFAULT '',
+				context_to_carry TEXT NOT NULL DEFAULT '',
+				priority TEXT NOT NULL DEFAULT 'medium',
+				blocking BOOLEAN NOT NULL DEFAULT FALSE,
+				status TEXT NOT NULL DEFAULT 'proposed',
+				assignee_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				result_text TEXT NOT NULL DEFAULT '',
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				updated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				accepted_at TIMESTAMPTZ NULL,
+				started_at TIMESTAMPTZ NULL,
+				completed_at TIMESTAMPTZ NULL,
+				rejected_at TIMESTAMPTZ NULL,
+				UNIQUE(strategy_id, area, research_goal)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_strategy_research_requests_scope
+				ON v2_strategy_research_requests (workspace_id, strategy_id, status, priority, updated_at DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
