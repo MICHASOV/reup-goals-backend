@@ -1627,6 +1627,124 @@ var migrations = []Migration{
 				WHERE superseded_by IS NOT NULL;
 		`,
 	},
+	{
+		ID: "20260716_030_unified_ai_actions",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_ai_actions (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				scenario TEXT NOT NULL,
+				scope_type TEXT NOT NULL,
+				scope_id INTEGER NOT NULL,
+				message_id INTEGER NOT NULL,
+				action_index INTEGER NOT NULL,
+				action_type TEXT NOT NULL,
+				payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				status TEXT NOT NULL DEFAULT 'proposed',
+				entity_type TEXT NOT NULL DEFAULT '',
+				entity_id INTEGER NULL,
+				proposed_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				confirmed_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				edited_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				rejected_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				error_text TEXT NOT NULL DEFAULT '',
+				expires_at TIMESTAMPTZ NULL,
+				confirmed_at TIMESTAMPTZ NULL,
+				applied_at TIMESTAMPTZ NULL,
+				rejected_at TIMESTAMPTZ NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(scenario, message_id, action_index),
+				CHECK (status IN ('proposed', 'confirmed', 'applied', 'rejected', 'edited', 'expired', 'failed'))
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_ai_actions_scope
+				ON v2_ai_actions (workspace_id, scenario, scope_type, scope_id, status, updated_at DESC);
+			CREATE INDEX IF NOT EXISTS idx_v2_ai_actions_message
+				ON v2_ai_actions (workspace_id, scenario, message_id, action_index);
+
+			INSERT INTO v2_ai_actions (
+				workspace_id, scenario, scope_type, scope_id, message_id, action_index,
+				action_type, status, entity_type, entity_id, proposed_by, confirmed_by,
+				confirmed_at, applied_at, error_text, created_at, updated_at
+			)
+			SELECT workspace_id, 'tactics_facilitator', 'tactical_plan', tactical_plan_id,
+				message_id, action_index, operation || ':' || entity_type,
+				CASE WHEN status='applied' THEN 'applied' WHEN status='failed' THEN 'failed' ELSE 'confirmed' END,
+				entity_type, entity_id, created_by, created_by,
+				created_at, CASE WHEN status='applied' THEN updated_at ELSE NULL END,
+				error_text, created_at, updated_at
+			FROM v2_tactics_action_applications
+			ON CONFLICT (scenario, message_id, action_index) DO NOTHING;
+
+			INSERT INTO v2_ai_actions (
+				workspace_id, scenario, scope_type, scope_id, message_id, action_index,
+				action_type, status, entity_type, entity_id, proposed_by, confirmed_by,
+				confirmed_at, applied_at, error_text, created_at, updated_at
+			)
+			SELECT workspace_id, 'task_brainstorm', 'workstream', workstream_id,
+				message_id, action_index, action_type,
+				CASE WHEN status='applied' THEN 'applied' WHEN status='failed' THEN 'failed' ELSE 'confirmed' END,
+				'task', task_id, created_by, created_by,
+				created_at, CASE WHEN status='applied' THEN updated_at ELSE NULL END,
+				error_text, created_at, updated_at
+			FROM v2_task_brainstorm_action_applications
+			ON CONFLICT (scenario, message_id, action_index) DO NOTHING;
+
+			INSERT INTO v2_ai_actions (
+				workspace_id, scenario, scope_type, scope_id, message_id, action_index,
+				action_type, payload_json, status, created_at, updated_at
+			)
+			SELECT message.workspace_id, 'tactics_facilitator', 'tactical_plan', plan.id,
+				message.id, item.ordinality - 1,
+				COALESCE(item.payload->>'operation', '') || ':' || COALESCE(item.payload->>'entity_type', ''),
+				item.payload, 'proposed', message.created_at, message.created_at
+			FROM v2_tactics_chat_messages message
+			JOIN LATERAL jsonb_array_elements(COALESCE(message.metadata_json->'draft_changes', '[]'::jsonb))
+				WITH ORDINALITY AS item(payload, ordinality) ON TRUE
+			JOIN LATERAL (
+				SELECT id
+				FROM v2_tactical_plans
+				WHERE workspace_id=message.workspace_id AND archived_at IS NULL
+				ORDER BY (status='active') DESC, updated_at DESC, id DESC
+				LIMIT 1
+			) plan ON TRUE
+			WHERE message.role='assistant'
+				AND COALESCE(item.payload->>'operation', '') <> ''
+			ON CONFLICT (scenario, message_id, action_index) DO UPDATE SET
+				action_type=EXCLUDED.action_type,
+				payload_json=EXCLUDED.payload_json;
+
+			INSERT INTO v2_ai_actions (
+				workspace_id, scenario, scope_type, scope_id, message_id, action_index,
+				action_type, payload_json, status, created_at, updated_at
+			)
+			SELECT message.workspace_id, 'task_brainstorm', 'workstream', message.workstream_id,
+				message.id, item.ordinality - 1, COALESCE(item.payload->>'action_type', ''),
+				item.payload, 'proposed', message.created_at, message.created_at
+			FROM v2_task_brainstorm_messages message
+			JOIN LATERAL jsonb_array_elements(COALESCE(message.actions_json, '[]'::jsonb))
+				WITH ORDINALITY AS item(payload, ordinality) ON TRUE
+			WHERE message.role='assistant'
+				AND COALESCE(item.payload->>'action_type', '') <> ''
+			ON CONFLICT (scenario, message_id, action_index) DO UPDATE SET
+				action_type=EXCLUDED.action_type,
+				payload_json=EXCLUDED.payload_json;
+
+			UPDATE v2_ai_actions current_action
+			SET status='expired', expires_at=NOW(), updated_at=NOW()
+			WHERE current_action.status IN ('proposed', 'edited')
+				AND current_action.message_id < (
+					SELECT MAX(latest_action.message_id)
+					FROM v2_ai_actions latest_action
+					WHERE latest_action.workspace_id=current_action.workspace_id
+						AND latest_action.scenario=current_action.scenario
+						AND latest_action.scope_type=current_action.scope_type
+						AND latest_action.scope_id=current_action.scope_id
+						AND latest_action.status IN ('proposed', 'edited')
+				);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

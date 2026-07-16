@@ -123,6 +123,10 @@ func (h *Handler) applyBrainstormActions(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if err != nil {
+		if err.Error() == "brainstorm_action_not_confirmable" {
+			api.WriteError(w, http.StatusConflict, err.Error())
+			return
+		}
 		if strings.HasPrefix(err.Error(), "invalid_brainstorm_") {
 			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 			return

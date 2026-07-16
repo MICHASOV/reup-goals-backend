@@ -3,6 +3,8 @@ package tasks
 import (
 	"encoding/json"
 	"time"
+
+	"reup-goals-backend/internal/v2/aiactions"
 )
 
 const (
@@ -233,12 +235,13 @@ type TaskInput struct {
 }
 
 type BrainstormMessage struct {
-	ID        int                `json:"id"`
-	Role      string             `json:"role"`
-	Content   string             `json:"content"`
-	Actions   []BrainstormAction `json:"actions"`
-	Applied   []int              `json:"applied_action_indices"`
-	CreatedAt time.Time          `json:"created_at"`
+	ID           int                `json:"id"`
+	Role         string             `json:"role"`
+	Content      string             `json:"content"`
+	Actions      []BrainstormAction `json:"actions"`
+	Applied      []int              `json:"applied_action_indices"`
+	ActionStates []aiactions.Action `json:"action_states,omitempty"`
+	CreatedAt    time.Time          `json:"created_at"`
 }
 
 type BrainstormAction struct {

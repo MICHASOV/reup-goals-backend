@@ -14,6 +14,7 @@ import (
 	"reup-goals-backend/internal/migrations"
 	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/tasks"
+	"reup-goals-backend/internal/v2/aiactions"
 	v2api "reup-goals-backend/internal/v2/api"
 	audioapi "reup-goals-backend/internal/v2/audio"
 	"reup-goals-backend/internal/v2/bootstrap"
@@ -53,6 +54,7 @@ func main() {
 	cloudPayments := subscriptions.NewCloudPaymentsClient(cfg)
 	subscriptionHandler := subscriptions.NewHandler(database, cloudPayments)
 	audioHandler := audioapi.NewHandler(transcriptionAIClient)
+	aiActionsHandler := aiactions.NewHandler(database)
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
@@ -100,6 +102,8 @@ func main() {
 	// -----------------------
 	mux.Handle("/api/v2/bootstrap", v2api.RequireAuth(jwtSecret, bootstrapHandler.Bootstrap))
 	mux.Handle("/api/v2/audio/transcriptions", v2api.RequireAuth(jwtSecret, audioHandler.Transcriptions))
+	mux.Handle("/api/v2/ai-actions", v2api.RequireAuth(jwtSecret, aiActionsHandler.Actions))
+	mux.Handle("/api/v2/ai-actions/", v2api.RequireAuth(jwtSecret, aiActionsHandler.Actions))
 	mux.Handle("/api/v2/strategic-director/messages", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/state", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/files", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))

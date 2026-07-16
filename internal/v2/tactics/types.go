@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"reup-goals-backend/internal/v2/aiactions"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
@@ -196,6 +197,7 @@ type TacticsChatMessage struct {
 	Content         string               `json:"content"`
 	ProposedChanges []TacticsDraftChange `json:"proposed_changes,omitempty"`
 	AppliedIndices  []int                `json:"applied_indices,omitempty"`
+	ActionStates    []aiactions.Action   `json:"action_states,omitempty"`
 	CreatedAt       time.Time            `json:"created_at"`
 }
 

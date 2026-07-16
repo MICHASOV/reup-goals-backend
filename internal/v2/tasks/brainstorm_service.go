@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/aiactions"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
@@ -127,6 +128,13 @@ func (s *BrainstormService) HandleMessage(
 	if err != nil {
 		return BrainstormMessageResponse{}, err
 	}
+	if len(output.Actions) > 0 {
+		actionStates, err := s.store.RegisterBrainstormActions(ctx, workspaceID, request.WorkstreamID, message.ID, output.Actions)
+		if err != nil {
+			return BrainstormMessageResponse{}, err
+		}
+		message.ActionStates = actionStates
+	}
 	s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_brainstorm", s.ai.Model, taskBrainstormPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	return BrainstormMessageResponse{
 		WorkspaceID: workspaceID, AssistantMessage: output.Message, UserMessage: userMessage, Message: message,
@@ -162,10 +170,34 @@ func (s *BrainstormService) ApplyActions(
 			return ApplyBrainstormActionsResponse{}, fmt.Errorf("invalid_brainstorm_action_index")
 		}
 		action := message.Actions[index]
+		registered, confirmed, confirmErr := s.store.aiActions.Confirm(
+			ctx,
+			workspaceID,
+			aiactions.ScenarioTaskBrainstorm,
+			request.MessageID,
+			index,
+			userID,
+		)
+		if confirmErr != nil {
+			return ApplyBrainstormActionsResponse{}, confirmErr
+		}
+		if !confirmed {
+			if registered.Status == aiactions.StatusApplied {
+				continue
+			}
+			return ApplyBrainstormActionsResponse{}, fmt.Errorf("brainstorm_action_not_confirmable")
+		}
+		if len(registered.Payload) > 0 && string(registered.Payload) != "{}" {
+			if err := json.Unmarshal(registered.Payload, &action); err != nil {
+				_ = s.store.aiActions.MarkFailed(ctx, workspaceID, aiactions.ScenarioTaskBrainstorm, request.MessageID, index, err.Error())
+				return ApplyBrainstormActionsResponse{}, err
+			}
+		}
 		claimed, claimErr := s.store.ClaimBrainstormActionApplication(
 			ctx, workspaceID, request.WorkstreamID, request.MessageID, index, action.ActionType, userID,
 		)
 		if claimErr != nil {
+			_ = s.store.aiActions.MarkFailed(ctx, workspaceID, aiactions.ScenarioTaskBrainstorm, request.MessageID, index, claimErr.Error())
 			return ApplyBrainstormActionsResponse{}, claimErr
 		}
 		if !claimed {
@@ -173,8 +205,20 @@ func (s *BrainstormService) ApplyActions(
 		}
 		task, actionErr := s.applyAction(ctx, workspaceID, userID, request.WorkstreamID, action)
 		if actionErr != nil {
+			_ = s.store.aiActions.MarkFailed(ctx, workspaceID, aiactions.ScenarioTaskBrainstorm, request.MessageID, index, actionErr.Error())
 			_ = s.store.FailBrainstormActionApplication(ctx, workspaceID, request.MessageID, index, actionErr.Error())
 			return ApplyBrainstormActionsResponse{}, actionErr
+		}
+		if err := s.store.aiActions.MarkApplied(
+			ctx,
+			workspaceID,
+			aiactions.ScenarioTaskBrainstorm,
+			request.MessageID,
+			index,
+			"task",
+			task.ID,
+		); err != nil {
+			return ApplyBrainstormActionsResponse{}, err
 		}
 		if completeErr := s.store.CompleteBrainstormActionApplication(ctx, workspaceID, request.MessageID, index, task.ID); completeErr != nil {
 			_ = s.store.FailBrainstormActionApplication(ctx, workspaceID, request.MessageID, index, completeErr.Error())

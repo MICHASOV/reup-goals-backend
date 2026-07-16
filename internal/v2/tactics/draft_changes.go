@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"reup-goals-backend/internal/v2/aiactions"
 )
 
 const maxDraftChangesPerTurn = 16
@@ -112,10 +114,34 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 			return ApplyTacticsChangesResponse{}, fmt.Errorf("invalid_tactics_action_index")
 		}
 		change := changes[index]
+		action, confirmed, err := s.store.aiActions.Confirm(
+			ctx,
+			workspaceID,
+			aiactions.ScenarioTacticsFacilitator,
+			request.MessageID,
+			index,
+			userID,
+		)
+		if err != nil {
+			return ApplyTacticsChangesResponse{}, err
+		}
+		if !confirmed {
+			if action.Status == aiactions.StatusApplied {
+				continue
+			}
+			return ApplyTacticsChangesResponse{}, fmt.Errorf("tactics_action_not_confirmable")
+		}
+		if len(action.Payload) > 0 && string(action.Payload) != "{}" {
+			if err := json.Unmarshal(action.Payload, &change); err != nil {
+				_ = s.store.aiActions.MarkFailed(ctx, workspaceID, aiactions.ScenarioTacticsFacilitator, request.MessageID, index, err.Error())
+				return ApplyTacticsChangesResponse{}, err
+			}
+		}
 		claimed, err := s.store.ClaimTacticsActionApplication(
 			ctx, workspaceID, state.TacticalPlan.ID, request.MessageID, index, change, userID,
 		)
 		if err != nil {
+			_ = s.store.aiActions.MarkFailed(ctx, workspaceID, aiactions.ScenarioTacticsFacilitator, request.MessageID, index, err.Error())
 			return ApplyTacticsChangesResponse{}, err
 		}
 		if !claimed {
@@ -128,6 +154,7 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 		}
 		item, ok := s.store.applyFacilitatorDraftChange(ctx, workspaceID, userID, *state.TacticalPlan, parentID, change)
 		if !ok {
+			_ = s.store.aiActions.MarkFailed(ctx, workspaceID, aiactions.ScenarioTacticsFacilitator, request.MessageID, index, "change_not_applicable")
 			_ = s.store.FailTacticsActionApplication(ctx, workspaceID, request.MessageID, index, "change_not_applicable")
 			return ApplyTacticsChangesResponse{}, fmt.Errorf("tactics_action_not_applicable")
 		}
@@ -135,6 +162,17 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 			createdByKey[change.DraftKey] = item.EntityID
 		}
 		item.ID = s.store.recordAppliedTacticsChange(ctx, workspaceID, state.TacticalPlan.ID, request.MessageID, userID, item)
+		if err := s.store.aiActions.MarkApplied(
+			ctx,
+			workspaceID,
+			aiactions.ScenarioTacticsFacilitator,
+			request.MessageID,
+			index,
+			change.EntityType,
+			item.EntityID,
+		); err != nil {
+			return ApplyTacticsChangesResponse{}, err
+		}
 		if err := s.store.CompleteTacticsActionApplication(ctx, workspaceID, request.MessageID, index, item.EntityID); err != nil {
 			_ = s.store.FailTacticsActionApplication(ctx, workspaceID, request.MessageID, index, err.Error())
 			return ApplyTacticsChangesResponse{}, err

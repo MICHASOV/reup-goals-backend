@@ -73,6 +73,8 @@ func (h *Handler) facilitatorApplyActions(w http.ResponseWriter, r *http.Request
 			api.WriteError(w, http.StatusBadRequest, err.Error())
 		case "tactics_plan_required":
 			api.WriteError(w, http.StatusConflict, err.Error())
+		case "tactics_action_not_confirmable":
+			api.WriteError(w, http.StatusConflict, err.Error())
 		case "tactics_action_not_applicable":
 			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		default:

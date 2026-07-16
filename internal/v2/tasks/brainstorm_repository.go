@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"reup-goals-backend/internal/v2/aiactions"
 )
 
 func (s *Store) CreateBrainstormMessage(
@@ -93,6 +95,16 @@ func (s *Store) BrainstormMessages(ctx context.Context, workspaceID int, workstr
 			items[i].Applied = []int{}
 		}
 	}
+	actionStates, err := s.brainstormActionStates(ctx, workspaceID, workstreamID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].ActionStates = actionStates[items[i].ID]
+		if items[i].ActionStates == nil {
+			items[i].ActionStates = []aiactions.Action{}
+		}
+	}
 	return items, nil
 }
 
@@ -121,16 +133,24 @@ func (s *Store) BrainstormAssistantMessage(ctx context.Context, workspaceID int,
 	if item.Applied == nil {
 		item.Applied = []int{}
 	}
+	actionStates, err := s.brainstormActionStates(ctx, workspaceID, workstreamID)
+	if err != nil {
+		return BrainstormMessage{}, err
+	}
+	item.ActionStates = actionStates[item.ID]
+	if item.ActionStates == nil {
+		item.ActionStates = []aiactions.Action{}
+	}
 	return item, nil
 }
 
 func (s *Store) brainstormAppliedIndices(ctx context.Context, workspaceID int, workstreamID int) (map[int][]int, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT message_id, action_index
-		FROM v2_task_brainstorm_action_applications
-		WHERE workspace_id=$1 AND workstream_id=$2 AND status='applied'
+		FROM v2_ai_actions
+		WHERE workspace_id=$1 AND scenario=$2 AND scope_type='workstream' AND scope_id=$3 AND status=$4
 		ORDER BY action_index ASC
-	`, workspaceID, workstreamID)
+	`, workspaceID, aiactions.ScenarioTaskBrainstorm, workstreamID, aiactions.StatusApplied)
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +165,44 @@ func (s *Store) brainstormAppliedIndices(ctx context.Context, workspaceID int, w
 		result[messageID] = append(result[messageID], actionIndex)
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) brainstormActionStates(ctx context.Context, workspaceID int, workstreamID int) (map[int][]aiactions.Action, error) {
+	items, err := s.aiActions.List(ctx, workspaceID, aiactions.ScenarioTaskBrainstorm, 0, 500)
+	if err != nil {
+		return nil, err
+	}
+	result := map[int][]aiactions.Action{}
+	for _, item := range items {
+		if item.ScopeType != "workstream" || item.ScopeID != workstreamID {
+			continue
+		}
+		result[item.MessageID] = append(result[item.MessageID], item)
+	}
+	return result, nil
+}
+
+func (s *Store) RegisterBrainstormActions(
+	ctx context.Context,
+	workspaceID int,
+	workstreamID int,
+	messageID int,
+	actions []BrainstormAction,
+) ([]aiactions.Action, error) {
+	proposals := make([]aiactions.Proposal, 0, len(actions))
+	for _, action := range actions {
+		proposals = append(proposals, aiactions.Proposal{ActionType: action.ActionType, Payload: action})
+	}
+	return s.aiActions.Register(
+		ctx,
+		workspaceID,
+		aiactions.ScenarioTaskBrainstorm,
+		"workstream",
+		workstreamID,
+		messageID,
+		nil,
+		proposals,
+	)
 }
 
 func (s *Store) ClaimBrainstormActionApplication(

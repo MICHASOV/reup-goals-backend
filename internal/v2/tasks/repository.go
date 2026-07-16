@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+	"reup-goals-backend/internal/v2/aiactions"
 )
 
 var (
@@ -19,11 +20,12 @@ var (
 )
 
 type Store struct {
-	dbx *sql.DB
+	dbx       *sql.DB
+	aiActions *aiactions.Store
 }
 
 func NewStore(dbx *sql.DB) *Store {
-	return &Store{dbx: dbx}
+	return &Store{dbx: dbx, aiActions: aiactions.NewStore(dbx)}
 }
 
 func (s *Store) Overview(ctx context.Context, workspaceID int) (OverviewResponse, error) {

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"reup-goals-backend/internal/v2/aiactions"
 )
 
 func (s *Store) CreateChatMessage(ctx context.Context, workspaceID int, userID *int, role string, content string, metadata any) (int, error) {
@@ -67,6 +69,16 @@ func (s *Store) ChatMessages(ctx context.Context, workspaceID int, limit int) ([
 			items[index].AppliedIndices = []int{}
 		}
 	}
+	actionStates, err := s.tacticsActionStates(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for index := range items {
+		items[index].ActionStates = actionStates[items[index].ID]
+		if items[index].ActionStates == nil {
+			items[index].ActionStates = []aiactions.Action{}
+		}
+	}
 	return items, rows.Err()
 }
 
@@ -92,10 +104,10 @@ func (s *Store) AssistantDraftChanges(ctx context.Context, workspaceID int, mess
 func (s *Store) tacticsAppliedIndices(ctx context.Context, workspaceID int) (map[int][]int, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT message_id, action_index
-		FROM v2_tactics_action_applications
-		WHERE workspace_id=$1 AND status='applied'
+		FROM v2_ai_actions
+		WHERE workspace_id=$1 AND scenario=$2 AND status=$3
 		ORDER BY action_index ASC
-	`, workspaceID)
+	`, workspaceID, aiactions.ScenarioTacticsFacilitator, aiactions.StatusApplied)
 	if err != nil {
 		return nil, err
 	}
@@ -110,6 +122,39 @@ func (s *Store) tacticsAppliedIndices(ctx context.Context, workspaceID int) (map
 		result[messageID] = append(result[messageID], actionIndex)
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) tacticsActionStates(ctx context.Context, workspaceID int) (map[int][]aiactions.Action, error) {
+	items, err := s.aiActions.List(ctx, workspaceID, aiactions.ScenarioTacticsFacilitator, 0, 500)
+	if err != nil {
+		return nil, err
+	}
+	result := map[int][]aiactions.Action{}
+	for _, item := range items {
+		result[item.MessageID] = append(result[item.MessageID], item)
+	}
+	return result, nil
+}
+
+func (s *Store) RegisterTacticsActions(ctx context.Context, workspaceID int, planID int, messageID int, changes []TacticsDraftChange) error {
+	proposals := make([]aiactions.Proposal, 0, len(changes))
+	for _, change := range changes {
+		proposals = append(proposals, aiactions.Proposal{
+			ActionType: change.Operation + ":" + change.EntityType,
+			Payload:    change,
+		})
+	}
+	_, err := s.aiActions.Register(
+		ctx,
+		workspaceID,
+		aiactions.ScenarioTacticsFacilitator,
+		"tactical_plan",
+		planID,
+		messageID,
+		nil,
+		proposals,
+	)
+	return err
 }
 
 func (s *Store) ClaimTacticsActionApplication(

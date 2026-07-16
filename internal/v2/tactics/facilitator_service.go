@@ -229,6 +229,17 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
+	if state.Current.TacticalPlan != nil && len(modelOutput.DraftChanges) > 0 {
+		if err := s.store.RegisterTacticsActions(
+			ctx,
+			workspaceID,
+			state.Current.TacticalPlan.ID,
+			assistantMessageID,
+			modelOutput.DraftChanges,
+		); err != nil {
+			return TacticsFacilitatorMessageResponse{}, err
+		}
+	}
 
 	sessionState, err = s.store.RecordFacilitatorAssessment(ctx, workspaceID, userMessageID, modelOutput)
 	if err != nil {
