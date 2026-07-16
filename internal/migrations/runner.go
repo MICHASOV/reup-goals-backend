@@ -1449,6 +1449,61 @@ var migrations = []Migration{
 			ON CONFLICT (task_id) DO NOTHING;
 		`,
 	},
+	{
+		ID: "20260716_024_strategic_document_chats",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS strategic_document_chat_messages (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				role TEXT NOT NULL,
+				content TEXT NOT NULL DEFAULT '',
+				metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_document_chat_messages_scope
+				ON strategic_document_chat_messages (workspace_id, document_type, created_at, id);
+
+			CREATE TABLE IF NOT EXISTS strategic_document_chat_sessions (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				document_type TEXT NOT NULL,
+				previous_response_id TEXT NOT NULL DEFAULT '',
+				compact_threshold INTEGER NOT NULL DEFAULT 120000,
+				prompt_cache_key TEXT NOT NULL DEFAULT '',
+				context_fingerprint TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id, document_type)
+			);
+		`,
+	},
+	{
+		ID: "20260716_025_tactics_action_confirmations",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_tactics_action_applications (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				tactical_plan_id INTEGER NOT NULL REFERENCES v2_tactical_plans(id) ON DELETE CASCADE,
+				message_id INTEGER NOT NULL REFERENCES v2_tactics_chat_messages(id) ON DELETE CASCADE,
+				action_index INTEGER NOT NULL,
+				operation TEXT NOT NULL,
+				entity_type TEXT NOT NULL,
+				entity_id INTEGER NULL,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				status TEXT NOT NULL DEFAULT 'applying',
+				error_text TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(message_id, action_index)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactics_action_applications_scope
+				ON v2_tactics_action_applications (workspace_id, tactical_plan_id, created_at DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

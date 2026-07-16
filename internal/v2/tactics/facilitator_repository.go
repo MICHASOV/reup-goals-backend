@@ -28,7 +28,7 @@ func (s *Store) ChatMessages(ctx context.Context, workspaceID int, limit int) ([
 		limit = 300
 	}
 	rows, err := s.dbx.QueryContext(ctx, `
-		SELECT id, role, content, created_at
+		SELECT id, role, content, metadata_json, created_at
 		FROM v2_tactics_chat_messages
 		WHERE workspace_id=$1
 		ORDER BY created_at DESC, id DESC
@@ -42,15 +42,133 @@ func (s *Store) ChatMessages(ctx context.Context, workspaceID int, limit int) ([
 	items := []TacticsChatMessage{}
 	for rows.Next() {
 		var item TacticsChatMessage
-		if err := rows.Scan(&item.ID, &item.Role, &item.Content, &item.CreatedAt); err != nil {
+		var metadataRaw json.RawMessage
+		if err := rows.Scan(&item.ID, &item.Role, &item.Content, &metadataRaw, &item.CreatedAt); err != nil {
 			return nil, err
 		}
+		var metadata struct {
+			DraftChanges []TacticsDraftChange `json:"draft_changes"`
+		}
+		_ = json.Unmarshal(metadataRaw, &metadata)
+		item.ProposedChanges = normalizeTacticsDraftChanges(metadata.DraftChanges)
+		item.AppliedIndices = []int{}
 		items = append(items, item)
 	}
 	for left, right := 0, len(items)-1; left < right; left, right = left+1, right-1 {
 		items[left], items[right] = items[right], items[left]
 	}
+	applied, err := s.tacticsAppliedIndices(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for index := range items {
+		items[index].AppliedIndices = applied[items[index].ID]
+		if items[index].AppliedIndices == nil {
+			items[index].AppliedIndices = []int{}
+		}
+	}
 	return items, rows.Err()
+}
+
+func (s *Store) AssistantDraftChanges(ctx context.Context, workspaceID int, messageID int) ([]TacticsDraftChange, error) {
+	var metadataRaw json.RawMessage
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT metadata_json
+		FROM v2_tactics_chat_messages
+		WHERE id=$1 AND workspace_id=$2 AND role='assistant'
+	`, messageID, workspaceID).Scan(&metadataRaw)
+	if err != nil {
+		return nil, err
+	}
+	var metadata struct {
+		DraftChanges []TacticsDraftChange `json:"draft_changes"`
+	}
+	if err := json.Unmarshal(metadataRaw, &metadata); err != nil {
+		return nil, err
+	}
+	return normalizeTacticsDraftChanges(metadata.DraftChanges), nil
+}
+
+func (s *Store) tacticsAppliedIndices(ctx context.Context, workspaceID int) (map[int][]int, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT message_id, action_index
+		FROM v2_tactics_action_applications
+		WHERE workspace_id=$1 AND status='applied'
+		ORDER BY action_index ASC
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[int][]int{}
+	for rows.Next() {
+		var messageID int
+		var actionIndex int
+		if err := rows.Scan(&messageID, &actionIndex); err != nil {
+			return nil, err
+		}
+		result[messageID] = append(result[messageID], actionIndex)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) ClaimTacticsActionApplication(
+	ctx context.Context,
+	workspaceID int,
+	planID int,
+	messageID int,
+	actionIndex int,
+	change TacticsDraftChange,
+	userID int,
+) (bool, error) {
+	result, err := s.dbx.ExecContext(ctx, `
+		INSERT INTO v2_tactics_action_applications (
+			workspace_id, tactical_plan_id, message_id, action_index, operation, entity_type, created_by, status
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'applying')
+		ON CONFLICT (message_id, action_index) DO UPDATE SET
+			status='applying', error_text='', updated_at=NOW()
+		WHERE v2_tactics_action_applications.status='failed'
+			OR (
+				v2_tactics_action_applications.status='applying'
+				AND v2_tactics_action_applications.updated_at < NOW() - INTERVAL '5 minutes'
+			)
+	`, workspaceID, planID, messageID, actionIndex, change.Operation, change.EntityType, userID)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows > 0, err
+}
+
+func (s *Store) CompleteTacticsActionApplication(
+	ctx context.Context,
+	workspaceID int,
+	messageID int,
+	actionIndex int,
+	entityID int,
+) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_tactics_action_applications
+		SET status='applied', entity_id=$4, error_text='', updated_at=NOW()
+		WHERE workspace_id=$1 AND message_id=$2 AND action_index=$3 AND status='applying'
+	`, workspaceID, messageID, actionIndex, entityID)
+	return err
+}
+
+func (s *Store) FailTacticsActionApplication(
+	ctx context.Context,
+	workspaceID int,
+	messageID int,
+	actionIndex int,
+	errorText string,
+) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_tactics_action_applications
+		SET status='failed', error_text=$4, updated_at=NOW()
+		WHERE workspace_id=$1 AND message_id=$2 AND action_index=$3 AND status='applying'
+	`, workspaceID, messageID, actionIndex, strings.TrimSpace(errorText))
+	return err
 }
 
 func (s *Store) SessionState(ctx context.Context, workspaceID int) (TacticsSessionState, error) {

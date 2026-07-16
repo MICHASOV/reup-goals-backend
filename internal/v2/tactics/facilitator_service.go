@@ -213,7 +213,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	}
 
 	assistantMessage := cleanTacticsAssistantMessage(modelOutput.Message)
-	if _, err := s.store.CreateChatMessage(ctx, workspaceID, nil, "assistant", assistantMessage, map[string]any{
+	assistantMessageID, err := s.store.CreateChatMessage(ctx, workspaceID, nil, "assistant", assistantMessage, map[string]any{
 		"prompt_version":        TacticsFacilitatorPromptVersion,
 		"user_source_id":        userMessageID,
 		"response_id":           result.ResponseID,
@@ -225,20 +225,9 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		"open_questions":        modelOutput.OpenQuestions,
 		"needs_strategy_review": modelOutput.NeedsStrategyReview,
 		"draft_changes":         modelOutput.DraftChanges,
-	}); err != nil {
+	})
+	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
-	}
-
-	appliedChanges := []AppliedTacticsChange{}
-	if state.Current.TacticalPlan != nil && len(modelOutput.DraftChanges) > 0 {
-		appliedChanges = s.store.ApplyFacilitatorDraftChanges(
-			ctx,
-			workspaceID,
-			userID,
-			*state.Current.TacticalPlan,
-			userMessageID,
-			modelOutput.DraftChanges,
-		)
 	}
 
 	sessionState, err = s.store.RecordFacilitatorAssessment(ctx, workspaceID, userMessageID, modelOutput)
@@ -256,12 +245,14 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		return TacticsFacilitatorMessageResponse{}, err
 	}
 	return TacticsFacilitatorMessageResponse{
-		WorkspaceID:      workspaceID,
-		AssistantMessage: assistantMessage,
-		RecentMessages:   messages,
-		OpenAIResponseID: result.ResponseID,
-		Session:          sessionState,
-		AppliedChanges:   appliedChanges,
+		WorkspaceID:       workspaceID,
+		AssistantMessage:  assistantMessage,
+		RecentMessages:    messages,
+		OpenAIResponseID:  result.ResponseID,
+		Session:           sessionState,
+		ProposalMessageID: assistantMessageID,
+		ProposedChanges:   modelOutput.DraftChanges,
+		AppliedChanges:    []AppliedTacticsChange{},
 	}, nil
 }
 

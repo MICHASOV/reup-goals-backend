@@ -4,6 +4,7 @@ import "time"
 
 const (
 	StatusDraft    = "draft"
+	StatusNeedsReview = "needs_review"
 	StatusActive   = "active"
 	StatusArchived = "archived"
 
@@ -103,7 +104,7 @@ type CourseInput struct {
 
 func ValidStatus(status string) bool {
 	switch status {
-	case StatusDraft, StatusActive, StatusArchived:
+	case StatusDraft, StatusNeedsReview, StatusActive, StatusArchived:
 		return true
 	default:
 		return false

@@ -18,7 +18,6 @@ import (
 	audioapi "reup-goals-backend/internal/v2/audio"
 	"reup-goals-backend/internal/v2/bootstrap"
 	"reup-goals-backend/internal/v2/course"
-	"reup-goals-backend/internal/v2/knowledge"
 	"reup-goals-backend/internal/v2/strategicmemory"
 	"reup-goals-backend/internal/v2/strategy"
 	"reup-goals-backend/internal/v2/tactics"
@@ -56,7 +55,6 @@ func main() {
 	audioHandler := audioapi.NewHandler(transcriptionAIClient)
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
-	knowledgeHandler := knowledge.NewHandler(database)
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	tacticsHandler := tactics.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
@@ -102,8 +100,6 @@ func main() {
 	// -----------------------
 	mux.Handle("/api/v2/bootstrap", v2api.RequireAuth(jwtSecret, bootstrapHandler.Bootstrap))
 	mux.Handle("/api/v2/audio/transcriptions", v2api.RequireAuth(jwtSecret, audioHandler.Transcriptions))
-	mux.Handle("/api/v2/knowledge-base/blocks", v2api.RequireAuth(jwtSecret, knowledgeHandler.Blocks))
-	mux.Handle("/api/v2/knowledge-base/blocks/", v2api.RequireAuth(jwtSecret, knowledgeHandler.Block))
 	mux.Handle("/api/v2/strategic-director/messages", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/state", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/files", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
@@ -114,6 +110,7 @@ func main() {
 	mux.Handle("/api/v2/strategic-memory/claims", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/agenda", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/documents", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/documents/", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/quality-audit", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/ai-runs", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
 	mux.Handle("/api/v2/strategic-memory/reset", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
@@ -130,6 +127,7 @@ func main() {
 	mux.Handle("/api/v2/tactics/current", v2api.RequireAuth(jwtSecret, tacticsHandler.Current))
 	mux.Handle("/api/v2/tactics-facilitator/state", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
 	mux.Handle("/api/v2/tactics-facilitator/messages", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/actions/apply", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
 	mux.Handle("/api/v2/tactics-facilitator/files", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
 	mux.Handle("/api/v2/tactics-facilitator/readiness", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
 	mux.Handle("/api/v2/tactics/workstreams", v2api.RequireAuth(jwtSecret, tacticsHandler.Workstreams))

@@ -83,6 +83,13 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	}
 
 	syncState := buildCourseSync(course, snapshot, snapshotErr)
+	if syncState.NeedsReview && course.Status != StatusNeedsReview {
+		updated, updateErr := s.markNeedsReview(ctx, workspaceID, course.ID)
+		if updateErr != nil {
+			return CurrentResponse{}, fmt.Errorf("mark course for review: %w", updateErr)
+		}
+		course = updated
+	}
 	return CurrentResponse{
 		Course:        &course,
 		Strategy:      &strategy,
@@ -399,10 +406,24 @@ func (s *Store) courseByStrategy(ctx context.Context, workspaceID int, strategyI
 			horizon, horizon_unit, start_date::TEXT, end_date::TEXT, key_metric,
 			success_criterion, status, source, created_by, created_at, updated_at, activated_at
 		FROM v2_courses
-		WHERE workspace_id=$1 AND strategy_id=$2 AND archived_at IS NULL AND status IN ($3, $4)
-		ORDER BY CASE status WHEN $4 THEN 1 ELSE 2 END, created_at DESC
+	WHERE workspace_id=$1 AND strategy_id=$2 AND archived_at IS NULL AND status IN ($3, $4, $5)
+	ORDER BY CASE status WHEN $4 THEN 1 WHEN $5 THEN 2 ELSE 3 END, created_at DESC
 		LIMIT 1
-	`, workspaceID, strategyID, StatusDraft, StatusActive)
+	`, workspaceID, strategyID, StatusDraft, StatusActive, StatusNeedsReview)
+	return scanCourse(row)
+}
+
+func (s *Store) markNeedsReview(ctx context.Context, workspaceID int, courseID int) (Course, error) {
+	row := s.dbx.QueryRowContext(ctx, `
+		UPDATE v2_courses
+		SET status=$1, updated_at=NOW()
+		WHERE id=$2 AND workspace_id=$3 AND archived_at IS NULL AND status<>$4
+		RETURNING
+			id, workspace_id, strategy_id, source_synthesis_run_id, source_session_revision,
+			title, direction, strategic_goal, meaning,
+			horizon, horizon_unit, start_date::TEXT, end_date::TEXT, key_metric,
+			success_criterion, status, source, created_by, created_at, updated_at, activated_at
+	`, StatusNeedsReview, courseID, workspaceID, StatusArchived)
 	return scanCourse(row)
 }
 

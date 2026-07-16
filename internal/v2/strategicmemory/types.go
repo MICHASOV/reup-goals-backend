@@ -9,6 +9,8 @@ const (
 	SourceTypeUserMessage      = "user_message"
 	SourceTypeAssistantMessage = "assistant_message"
 	SourceTypeFileUpload       = "file_upload"
+	SourceTypeDocumentMessage  = "document_user_message"
+	SourceTypeStrategyMessage  = "strategy_user_message"
 
 	ConversationStateCollectingContext = "collecting_context"
 
@@ -136,6 +138,7 @@ type StrategicFile struct {
 
 type StateResponse struct {
 	WorkspaceID          int                   `json:"workspace_id"`
+	DocumentCatalog      []DocumentCatalogItem `json:"document_catalog"`
 	Snapshot             *MemorySnapshot       `json:"snapshot,omitempty"`
 	Claims               []Claim               `json:"claims"`
 	Agenda               []ResearchAgendaItem  `json:"agenda"`
@@ -147,11 +150,51 @@ type StateResponse struct {
 	Files                []StrategicFile       `json:"files,omitempty"`
 }
 
+type DocumentCatalogItem struct {
+	DocumentType string `json:"document_type"`
+	Title        string `json:"title"`
+	Description  string `json:"description"`
+	SortOrder    int    `json:"sort_order"`
+}
+
 type ConversationMessage struct {
 	ID        int       `json:"id"`
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type DocumentChatMessage struct {
+	ID        int       `json:"id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type DocumentChatSession struct {
+	PreviousResponseID string
+	CompactThreshold   int
+	PromptCacheKey     string
+	ContextFingerprint string
+}
+
+type DocumentChatHistoryResponse struct {
+	WorkspaceID int                   `json:"workspace_id"`
+	Document    StrategicDocument     `json:"document"`
+	Messages    []DocumentChatMessage `json:"messages"`
+}
+
+type DocumentChatMessageRequest struct {
+	Message string `json:"message"`
+}
+
+type DocumentChatMessageResponse struct {
+	WorkspaceID      int                 `json:"workspace_id"`
+	Document         StrategicDocument   `json:"document"`
+	UserMessage      DocumentChatMessage `json:"user_message"`
+	AssistantMessage DocumentChatMessage `json:"assistant_message"`
+	InputTokens      int                 `json:"input_tokens"`
+	OutputTokens     int                 `json:"output_tokens"`
 }
 
 type MessageRequest struct {

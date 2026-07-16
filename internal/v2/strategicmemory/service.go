@@ -74,6 +74,7 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 
 	return StateResponse{
 		WorkspaceID:          workspaceID,
+		DocumentCatalog:      strategicDocumentDefinitions(),
 		Snapshot:             snapshot,
 		Claims:               claims,
 		Agenda:               agenda,

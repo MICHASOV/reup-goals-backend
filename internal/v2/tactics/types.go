@@ -181,10 +181,12 @@ type CurrentResponse struct {
 }
 
 type TacticsChatMessage struct {
-	ID        int       `json:"id"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
+	ID              int                  `json:"id"`
+	Role            string               `json:"role"`
+	Content         string               `json:"content"`
+	ProposedChanges []TacticsDraftChange `json:"proposed_changes,omitempty"`
+	AppliedIndices  []int                `json:"applied_indices,omitempty"`
+	CreatedAt       time.Time            `json:"created_at"`
 }
 
 type TacticsFocus struct {
@@ -263,12 +265,25 @@ type TacticsFacilitatorMessageRequest struct {
 }
 
 type TacticsFacilitatorMessageResponse struct {
-	WorkspaceID      int                    `json:"workspace_id"`
-	AssistantMessage string                 `json:"assistant_message"`
-	RecentMessages   []TacticsChatMessage   `json:"recent_messages"`
-	OpenAIResponseID string                 `json:"openai_response_id,omitempty"`
-	Session          TacticsSessionState    `json:"session"`
-	AppliedChanges   []AppliedTacticsChange `json:"applied_changes"`
+	WorkspaceID       int                    `json:"workspace_id"`
+	AssistantMessage  string                 `json:"assistant_message"`
+	RecentMessages    []TacticsChatMessage   `json:"recent_messages"`
+	OpenAIResponseID  string                 `json:"openai_response_id,omitempty"`
+	Session           TacticsSessionState    `json:"session"`
+	ProposalMessageID int                    `json:"proposal_message_id,omitempty"`
+	ProposedChanges   []TacticsDraftChange   `json:"proposed_changes"`
+	AppliedChanges    []AppliedTacticsChange `json:"applied_changes"`
+}
+
+type ApplyTacticsChangesRequest struct {
+	MessageID     int   `json:"message_id"`
+	ActionIndices []int `json:"action_indices"`
+}
+
+type ApplyTacticsChangesResponse struct {
+	WorkspaceID    int                    `json:"workspace_id"`
+	AppliedIndices []int                  `json:"applied_indices"`
+	AppliedChanges []AppliedTacticsChange `json:"applied_changes"`
 }
 
 type TacticsDraftChange struct {

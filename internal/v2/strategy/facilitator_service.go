@@ -123,6 +123,9 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if _, err := s.store.BeginFacilitatorTurn(ctx, workspaceID, userID, userSourceID); err != nil {
 		return StrategyFacilitatorMessageResponse{}, err
 	}
+	if err := s.memoryService.QueueFactsFromStrategy(ctx, workspaceID, userID, userSourceID, message); err != nil {
+		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facts_to_knowledge_base", s.ai.Model, StrategyFacilitatorPromptVersion, 0, 0, 0, "failed", err.Error())
+	}
 
 	state, err := s.State(ctx, workspaceID, userID)
 	if err != nil {

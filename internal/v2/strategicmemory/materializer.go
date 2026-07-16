@@ -71,18 +71,83 @@ type documentDesignerDocument struct {
 	Status       string `json:"status"`
 }
 
+type materializationOptions struct {
+	SourceType            string
+	PreferredDocumentType string
+	FactsOnly             bool
+}
+
 func (s *Service) queueBusinessContextMaterialization(workspaceID int, sourceID int, userMessage string, assistantMessage string) {
+	s.queueBusinessContextMaterializationWithOptions(workspaceID, sourceID, userMessage, assistantMessage, materializationOptions{
+		SourceType: SourceTypeUserMessage,
+	})
+}
+
+func (s *Service) queueDocumentContextMaterialization(
+	workspaceID int,
+	sourceID int,
+	documentType string,
+	userMessage string,
+	assistantMessage string,
+) {
+	s.queueBusinessContextMaterializationWithOptions(workspaceID, sourceID, userMessage, assistantMessage, materializationOptions{
+		SourceType:            SourceTypeDocumentMessage,
+		PreferredDocumentType: documentType,
+	})
+}
+
+func (s *Service) QueueFactsFromStrategy(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	strategyMessageID int,
+	userMessage string,
+) error {
+	sourceID, err := s.store.CreateRawSource(ctx, workspaceID, &userID, SourceTypeStrategyMessage, userMessage, map[string]any{
+		"strategy_chat_message_id": strategyMessageID,
+		"facts_only":               true,
+	})
+	if err != nil {
+		return err
+	}
+	s.queueBusinessContextMaterializationWithOptions(workspaceID, sourceID, userMessage, "", materializationOptions{
+		SourceType: SourceTypeStrategyMessage,
+		FactsOnly:  true,
+	})
+	return nil
+}
+
+func (s *Service) queueBusinessContextMaterializationWithOptions(
+	workspaceID int,
+	sourceID int,
+	userMessage string,
+	assistantMessage string,
+	options materializationOptions,
+) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), materializerTimeout)
 		defer cancel()
 
-		if err := s.materializeBusinessContext(ctx, workspaceID, sourceID, userMessage, assistantMessage); err != nil {
+		if err := s.materializeBusinessContextWithOptions(ctx, workspaceID, sourceID, userMessage, assistantMessage, options); err != nil {
 			log.Printf("[WARN] strategic memory materialization failed workspace_id=%d: %v", workspaceID, err)
 		}
 	}()
 }
 
 func (s *Service) materializeBusinessContext(ctx context.Context, workspaceID int, sourceID int, userMessage string, assistantMessage string) error {
+	return s.materializeBusinessContextWithOptions(ctx, workspaceID, sourceID, userMessage, assistantMessage, materializationOptions{
+		SourceType: SourceTypeUserMessage,
+	})
+}
+
+func (s *Service) materializeBusinessContextWithOptions(
+	ctx context.Context,
+	workspaceID int,
+	sourceID int,
+	userMessage string,
+	assistantMessage string,
+	options materializationOptions,
+) error {
 	state, err := s.State(ctx, workspaceID)
 	if err != nil {
 		return err
@@ -92,9 +157,12 @@ func (s *Service) materializeBusinessContext(ctx context.Context, workspaceID in
 		return err
 	}
 
-	materialized, err := s.extractBusinessContext(ctx, workspaceID, sourceID, userMessage, assistantMessage, state, session)
+	materialized, err := s.extractBusinessContext(ctx, workspaceID, sourceID, userMessage, assistantMessage, state, session, options)
 	if err != nil {
 		return err
+	}
+	if options.FactsOnly {
+		materialized = factsOnlyMaterialization(materialized)
 	}
 
 	claimsAdded, claimsSkipped, err := s.store.InsertClaims(ctx, workspaceID, sourceID, materializerItemsToClaims(materialized.ExtractedItems))
@@ -155,16 +223,20 @@ func (s *Service) extractBusinessContext(
 	assistantMessage string,
 	state StateResponse,
 	session OpenAISession,
+	options materializationOptions,
 ) (materializerOutput, error) {
+	sourceType := defaultString(options.SourceType, SourceTypeUserMessage)
 	input := map[string]any{
 		"workspace_id": workspaceID,
 		"new_source": map[string]any{
 			"source_id": sourceID,
-			"type":      SourceTypeUserMessage,
+			"type":      sourceType,
 			"content":   userMessage,
 		},
-		"assistant_reply":  assistantMessage,
-		"document_catalog": strategicDocumentCatalog(),
+		"preferred_document_type": strings.TrimSpace(options.PreferredDocumentType),
+		"facts_only":              options.FactsOnly,
+		"assistant_reply":         assistantMessage,
+		"document_catalog":        strategicDocumentCatalog(),
 		"current_memory": map[string]any{
 			"snapshot":              state.Snapshot,
 			"claims":                limitClaimsForContext(state.Claims, 120),
@@ -198,6 +270,35 @@ func (s *Service) extractBusinessContext(
 		return materializerOutput{}, fmt.Errorf("materializer json decode error: %w", err)
 	}
 	return parsed, nil
+}
+
+func factsOnlyMaterialization(materialized materializerOutput) materializerOutput {
+	allowedTypes := map[string]bool{
+		"fact": true, "historical_fact": true, "process": true, "problem": true,
+		"constraint": true, "metric": true, "result": true, "contradiction": true,
+	}
+	filtered := make([]materializerItem, 0, len(materialized.ExtractedItems))
+	affected := map[string]bool{}
+	for _, item := range materialized.ExtractedItems {
+		if !allowedTypes[strings.TrimSpace(item.Type)] {
+			continue
+		}
+		filtered = append(filtered, item)
+		affected[normalizeDocumentType(item.PrimaryDocument)] = true
+	}
+	materialized.ExtractedItems = filtered
+	materialized.OpenQuestions = nil
+
+	brief := make([]materializerDocumentNote, 0, len(materialized.DocumentBrief))
+	for _, note := range materialized.DocumentBrief {
+		if !affected[normalizeDocumentType(note.DocumentType)] {
+			continue
+		}
+		note.OpenQuestions = nil
+		brief = append(brief, note)
+	}
+	materialized.DocumentBrief = brief
+	return materialized
 }
 
 func (s *Service) designDocuments(
@@ -345,21 +446,44 @@ func documentTypesFromStrategicDocuments(documents []StrategicDocument) []string
 }
 
 func strategicDocumentCatalog() []map[string]string {
-	return []map[string]string{
-		{"document_type": "company_governance", "title": "Компания и управление"},
-		{"document_type": "strategy_development", "title": "Стратегия и развитие"},
-		{"document_type": "product_value", "title": "Продукт и ценность"},
-		{"document_type": "customers_market_competition", "title": "Клиенты, рынок и конкуренты"},
-		{"document_type": "marketing_sales_relationships", "title": "Маркетинг, продажи и клиентские отношения"},
-		{"document_type": "operations_execution", "title": "Операционная деятельность и исполнение"},
-		{"document_type": "team_organization", "title": "Команда и организация"},
-		{"document_type": "technology_data_assets", "title": "Технологии, данные и активы"},
-		{"document_type": "finance_economics", "title": "Финансы и экономика"},
-		{"document_type": "legal_compliance", "title": "Право и соответствие требованиям"},
-		{"document_type": "hypotheses_assumptions", "title": "Гипотезы и непроверенные предположения"},
-		{"document_type": "open_questions", "title": "Открытые вопросы"},
-		{"document_type": "contradictions_changes", "title": "Противоречия и изменения"},
+	definitions := strategicDocumentDefinitions()
+	result := make([]map[string]string, 0, len(definitions))
+	for _, definition := range definitions {
+		result = append(result, map[string]string{
+			"document_type": definition.DocumentType,
+			"title":         definition.Title,
+			"description":   definition.Description,
+		})
 	}
+	return result
+}
+
+func strategicDocumentDefinitions() []DocumentCatalogItem {
+	return []DocumentCatalogItem{
+		{DocumentType: "company_governance", Title: "Компания и управление", Description: "Устройство компании, собственники, управление, роли и принятие решений.", SortOrder: 10},
+		{DocumentType: "strategy_development", Title: "Стратегия и развитие", Description: "Цели, приоритеты, решения, ограничения и направления развития.", SortOrder: 20},
+		{DocumentType: "product_value", Title: "Продукт и ценность", Description: "Продукты, услуги, ценностное предложение, функциональность и развитие продукта.", SortOrder: 30},
+		{DocumentType: "customers_market_competition", Title: "Клиенты, рынок и конкуренты", Description: "Клиенты, спрос, рынок, конкуренты и реальные причины покупки или отказа.", SortOrder: 40},
+		{DocumentType: "marketing_sales_relationships", Title: "Маркетинг, продажи и клиентские отношения", Description: "Позиционирование, привлечение, продажи, сопровождение и удержание клиентов.", SortOrder: 50},
+		{DocumentType: "operations_execution", Title: "Операционная деятельность и исполнение", Description: "Ключевые процессы, поставка ценности, качество и сроки исполнения.", SortOrder: 60},
+		{DocumentType: "team_organization", Title: "Команда и организация", Description: "Команда, подрядчики, роли, компетенции, найм и организационные зависимости.", SortOrder: 70},
+		{DocumentType: "technology_data_assets", Title: "Технологии, данные и активы", Description: "IT-системы, данные, инфраструктура, автоматизация и другие активы.", SortOrder: 80},
+		{DocumentType: "finance_economics", Title: "Финансы и экономика", Description: "Доходы, расходы, денежные потоки, обязательства и экономика бизнеса.", SortOrder: 90},
+		{DocumentType: "legal_compliance", Title: "Право и соответствие требованиям", Description: "Договоры, права, лицензии, обязательства и регуляторные требования.", SortOrder: 100},
+		{DocumentType: "hypotheses_assumptions", Title: "Гипотезы и непроверенные предположения", Description: "Важные предположения, которые пока не подтверждены фактами или данными.", SortOrder: 110},
+		{DocumentType: "open_questions", Title: "Открытые вопросы", Description: "Неизвестные и слабые зоны, которые еще нужно исследовать или уточнить.", SortOrder: 120},
+		{DocumentType: "contradictions_changes", Title: "Противоречия и изменения", Description: "Расхождения, изменения состояния и значимая история бизнеса.", SortOrder: 130},
+	}
+}
+
+func validStrategicDocumentType(value string) bool {
+	value = strings.TrimSpace(value)
+	for _, definition := range strategicDocumentDefinitions() {
+		if definition.DocumentType == value {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeDocumentType(value string) string {

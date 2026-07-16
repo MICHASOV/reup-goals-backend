@@ -54,6 +54,8 @@ func (h *Handler) StrategicMemory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case strings.HasPrefix(r.URL.Path, "/api/v2/strategic-memory/documents/"):
+		h.documentChat(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/strategic-memory/snapshot":
 		h.state(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/strategic-memory/claims":
@@ -70,6 +72,57 @@ func (h *Handler) StrategicMemory(w http.ResponseWriter, r *http.Request) {
 		h.reset(w, r, workspace.ID)
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
+	}
+}
+
+func (h *Handler) documentChat(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	const prefix = "/api/v2/strategic-memory/documents/"
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "chat" {
+		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	documentType := strings.TrimSpace(parts[0])
+	if !validStrategicDocumentType(documentType) {
+		api.WriteError(w, http.StatusNotFound, "document_not_found")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		response, err := h.service.DocumentChatHistory(r.Context(), workspaceID, documentType)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "document_chat_history_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, response)
+	case http.MethodPost:
+		userID, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			api.WriteError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var req DocumentChatMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			api.WriteError(w, http.StatusBadRequest, "invalid_json")
+			return
+		}
+		response, err := h.service.HandleDocumentChatMessage(r.Context(), workspaceID, userID, documentType, req.Message)
+		if err != nil {
+			switch err.Error() {
+			case "invalid_document_type":
+				api.WriteError(w, http.StatusNotFound, "document_not_found")
+			case "message_too_short", "message_too_long":
+				api.WriteError(w, http.StatusBadRequest, err.Error())
+			default:
+				api.WriteError(w, http.StatusBadGateway, "document_chat_failed")
+			}
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, response)
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
 }
 

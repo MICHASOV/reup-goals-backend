@@ -3,6 +3,8 @@ package tactics
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -54,32 +56,76 @@ func normalizeTacticsDraftChanges(changes []TacticsDraftChange) []TacticsDraftCh
 	return result
 }
 
-func (s *Store) ApplyFacilitatorDraftChanges(
+func (s *FacilitatorService) ApplyConfirmedChanges(
 	ctx context.Context,
 	workspaceID int,
 	userID int,
-	plan TacticalPlan,
-	messageID int,
-	changes []TacticsDraftChange,
-) []AppliedTacticsChange {
-	applied := []AppliedTacticsChange{}
+	request ApplyTacticsChangesRequest,
+) (ApplyTacticsChangesResponse, error) {
+	if request.MessageID <= 0 || len(request.ActionIndices) == 0 {
+		return ApplyTacticsChangesResponse{}, fmt.Errorf("invalid_tactics_actions")
+	}
+	state, err := s.store.Current(ctx, workspaceID, userID)
+	if err != nil {
+		return ApplyTacticsChangesResponse{}, err
+	}
+	if state.TacticalPlan == nil {
+		return ApplyTacticsChangesResponse{}, fmt.Errorf("tactics_plan_required")
+	}
+	changes, err := s.store.AssistantDraftChanges(ctx, workspaceID, request.MessageID)
+	if err != nil {
+		return ApplyTacticsChangesResponse{}, err
+	}
+
+	indices := append([]int{}, request.ActionIndices...)
+	sort.Ints(indices)
+	seen := map[int]bool{}
 	createdByKey := map[string]int{}
-	for _, change := range normalizeTacticsDraftChanges(changes) {
+	response := ApplyTacticsChangesResponse{
+		WorkspaceID:    workspaceID,
+		AppliedIndices: []int{},
+		AppliedChanges: []AppliedTacticsChange{},
+	}
+	for _, index := range indices {
+		if seen[index] {
+			continue
+		}
+		seen[index] = true
+		if index < 0 || index >= len(changes) {
+			return ApplyTacticsChangesResponse{}, fmt.Errorf("invalid_tactics_action_index")
+		}
+		change := changes[index]
+		claimed, err := s.store.ClaimTacticsActionApplication(
+			ctx, workspaceID, state.TacticalPlan.ID, request.MessageID, index, change, userID,
+		)
+		if err != nil {
+			return ApplyTacticsChangesResponse{}, err
+		}
+		if !claimed {
+			continue
+		}
+
 		parentID := pointerValue(change.ParentEntityID)
 		if parentID <= 0 && change.ParentDraftKey != "" {
 			parentID = createdByKey[change.ParentDraftKey]
 		}
-		item, ok := s.applyFacilitatorDraftChange(ctx, workspaceID, userID, plan, parentID, change)
+		item, ok := s.store.applyFacilitatorDraftChange(ctx, workspaceID, userID, *state.TacticalPlan, parentID, change)
 		if !ok {
-			continue
+			_ = s.store.FailTacticsActionApplication(ctx, workspaceID, request.MessageID, index, "change_not_applicable")
+			return ApplyTacticsChangesResponse{}, fmt.Errorf("tactics_action_not_applicable")
 		}
 		if change.DraftKey != "" {
 			createdByKey[change.DraftKey] = item.EntityID
 		}
-		item.ID = s.recordAppliedTacticsChange(ctx, workspaceID, plan.ID, messageID, userID, item)
-		applied = append(applied, item)
+		item.ID = s.store.recordAppliedTacticsChange(ctx, workspaceID, state.TacticalPlan.ID, request.MessageID, userID, item)
+		if err := s.store.CompleteTacticsActionApplication(ctx, workspaceID, request.MessageID, index, item.EntityID); err != nil {
+			_ = s.store.FailTacticsActionApplication(ctx, workspaceID, request.MessageID, index, err.Error())
+			return ApplyTacticsChangesResponse{}, err
+		}
+		response.AppliedIndices = append(response.AppliedIndices, index)
+		response.AppliedChanges = append(response.AppliedChanges, item)
 	}
-	return applied
+	return response, nil
 }
 
 func (s *Store) applyFacilitatorDraftChange(

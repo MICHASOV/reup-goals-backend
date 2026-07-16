@@ -41,6 +41,8 @@ func (h *Handler) Facilitator(w http.ResponseWriter, r *http.Request) {
 		h.facilitatorState(w, r)
 	case "/api/v2/tactics-facilitator/messages":
 		h.facilitatorMessage(w, r)
+	case "/api/v2/tactics-facilitator/actions/apply":
+		h.facilitatorApplyActions(w, r)
 	case "/api/v2/tactics-facilitator/files":
 		h.facilitatorFile(w, r)
 	case "/api/v2/tactics-facilitator/readiness":
@@ -48,6 +50,41 @@ func (h *Handler) Facilitator(w http.ResponseWriter, r *http.Request) {
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) facilitatorApplyActions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+	var body ApplyTacticsChangesRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	response, err := h.facilitator.ApplyConfirmedChanges(r.Context(), workspace.ID, userID, body)
+	if err != nil {
+		switch err.Error() {
+		case "invalid_tactics_actions", "invalid_tactics_action_index":
+			api.WriteError(w, http.StatusBadRequest, err.Error())
+		case "tactics_plan_required":
+			api.WriteError(w, http.StatusConflict, err.Error())
+		case "tactics_action_not_applicable":
+			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		default:
+			if errors.Is(err, sql.ErrNoRows) {
+				api.WriteError(w, http.StatusNotFound, "tactics_action_message_not_found")
+			} else {
+				api.WriteError(w, http.StatusInternalServerError, "tactics_actions_apply_failed")
+			}
+		}
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) tacticsReadiness(w http.ResponseWriter, r *http.Request) {

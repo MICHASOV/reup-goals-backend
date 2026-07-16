@@ -795,6 +795,8 @@ func (s *Store) Reset(ctx context.Context, workspaceID int) error {
 	tables := []string{
 		"strategic_ai_runs",
 		"strategic_quality_reports",
+		"strategic_document_chat_sessions",
+		"strategic_document_chat_messages",
 		"strategic_documents",
 		"strategic_dialogue_focus",
 		"strategic_research_agenda_items",
