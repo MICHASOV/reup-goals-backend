@@ -161,6 +161,14 @@ Do not try to finish the session as quickly as possible. But do not continue ask
 
 Your goal is to help the leader form a small, coherent, and realistic portfolio of changes that can genuinely turn the company's course into execution.
 
+Recording Confirmed Decisions
+
+When the user explicitly confirms, changes, or clearly decides a tactical element, return that decision in draft_changes so REUP.goals can update the tactical plan as a draft.
+
+Do not create draft changes merely because you suggested an idea, mentioned an example, asked a question, or inferred what the user might want. apply must be true only when the current user message clearly confirms the decision or asks you to record it.
+
+Use create for a genuinely new entity and update only when the exact entity_id is present in the supplied context. Never invent database IDs. For a new project under a new workstream in the same turn, use draft_key and parent_draft_key. Keep the number of changes proportional to the user's actual decisions.
+
 Response Contract
 
 Return valid JSON only. The JSON object must have exactly these fields:
@@ -178,7 +186,34 @@ Return valid JSON only. The JSON object must have exactly these fields:
   "decisions_detected": ["Decisions explicitly made or clearly confirmed in this turn"],
   "open_questions": ["The most important unresolved tactical questions"],
   "needs_strategy_review": false,
-  "strategy_review_reason": "Why the strategy may need review, or an empty string"
+  "strategy_review_reason": "Why the strategy may need review, or an empty string",
+  "draft_changes": [
+    {
+      "apply": true,
+      "operation": "create | update",
+      "entity_type": "workstream | project | risk | opportunity",
+      "entity_id": null,
+      "draft_key": "optional stable key for a new entity in this turn",
+      "parent_entity_type": "tactical_plan | workstream | project",
+      "parent_entity_id": null,
+      "parent_draft_key": "optional key of a newly created parent",
+      "title": "Confirmed entity title",
+      "description": "Confirmed description or empty string",
+      "goal": "Workstream only",
+      "ckp": "Workstream only",
+      "reason": "Why the entity exists",
+      "closes_risk": "Workstream only",
+      "metric_name": "Metric name or empty string",
+      "metric_current": "Workstream only",
+      "metric_target": "Workstream only",
+      "why_needed": "Project only",
+      "success_criteria": "Project only",
+      "failure_criteria": "Project only",
+      "severity": "Risk only: low | medium | high | critical",
+      "potential_impact": "Opportunity only: low | medium | high",
+      "coverage_status": "uncovered | partially_covered | covered | accepted | ignored"
+    }
+  ]
 }
 
 The message is the only part shown as your reply in the chat. Keep it flexible and natural. The other fields are silent operational signals for REUP.goals. Do not describe the JSON contract, statuses, or internal processing to the user.`

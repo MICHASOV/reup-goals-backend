@@ -514,6 +514,9 @@ func (s *Store) risks(ctx context.Context, workspaceID int, planID int, workstre
 		if item.EntityType == "workstream" && item.EntityID == workstreamID {
 			risks = append(risks, item)
 		}
+		if item.EntityType == "tactical_plan" && item.EntityID == planID {
+			risks = append(risks, item)
+		}
 		if item.EntityType == "project" && projectIDs[item.EntityID] {
 			risks = append(risks, item)
 		}
@@ -547,6 +550,9 @@ func (s *Store) opportunities(ctx context.Context, workspaceID int, planID int, 
 		if item.EntityType == "workstream" && item.EntityID == workstreamID {
 			opportunities = append(opportunities, item)
 		}
+		if item.EntityType == "tactical_plan" && item.EntityID == planID {
+			opportunities = append(opportunities, item)
+		}
 		if item.EntityType == "project" && projectIDs[item.EntityID] {
 			opportunities = append(opportunities, item)
 		}
@@ -574,9 +580,11 @@ func (s *Store) validateLinks(ctx context.Context, workspaceID int, workstream w
 		if err := s.dbx.QueryRowContext(ctx, `
 			SELECT EXISTS(
 				SELECT 1 FROM v2_tactical_risks
-				WHERE id=$1 AND workspace_id=$2 AND tactical_plan_id=$3 AND archived_at IS NULL
-					AND (
-						(entity_type='workstream' AND entity_id=$4)
+					WHERE id=$1 AND workspace_id=$2 AND tactical_plan_id=$3 AND archived_at IS NULL
+						AND (
+							(entity_type='tactical_plan' AND entity_id=$3)
+							OR
+							(entity_type='workstream' AND entity_id=$4)
 						OR (
 							entity_type='project'
 							AND EXISTS (
@@ -601,9 +609,11 @@ func (s *Store) validateLinks(ctx context.Context, workspaceID int, workstream w
 		if err := s.dbx.QueryRowContext(ctx, `
 			SELECT EXISTS(
 				SELECT 1 FROM v2_tactical_opportunities
-				WHERE id=$1 AND workspace_id=$2 AND tactical_plan_id=$3 AND archived_at IS NULL
-					AND (
-						(entity_type='workstream' AND entity_id=$4)
+					WHERE id=$1 AND workspace_id=$2 AND tactical_plan_id=$3 AND archived_at IS NULL
+						AND (
+							(entity_type='tactical_plan' AND entity_id=$3)
+							OR
+							(entity_type='workstream' AND entity_id=$4)
 						OR (
 							entity_type='project'
 							AND EXISTS (

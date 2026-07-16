@@ -224,8 +224,21 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		"decisions_detected":    modelOutput.DecisionsDetected,
 		"open_questions":        modelOutput.OpenQuestions,
 		"needs_strategy_review": modelOutput.NeedsStrategyReview,
+		"draft_changes":         modelOutput.DraftChanges,
 	}); err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
+	}
+
+	appliedChanges := []AppliedTacticsChange{}
+	if state.Current.TacticalPlan != nil && len(modelOutput.DraftChanges) > 0 {
+		appliedChanges = s.store.ApplyFacilitatorDraftChanges(
+			ctx,
+			workspaceID,
+			userID,
+			*state.Current.TacticalPlan,
+			userMessageID,
+			modelOutput.DraftChanges,
+		)
 	}
 
 	sessionState, err = s.store.RecordFacilitatorAssessment(ctx, workspaceID, userMessageID, modelOutput)
@@ -248,6 +261,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		RecentMessages:   messages,
 		OpenAIResponseID: result.ResponseID,
 		Session:          sessionState,
+		AppliedChanges:   appliedChanges,
 	}, nil
 }
 
@@ -350,6 +364,7 @@ func parseTacticsFacilitatorOutput(raw string) (tacticsFacilitatorModelOutput, e
 	output.DecisionsDetected = cleanTacticsStrings(output.DecisionsDetected, 12)
 	output.OpenQuestions = cleanTacticsStrings(output.OpenQuestions, 20)
 	output.StrategyReviewReason = strings.TrimSpace(output.StrategyReviewReason)
+	output.DraftChanges = normalizeTacticsDraftChanges(output.DraftChanges)
 	return output, nil
 }
 
@@ -450,5 +465,6 @@ func (s *FacilitatorService) fallbackResponse(ctx context.Context, workspaceID i
 		AssistantMessage: message,
 		RecentMessages:   messages,
 		Session:          session,
+		AppliedChanges:   []AppliedTacticsChange{},
 	}
 }

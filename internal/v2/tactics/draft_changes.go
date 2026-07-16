@@ -1,0 +1,325 @@
+package tactics
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+)
+
+const maxDraftChangesPerTurn = 16
+
+func normalizeTacticsDraftChanges(changes []TacticsDraftChange) []TacticsDraftChange {
+	result := make([]TacticsDraftChange, 0, len(changes))
+	for _, change := range changes {
+		change.Operation = strings.ToLower(strings.TrimSpace(change.Operation))
+		change.EntityType = strings.ToLower(strings.TrimSpace(change.EntityType))
+		change.DraftKey = strings.TrimSpace(change.DraftKey)
+		change.ParentEntityType = strings.ToLower(strings.TrimSpace(change.ParentEntityType))
+		change.ParentDraftKey = strings.TrimSpace(change.ParentDraftKey)
+		change.Title = strings.TrimSpace(change.Title)
+		change.Description = strings.TrimSpace(change.Description)
+		change.Goal = strings.TrimSpace(change.Goal)
+		change.CKP = strings.TrimSpace(change.CKP)
+		change.Reason = strings.TrimSpace(change.Reason)
+		change.ClosesRisk = strings.TrimSpace(change.ClosesRisk)
+		change.MetricName = strings.TrimSpace(change.MetricName)
+		change.MetricCurrent = strings.TrimSpace(change.MetricCurrent)
+		change.MetricTarget = strings.TrimSpace(change.MetricTarget)
+		change.WhyNeeded = strings.TrimSpace(change.WhyNeeded)
+		change.SuccessCriteria = strings.TrimSpace(change.SuccessCriteria)
+		change.FailureCriteria = strings.TrimSpace(change.FailureCriteria)
+		change.Severity = strings.ToLower(strings.TrimSpace(change.Severity))
+		change.PotentialImpact = strings.ToLower(strings.TrimSpace(change.PotentialImpact))
+		change.CoverageStatus = strings.ToLower(strings.TrimSpace(change.CoverageStatus))
+
+		if !change.Apply || (change.Operation != "create" && change.Operation != "update") {
+			continue
+		}
+		switch change.EntityType {
+		case EntityWorkstream, EntityProject, "risk", "opportunity":
+		default:
+			continue
+		}
+		if change.Operation == "create" && change.Title == "" {
+			continue
+		}
+		if change.Operation == "update" && (change.EntityID == nil || *change.EntityID <= 0) {
+			continue
+		}
+		result = append(result, change)
+		if len(result) >= maxDraftChangesPerTurn {
+			break
+		}
+	}
+	return result
+}
+
+func (s *Store) ApplyFacilitatorDraftChanges(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	plan TacticalPlan,
+	messageID int,
+	changes []TacticsDraftChange,
+) []AppliedTacticsChange {
+	applied := []AppliedTacticsChange{}
+	createdByKey := map[string]int{}
+	for _, change := range normalizeTacticsDraftChanges(changes) {
+		parentID := pointerValue(change.ParentEntityID)
+		if parentID <= 0 && change.ParentDraftKey != "" {
+			parentID = createdByKey[change.ParentDraftKey]
+		}
+		item, ok := s.applyFacilitatorDraftChange(ctx, workspaceID, userID, plan, parentID, change)
+		if !ok {
+			continue
+		}
+		if change.DraftKey != "" {
+			createdByKey[change.DraftKey] = item.EntityID
+		}
+		item.ID = s.recordAppliedTacticsChange(ctx, workspaceID, plan.ID, messageID, userID, item)
+		applied = append(applied, item)
+	}
+	return applied
+}
+
+func (s *Store) applyFacilitatorDraftChange(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	plan TacticalPlan,
+	parentID int,
+	change TacticsDraftChange,
+) (AppliedTacticsChange, bool) {
+	switch change.EntityType {
+	case EntityWorkstream:
+		return s.applyWorkstreamDraft(ctx, workspaceID, userID, plan, change)
+	case EntityProject:
+		return s.applyProjectDraft(ctx, workspaceID, userID, plan, parentID, change)
+	case "risk":
+		return s.applyRiskDraft(ctx, workspaceID, userID, plan, parentID, change)
+	case "opportunity":
+		return s.applyOpportunityDraft(ctx, workspaceID, userID, plan, parentID, change)
+	default:
+		return AppliedTacticsChange{}, false
+	}
+}
+
+func (s *Store) applyWorkstreamDraft(ctx context.Context, workspaceID int, userID int, plan TacticalPlan, change TacticsDraftChange) (AppliedTacticsChange, bool) {
+	operation := change.Operation
+	entityID := pointerValue(change.EntityID)
+	if operation == "create" {
+		if existingID, err := s.workstreamIDByTitle(ctx, workspaceID, plan.ID, change.Title); err == nil {
+			operation = "update"
+			entityID = existingID
+		}
+	}
+	input := WorkstreamInput{
+		TacticalPlanID: plan.ID,
+		Title:          change.Title, Description: change.Description, Goal: change.Goal, CKP: change.CKP,
+		Reason: change.Reason, ClosesRisk: change.ClosesRisk, MetricName: change.MetricName,
+		MetricCurrent: change.MetricCurrent, MetricTarget: change.MetricTarget,
+	}
+	var item Workstream
+	var err error
+	if operation == "create" {
+		input.Status = WorkstreamStatusActive
+		input.HealthStatus = "В работе"
+		item, err = s.createWorkstream(ctx, workspaceID, userID, input, SourceAISuggestion)
+	} else {
+		current, lookupErr := s.workstreamByID(ctx, workspaceID, entityID)
+		if lookupErr != nil || current.TacticalPlanID != plan.ID {
+			return AppliedTacticsChange{}, false
+		}
+		item, err = s.UpdateWorkstream(ctx, workspaceID, entityID, input)
+	}
+	if err != nil {
+		return AppliedTacticsChange{}, false
+	}
+	return appliedChange(operation, EntityWorkstream, item.ID, item.Title, change), true
+}
+
+func (s *Store) applyProjectDraft(ctx context.Context, workspaceID int, userID int, plan TacticalPlan, parentID int, change TacticsDraftChange) (AppliedTacticsChange, bool) {
+	operation := change.Operation
+	entityID := pointerValue(change.EntityID)
+	if operation == "create" {
+		if parentID <= 0 {
+			return AppliedTacticsChange{}, false
+		}
+		parent, err := s.workstreamByID(ctx, workspaceID, parentID)
+		if err != nil || parent.TacticalPlanID != plan.ID {
+			return AppliedTacticsChange{}, false
+		}
+		if existingID, err := s.projectIDByTitle(ctx, workspaceID, parentID, change.Title); err == nil {
+			operation = "update"
+			entityID = existingID
+		}
+	}
+	input := ProjectInput{
+		WorkstreamID: parentID, Title: change.Title, Description: change.Description,
+		WhyNeeded: change.WhyNeeded, SuccessCriteria: change.SuccessCriteria,
+		FailureCriteria: change.FailureCriteria, MetricName: change.MetricName,
+	}
+	var item Project
+	var err error
+	if operation == "create" {
+		input.Status = ProjectStatusActive
+		item, err = s.createProject(ctx, workspaceID, userID, input, SourceAISuggestion)
+	} else {
+		current, lookupErr := s.projectByID(ctx, workspaceID, entityID)
+		if lookupErr != nil {
+			return AppliedTacticsChange{}, false
+		}
+		parent, parentErr := s.workstreamByID(ctx, workspaceID, current.WorkstreamID)
+		if parentErr != nil || parent.TacticalPlanID != plan.ID {
+			return AppliedTacticsChange{}, false
+		}
+		item, err = s.UpdateProject(ctx, workspaceID, entityID, input)
+	}
+	if err != nil {
+		return AppliedTacticsChange{}, false
+	}
+	return appliedChange(operation, EntityProject, item.ID, item.Title, change), true
+}
+
+func (s *Store) applyRiskDraft(ctx context.Context, workspaceID int, userID int, plan TacticalPlan, parentID int, change TacticsDraftChange) (AppliedTacticsChange, bool) {
+	operation := change.Operation
+	entityID := pointerValue(change.EntityID)
+	entityType := change.ParentEntityType
+	if entityType == "" {
+		entityType = EntityPlan
+	}
+	if entityType == EntityPlan && parentID <= 0 {
+		parentID = plan.ID
+	}
+	if operation == "create" {
+		if existingID, err := s.riskIDByTitle(ctx, workspaceID, plan.ID, entityType, parentID, change.Title); err == nil {
+			operation = "update"
+			entityID = existingID
+		}
+	}
+	input := RiskInput{EntityType: entityType, EntityID: parentID, Title: change.Title, Description: change.Description, Severity: change.Severity, CoverageStatus: change.CoverageStatus}
+	var item Risk
+	var err error
+	if operation == "create" {
+		item, err = s.createRisk(ctx, workspaceID, userID, input, SourceAISuggestion)
+	} else {
+		current, lookupErr := s.riskByID(ctx, workspaceID, entityID)
+		if lookupErr != nil || current.TacticalPlanID != plan.ID {
+			return AppliedTacticsChange{}, false
+		}
+		item, err = s.UpdateRisk(ctx, workspaceID, entityID, input)
+	}
+	if err != nil {
+		return AppliedTacticsChange{}, false
+	}
+	return appliedChange(operation, "risk", item.ID, item.Title, change), true
+}
+
+func (s *Store) applyOpportunityDraft(ctx context.Context, workspaceID int, userID int, plan TacticalPlan, parentID int, change TacticsDraftChange) (AppliedTacticsChange, bool) {
+	operation := change.Operation
+	entityID := pointerValue(change.EntityID)
+	entityType := change.ParentEntityType
+	if entityType == "" {
+		entityType = EntityPlan
+	}
+	if entityType == EntityPlan && parentID <= 0 {
+		parentID = plan.ID
+	}
+	if operation == "create" {
+		if existingID, err := s.opportunityIDByTitle(ctx, workspaceID, plan.ID, entityType, parentID, change.Title); err == nil {
+			operation = "update"
+			entityID = existingID
+		}
+	}
+	input := OpportunityInput{EntityType: entityType, EntityID: parentID, Title: change.Title, Description: change.Description, PotentialImpact: change.PotentialImpact, CoverageStatus: change.CoverageStatus}
+	var item Opportunity
+	var err error
+	if operation == "create" {
+		item, err = s.createOpportunity(ctx, workspaceID, userID, input, SourceAISuggestion)
+	} else {
+		current, lookupErr := s.opportunityByID(ctx, workspaceID, entityID)
+		if lookupErr != nil || current.TacticalPlanID != plan.ID {
+			return AppliedTacticsChange{}, false
+		}
+		item, err = s.UpdateOpportunity(ctx, workspaceID, entityID, input)
+	}
+	if err != nil {
+		return AppliedTacticsChange{}, false
+	}
+	return appliedChange(operation, "opportunity", item.ID, item.Title, change), true
+}
+
+func appliedChange(operation string, entityType string, entityID int, title string, change TacticsDraftChange) AppliedTacticsChange {
+	fields := map[string]any{}
+	raw, _ := json.Marshal(change)
+	_ = json.Unmarshal(raw, &fields)
+	delete(fields, "apply")
+	return AppliedTacticsChange{Operation: operation, EntityType: entityType, EntityID: entityID, Title: title, Status: "draft", Fields: fields}
+}
+
+func (s *Store) recordAppliedTacticsChange(ctx context.Context, workspaceID int, planID int, messageID int, userID int, item AppliedTacticsChange) int {
+	var id int
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO v2_tactics_applied_changes (
+			workspace_id, tactical_plan_id, source_message_id, operation, entity_type,
+			entity_id, title, change_json, created_by
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id
+	`, workspaceID, planID, messageID, item.Operation, item.EntityType, item.EntityID, item.Title, tacticsJSON(item.Fields), userID).Scan(&id)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+func (s *Store) workstreamIDByTitle(ctx context.Context, workspaceID int, planID int, title string) (int, error) {
+	var id int
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id FROM v2_tactical_workstreams
+		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL
+			AND LOWER(BTRIM(title))=LOWER(BTRIM($3))
+		ORDER BY id DESC LIMIT 1
+	`, workspaceID, planID, title).Scan(&id)
+	return id, err
+}
+
+func (s *Store) projectIDByTitle(ctx context.Context, workspaceID int, workstreamID int, title string) (int, error) {
+	var id int
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id FROM v2_tactical_projects
+		WHERE workspace_id=$1 AND workstream_id=$2 AND archived_at IS NULL
+			AND LOWER(BTRIM(title))=LOWER(BTRIM($3))
+		ORDER BY id DESC LIMIT 1
+	`, workspaceID, workstreamID, title).Scan(&id)
+	return id, err
+}
+
+func (s *Store) riskIDByTitle(ctx context.Context, workspaceID int, planID int, entityType string, entityID int, title string) (int, error) {
+	var id int
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id FROM v2_tactical_risks
+		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND entity_type=$3 AND entity_id=$4
+			AND archived_at IS NULL AND LOWER(BTRIM(title))=LOWER(BTRIM($5))
+		ORDER BY id DESC LIMIT 1
+	`, workspaceID, planID, entityType, entityID, title).Scan(&id)
+	return id, err
+}
+
+func (s *Store) opportunityIDByTitle(ctx context.Context, workspaceID int, planID int, entityType string, entityID int, title string) (int, error) {
+	var id int
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id FROM v2_tactical_opportunities
+		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND entity_type=$3 AND entity_id=$4
+			AND archived_at IS NULL AND LOWER(BTRIM(title))=LOWER(BTRIM($5))
+		ORDER BY id DESC LIMIT 1
+	`, workspaceID, planID, entityType, entityID, title).Scan(&id)
+	return id, err
+}
+
+func pointerValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}

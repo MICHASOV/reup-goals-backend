@@ -36,7 +36,8 @@ const (
 	CoverageAccepted         = "accepted"
 	CoverageIgnored          = "ignored"
 
-	SourceManual = "manual"
+	SourceManual       = "manual"
+	SourceAISuggestion = "ai_suggestion"
 
 	TacticsFacilitatorPromptVersion = "tactics_facilitator_openai_native_v0_1_0"
 	TacticsReadinessPromptVersion   = "tactics_quality_readiness_auditor_v0_1_1"
@@ -47,19 +48,21 @@ const (
 )
 
 type TacticalPlan struct {
-	ID          int        `json:"id"`
-	WorkspaceID int        `json:"workspace_id"`
-	StrategyID  int        `json:"strategy_id"`
-	CourseID    *int       `json:"course_id"`
-	Status      string     `json:"status"`
-	Revision    int        `json:"revision"`
-	Title       string     `json:"title"`
-	Summary     string     `json:"summary"`
-	Source      string     `json:"source"`
-	CreatedBy   *int       `json:"created_by,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	ActivatedAt *time.Time `json:"activated_at"`
+	ID                       int        `json:"id"`
+	WorkspaceID              int        `json:"workspace_id"`
+	StrategyID               int        `json:"strategy_id"`
+	CourseID                 *int       `json:"course_id"`
+	Status                   string     `json:"status"`
+	Revision                 int        `json:"revision"`
+	ActivatedRevision        *int       `json:"activated_revision,omitempty"`
+	ActivationReadinessRunID *int       `json:"activation_readiness_run_id,omitempty"`
+	Title                    string     `json:"title"`
+	Summary                  string     `json:"summary"`
+	Source                   string     `json:"source"`
+	CreatedBy                *int       `json:"created_by,omitempty"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
+	ActivatedAt              *time.Time `json:"activated_at"`
 }
 
 type StrategySummary struct {
@@ -260,22 +263,60 @@ type TacticsFacilitatorMessageRequest struct {
 }
 
 type TacticsFacilitatorMessageResponse struct {
-	WorkspaceID      int                  `json:"workspace_id"`
-	AssistantMessage string               `json:"assistant_message"`
-	RecentMessages   []TacticsChatMessage `json:"recent_messages"`
-	OpenAIResponseID string               `json:"openai_response_id,omitempty"`
-	Session          TacticsSessionState  `json:"session"`
+	WorkspaceID      int                    `json:"workspace_id"`
+	AssistantMessage string                 `json:"assistant_message"`
+	RecentMessages   []TacticsChatMessage   `json:"recent_messages"`
+	OpenAIResponseID string                 `json:"openai_response_id,omitempty"`
+	Session          TacticsSessionState    `json:"session"`
+	AppliedChanges   []AppliedTacticsChange `json:"applied_changes"`
+}
+
+type TacticsDraftChange struct {
+	Apply            bool   `json:"apply"`
+	Operation        string `json:"operation"`
+	EntityType       string `json:"entity_type"`
+	EntityID         *int   `json:"entity_id,omitempty"`
+	DraftKey         string `json:"draft_key,omitempty"`
+	ParentEntityType string `json:"parent_entity_type,omitempty"`
+	ParentEntityID   *int   `json:"parent_entity_id,omitempty"`
+	ParentDraftKey   string `json:"parent_draft_key,omitempty"`
+	Title            string `json:"title"`
+	Description      string `json:"description,omitempty"`
+	Goal             string `json:"goal,omitempty"`
+	CKP              string `json:"ckp,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	ClosesRisk       string `json:"closes_risk,omitempty"`
+	MetricName       string `json:"metric_name,omitempty"`
+	MetricCurrent    string `json:"metric_current,omitempty"`
+	MetricTarget     string `json:"metric_target,omitempty"`
+	WhyNeeded        string `json:"why_needed,omitempty"`
+	SuccessCriteria  string `json:"success_criteria,omitempty"`
+	FailureCriteria  string `json:"failure_criteria,omitempty"`
+	Severity         string `json:"severity,omitempty"`
+	PotentialImpact  string `json:"potential_impact,omitempty"`
+	CoverageStatus   string `json:"coverage_status,omitempty"`
+}
+
+type AppliedTacticsChange struct {
+	ID         int            `json:"id,omitempty"`
+	Operation  string         `json:"operation"`
+	EntityType string         `json:"entity_type"`
+	EntityID   int            `json:"entity_id"`
+	Title      string         `json:"title"`
+	Status     string         `json:"status"`
+	Fields     map[string]any `json:"fields,omitempty"`
 }
 
 type tacticsFacilitatorModelOutput struct {
-	Message              string       `json:"message"`
-	SessionStatus        string       `json:"session_status"`
-	StatusReason         string       `json:"status_reason"`
-	CurrentFocus         TacticsFocus `json:"current_focus"`
-	DecisionsDetected    []string     `json:"decisions_detected"`
-	OpenQuestions        []string     `json:"open_questions"`
-	NeedsStrategyReview  bool         `json:"needs_strategy_review"`
-	StrategyReviewReason string       `json:"strategy_review_reason"`
+	Message              string               `json:"message"`
+	SessionStatus        string               `json:"session_status"`
+	StatusReason         string               `json:"status_reason"`
+	CurrentFocus         TacticsFocus         `json:"current_focus"`
+	DecisionsDetected    []string             `json:"decisions_detected"`
+	OpenQuestions        []string             `json:"open_questions"`
+	NeedsStrategyReview  bool                 `json:"needs_strategy_review"`
+	StrategyReviewReason string               `json:"strategy_review_reason"`
+	DraftChanges         []TacticsDraftChange `json:"draft_changes"`
 }
 
 const (

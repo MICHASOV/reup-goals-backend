@@ -1161,6 +1161,77 @@ var migrations = []Migration{
 				FOR EACH ROW EXECUTE FUNCTION reup_touch_tactical_plan_revision();
 		`,
 	},
+	{
+		ID: "20260716_022_tactics_completion_pipeline",
+		SQL: `
+			ALTER TABLE v2_tactical_plans
+				ADD COLUMN IF NOT EXISTS activated_revision INTEGER NULL,
+				ADD COLUMN IF NOT EXISTS activation_readiness_run_id INTEGER NULL REFERENCES v2_tactics_readiness_runs(id) ON DELETE SET NULL;
+
+			CREATE TABLE IF NOT EXISTS v2_tactical_plan_versions (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				tactical_plan_id INTEGER NOT NULL REFERENCES v2_tactical_plans(id) ON DELETE CASCADE,
+				revision INTEGER NOT NULL,
+				readiness_run_id INTEGER NULL REFERENCES v2_tactics_readiness_runs(id) ON DELETE SET NULL,
+				snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				activated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(tactical_plan_id, revision)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactical_plan_versions_workspace
+				ON v2_tactical_plan_versions (workspace_id, tactical_plan_id, revision DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_tactics_applied_changes (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				tactical_plan_id INTEGER NOT NULL REFERENCES v2_tactical_plans(id) ON DELETE CASCADE,
+				source_message_id INTEGER NULL REFERENCES v2_tactics_chat_messages(id) ON DELETE SET NULL,
+				operation TEXT NOT NULL,
+				entity_type TEXT NOT NULL,
+				entity_id INTEGER NOT NULL,
+				title TEXT NOT NULL DEFAULT '',
+				change_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactics_applied_changes_plan
+				ON v2_tactics_applied_changes (workspace_id, tactical_plan_id, created_at DESC, id DESC);
+
+			CREATE OR REPLACE FUNCTION reup_touch_tactical_plan_revision()
+			RETURNS TRIGGER AS $$
+			DECLARE
+				plan_id INTEGER;
+			BEGIN
+				IF TG_TABLE_NAME = 'v2_tactical_workstreams' THEN
+					plan_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.tactical_plan_id ELSE NEW.tactical_plan_id END;
+				ELSIF TG_TABLE_NAME = 'v2_tactical_projects' THEN
+					SELECT tactical_plan_id INTO plan_id
+					FROM v2_tactical_workstreams
+					WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.workstream_id ELSE NEW.workstream_id END;
+				ELSE
+					plan_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.tactical_plan_id ELSE NEW.tactical_plan_id END;
+				END IF;
+
+				IF plan_id IS NOT NULL THEN
+					UPDATE v2_tactical_plans
+					SET revision=revision + 1,
+						status='draft',
+						activated_at=NULL,
+						updated_at=NOW()
+					WHERE id=plan_id;
+				END IF;
+
+				IF TG_OP = 'DELETE' THEN
+					RETURN OLD;
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

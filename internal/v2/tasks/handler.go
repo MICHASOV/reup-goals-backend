@@ -8,20 +8,23 @@ import (
 	"strconv"
 	"strings"
 
+	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/auth"
 	"reup-goals-backend/internal/v2/api"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
 type Handler struct {
-	store      *Store
-	workspaces *workspaces.Store
+	store       *Store
+	workspaces  *workspaces.Store
+	suggestions *TaskSuggestionService
 }
 
-func NewHandler(dbx *sql.DB) *Handler {
+func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient) *Handler {
 	return &Handler{
-		store:      NewStore(dbx),
-		workspaces: workspaces.NewStore(dbx),
+		store:       NewStore(dbx),
+		workspaces:  workspaces.NewStore(dbx),
+		suggestions: NewTaskSuggestionService(dbx, aiClient),
 	}
 }
 
@@ -36,6 +39,8 @@ func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 		h.tasks(w, r, workspace.ID, userID)
 	case r.URL.Path == "/api/v2/tasks/overview":
 		h.overview(w, r, workspace.ID)
+	case r.URL.Path == "/api/v2/tasks/suggestions":
+		h.taskSuggestions(w, r, workspace.ID)
 	case strings.HasPrefix(r.URL.Path, "/api/v2/tasks/workstreams/"):
 		h.workstream(w, r, workspace.ID)
 	case strings.HasPrefix(r.URL.Path, "/api/v2/tasks/"):
@@ -43,6 +48,32 @@ func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) taskSuggestions(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	var request TaskSuggestionRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	response, err := h.suggestions.Generate(r.Context(), workspaceID, request)
+	if errors.Is(err, ErrForbidden) || errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if err != nil {
+		if err.Error() == "invalid_task_suggestion_request" {
+			api.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		api.WriteError(w, http.StatusBadGateway, "task_suggestions_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) overview(w http.ResponseWriter, r *http.Request, workspaceID int) {

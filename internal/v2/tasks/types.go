@@ -155,6 +155,29 @@ type TaskInput struct {
 	SourceID      *int    `json:"source_id"`
 }
 
+type TaskSuggestionRequest struct {
+	WorkstreamID  int    `json:"workstream_id"`
+	ProjectID     *int   `json:"project_id,omitempty"`
+	RiskID        *int   `json:"risk_id,omitempty"`
+	OpportunityID *int   `json:"opportunity_id,omitempty"`
+	Instruction   string `json:"instruction,omitempty"`
+}
+
+type TaskSuggestion struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	WhyNow      string `json:"why_now"`
+	Priority    int    `json:"priority"`
+	DueInDays   *int   `json:"due_in_days,omitempty"`
+}
+
+type TaskSuggestionResponse struct {
+	Summary      string           `json:"summary"`
+	Suggestions  []TaskSuggestion `json:"suggestions"`
+	InputTokens  int              `json:"input_tokens,omitempty"`
+	OutputTokens int              `json:"output_tokens,omitempty"`
+}
+
 func ValidStatus(status string) bool {
 	switch status {
 	case StatusFree, StatusInProgress, StatusDone, StatusArchived:

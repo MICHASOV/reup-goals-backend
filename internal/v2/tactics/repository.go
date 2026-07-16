@@ -100,6 +100,10 @@ func (s *Store) UpdatePlan(ctx context.Context, workspaceID int, planID int, tit
 	if status == "" {
 		status = current.Status
 	}
+	contentChanged := title != current.Title || summary != current.Summary
+	if contentChanged && status == PlanStatusActive {
+		status = PlanStatusDraft
+	}
 
 	row := s.dbx.QueryRowContext(ctx, `
 		UPDATE v2_tactical_plans
@@ -107,16 +111,62 @@ func (s *Store) UpdatePlan(ctx context.Context, workspaceID int, planID int, tit
 			summary=$2,
 			status=$3,
 			revision=revision + CASE WHEN title IS DISTINCT FROM $1 OR summary IS DISTINCT FROM $2 THEN 1 ELSE 0 END,
-			activated_at=CASE WHEN $3=$4 THEN COALESCE(activated_at, NOW()) ELSE activated_at END,
+			activated_at=CASE WHEN $3=$4 THEN COALESCE(activated_at, NOW()) ELSE NULL END,
 			updated_at=NOW()
 		WHERE id=$5 AND workspace_id=$6 AND archived_at IS NULL
-		RETURNING id, workspace_id, strategy_id, course_id, status, revision, title, summary, source, created_by, created_at, updated_at, activated_at
+		RETURNING id, workspace_id, strategy_id, course_id, status, revision, activated_revision, activation_readiness_run_id, title, summary, source, created_by, created_at, updated_at, activated_at
 	`, title, summary, status, PlanStatusActive, planID, workspaceID)
 
 	return scanPlan(row)
 }
 
+func (s *Store) ActivatePlan(ctx context.Context, workspaceID int, userID int, planID int, readinessRunID int, expectedRevision int, snapshot any) (TacticalPlan, error) {
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return TacticalPlan{}, err
+	}
+	defer tx.Rollback()
+
+	row := tx.QueryRowContext(ctx, `
+		UPDATE v2_tactical_plans
+		SET status=$1,
+			activated_revision=revision,
+			activation_readiness_run_id=$2,
+			activated_at=NOW(),
+			updated_at=NOW()
+		WHERE id=$3 AND workspace_id=$4 AND revision=$5 AND archived_at IS NULL
+		RETURNING id, workspace_id, strategy_id, course_id, status, revision, activated_revision,
+			activation_readiness_run_id, title, summary, source, created_by, created_at, updated_at, activated_at
+	`, PlanStatusActive, readinessRunID, planID, workspaceID, expectedRevision)
+	plan, err := scanPlan(row)
+	if err != nil {
+		return TacticalPlan{}, err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO v2_tactical_plan_versions (
+			workspace_id, tactical_plan_id, revision, readiness_run_id, snapshot_json, activated_by
+		)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (tactical_plan_id, revision) DO UPDATE SET
+			readiness_run_id=EXCLUDED.readiness_run_id,
+			snapshot_json=EXCLUDED.snapshot_json,
+			activated_by=EXCLUDED.activated_by,
+			activated_at=NOW()
+	`, workspaceID, planID, plan.Revision, readinessRunID, tacticsJSON(snapshot), userID)
+	if err != nil {
+		return TacticalPlan{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return TacticalPlan{}, err
+	}
+	return plan, nil
+}
+
 func (s *Store) CreateWorkstream(ctx context.Context, workspaceID int, userID int, input WorkstreamInput) (Workstream, error) {
+	return s.createWorkstream(ctx, workspaceID, userID, input, SourceManual)
+}
+
+func (s *Store) createWorkstream(ctx context.Context, workspaceID int, userID int, input WorkstreamInput, source string) (Workstream, error) {
 	input.normalize()
 	plan, err := s.planByID(ctx, workspaceID, input.TacticalPlanID)
 	if err != nil {
@@ -141,7 +191,7 @@ func (s *Store) CreateWorkstream(ctx context.Context, workspaceID int, userID in
 			status, health_status, contribution_type, confidence, source, sort_order, created_at, updated_at
 	`, workspaceID, plan.ID, plan.StrategyID, input.Title, input.Description, input.Goal, input.CKP, input.Reason,
 		input.ClosesRisk, input.MetricName, input.MetricCurrent, input.MetricTarget, input.Status,
-		input.HealthStatus, input.ContributionType, SourceManual, sortOrder, userID)
+		input.HealthStatus, input.ContributionType, source, sortOrder, userID)
 
 	return scanWorkstream(row)
 }
@@ -185,6 +235,9 @@ func (s *Store) UpdateWorkstream(ctx context.Context, workspaceID int, workstrea
 	if input.ContributionType == "" {
 		input.ContributionType = current.ContributionType
 	}
+	if input.Status == "" {
+		input.Status = current.Status
+	}
 
 	row := s.dbx.QueryRowContext(ctx, `
 		UPDATE v2_tactical_workstreams
@@ -214,6 +267,10 @@ func (s *Store) UpdateWorkstream(ctx context.Context, workspaceID int, workstrea
 }
 
 func (s *Store) CreateProject(ctx context.Context, workspaceID int, userID int, input ProjectInput) (Project, error) {
+	return s.createProject(ctx, workspaceID, userID, input, SourceManual)
+}
+
+func (s *Store) createProject(ctx context.Context, workspaceID int, userID int, input ProjectInput, source string) (Project, error) {
 	input.normalize()
 	workstream, err := s.workstreamByID(ctx, workspaceID, input.WorkstreamID)
 	if err != nil {
@@ -236,7 +293,7 @@ func (s *Store) CreateProject(ctx context.Context, workspaceID int, userID int, 
 			success_criteria, failure_criteria, metric_name, status, confidence,
 			source, sort_order, created_at, updated_at
 	`, workspaceID, workstream.ID, input.Title, input.Description, input.WhyNeeded, input.SuccessCriteria,
-		input.FailureCriteria, input.MetricName, input.Status, SourceManual, sortOrder, userID)
+		input.FailureCriteria, input.MetricName, input.Status, source, sortOrder, userID)
 
 	return scanProject(row)
 }
@@ -265,6 +322,9 @@ func (s *Store) UpdateProject(ctx context.Context, workspaceID int, projectID in
 	if input.MetricName == "" {
 		input.MetricName = current.MetricName
 	}
+	if input.Status == "" {
+		input.Status = current.Status
+	}
 
 	row := s.dbx.QueryRowContext(ctx, `
 		UPDATE v2_tactical_projects
@@ -288,6 +348,10 @@ func (s *Store) UpdateProject(ctx context.Context, workspaceID int, projectID in
 }
 
 func (s *Store) CreateRisk(ctx context.Context, workspaceID int, userID int, input RiskInput) (Risk, error) {
+	return s.createRisk(ctx, workspaceID, userID, input, SourceManual)
+}
+
+func (s *Store) createRisk(ctx context.Context, workspaceID int, userID int, input RiskInput, source string) (Risk, error) {
 	input.normalize()
 	planID, err := s.resolvePlanForEntity(ctx, workspaceID, input.EntityType, input.EntityID)
 	if err != nil {
@@ -304,7 +368,7 @@ func (s *Store) CreateRisk(ctx context.Context, workspaceID int, userID int, inp
 			id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
 			severity, status, coverage_status, source, created_at, updated_at
 	`, workspaceID, planID, input.EntityType, input.EntityID, input.Title, input.Description,
-		input.Severity, input.Status, input.CoverageStatus, SourceManual, userID)
+		input.Severity, input.Status, input.CoverageStatus, source, userID)
 
 	return scanRisk(row)
 }
@@ -349,6 +413,10 @@ func (s *Store) UpdateRisk(ctx context.Context, workspaceID int, riskID int, inp
 }
 
 func (s *Store) CreateOpportunity(ctx context.Context, workspaceID int, userID int, input OpportunityInput) (Opportunity, error) {
+	return s.createOpportunity(ctx, workspaceID, userID, input, SourceManual)
+}
+
+func (s *Store) createOpportunity(ctx context.Context, workspaceID int, userID int, input OpportunityInput, source string) (Opportunity, error) {
 	input.normalize()
 	planID, err := s.resolvePlanForEntity(ctx, workspaceID, input.EntityType, input.EntityID)
 	if err != nil {
@@ -365,7 +433,7 @@ func (s *Store) CreateOpportunity(ctx context.Context, workspaceID int, userID i
 			id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
 			potential_impact, status, coverage_status, source, created_at, updated_at
 	`, workspaceID, planID, input.EntityType, input.EntityID, input.Title, input.Description,
-		input.PotentialImpact, input.Status, input.CoverageStatus, SourceManual, userID)
+		input.PotentialImpact, input.Status, input.CoverageStatus, source, userID)
 
 	return scanOpportunity(row)
 }
@@ -490,7 +558,7 @@ func (s *Store) getOrCreatePlan(ctx context.Context, workspaceID int, userID int
 		INSERT INTO v2_tactical_plans (workspace_id, strategy_id, course_id, status, title, summary, source, created_by)
 		VALUES ($1, $2, $3, $4, $5, '', $6, $7)
 		ON CONFLICT (workspace_id, strategy_id) DO UPDATE SET updated_at=v2_tactical_plans.updated_at
-		RETURNING id, workspace_id, strategy_id, course_id, status, revision, title, summary, source, created_by, created_at, updated_at, activated_at
+		RETURNING id, workspace_id, strategy_id, course_id, status, revision, activated_revision, activation_readiness_run_id, title, summary, source, created_by, created_at, updated_at, activated_at
 	`, workspaceID, strategyID, nullableInt(courseID), PlanStatusDraft, "Тактический план", SourceManual, userID)
 
 	plan, err = scanPlan(row)
@@ -526,10 +594,12 @@ func (s *Store) attachActiveCourse(ctx context.Context, workspaceID int, plan Ta
 		UPDATE v2_tactical_plans
 		SET course_id=$1,
 			revision=revision + CASE WHEN course_id IS DISTINCT FROM $1 THEN 1 ELSE 0 END,
+			status=CASE WHEN course_id IS DISTINCT FROM $1 THEN $5 ELSE status END,
+			activated_at=CASE WHEN course_id IS DISTINCT FROM $1 THEN NULL ELSE activated_at END,
 			updated_at=NOW()
 		WHERE id=$2 AND workspace_id=$3 AND strategy_id=$4 AND archived_at IS NULL
-		RETURNING id, workspace_id, strategy_id, course_id, status, revision, title, summary, source, created_by, created_at, updated_at, activated_at
-	`, courseID, plan.ID, workspaceID, plan.StrategyID)
+		RETURNING id, workspace_id, strategy_id, course_id, status, revision, activated_revision, activation_readiness_run_id, title, summary, source, created_by, created_at, updated_at, activated_at
+	`, courseID, plan.ID, workspaceID, plan.StrategyID, PlanStatusDraft)
 	return scanPlan(row)
 }
 
@@ -550,7 +620,7 @@ func activeCourseIDTx(ctx context.Context, tx *sql.Tx, workspaceID int, strategy
 
 func (s *Store) planByStrategy(ctx context.Context, workspaceID int, strategyID int) (TacticalPlan, error) {
 	row := s.dbx.QueryRowContext(ctx, `
-		SELECT id, workspace_id, strategy_id, course_id, status, revision, title, summary, source, created_by, created_at, updated_at, activated_at
+		SELECT id, workspace_id, strategy_id, course_id, status, revision, activated_revision, activation_readiness_run_id, title, summary, source, created_by, created_at, updated_at, activated_at
 		FROM v2_tactical_plans
 		WHERE workspace_id=$1 AND strategy_id=$2 AND archived_at IS NULL
 	`, workspaceID, strategyID)
@@ -559,7 +629,7 @@ func (s *Store) planByStrategy(ctx context.Context, workspaceID int, strategyID 
 
 func (s *Store) planByID(ctx context.Context, workspaceID int, planID int) (TacticalPlan, error) {
 	row := s.dbx.QueryRowContext(ctx, `
-		SELECT id, workspace_id, strategy_id, course_id, status, revision, title, summary, source, created_by, created_at, updated_at, activated_at
+		SELECT id, workspace_id, strategy_id, course_id, status, revision, activated_revision, activation_readiness_run_id, title, summary, source, created_by, created_at, updated_at, activated_at
 		FROM v2_tactical_plans
 		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
 	`, planID, workspaceID)
@@ -958,9 +1028,11 @@ func scanPlan(scanner scanner) (TacticalPlan, error) {
 	var plan TacticalPlan
 	var courseID sql.NullInt64
 	var createdBy sql.NullInt64
+	var activatedRevision sql.NullInt64
+	var readinessRunID sql.NullInt64
 	var activatedAt sql.NullTime
 	err := scanner.Scan(
-		&plan.ID, &plan.WorkspaceID, &plan.StrategyID, &courseID, &plan.Status, &plan.Revision, &plan.Title,
+		&plan.ID, &plan.WorkspaceID, &plan.StrategyID, &courseID, &plan.Status, &plan.Revision, &activatedRevision, &readinessRunID, &plan.Title,
 		&plan.Summary, &plan.Source, &createdBy, &plan.CreatedAt, &plan.UpdatedAt, &activatedAt,
 	)
 	if err != nil {
@@ -973,6 +1045,14 @@ func scanPlan(scanner scanner) (TacticalPlan, error) {
 	if createdBy.Valid {
 		value := int(createdBy.Int64)
 		plan.CreatedBy = &value
+	}
+	if activatedRevision.Valid {
+		value := int(activatedRevision.Int64)
+		plan.ActivatedRevision = &value
+	}
+	if readinessRunID.Valid {
+		value := int(readinessRunID.Int64)
+		plan.ActivationReadinessRunID = &value
 	}
 	if activatedAt.Valid {
 		plan.ActivatedAt = &activatedAt.Time

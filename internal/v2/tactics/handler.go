@@ -204,7 +204,7 @@ func (h *Handler) Tactics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workspace, _, ok := h.currentWorkspace(w, r)
+	workspace, userID, ok := h.currentWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -239,15 +239,31 @@ func (h *Handler) Tactics(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, http.StatusConflict, "tactics_readiness_required_after_changes")
 			return
 		}
-		canActivate, err := h.store.CanActivateTacticalPlan(r.Context(), workspace.ID, planID)
+		latest, err := h.readiness.Latest(r.Context(), workspace.ID)
 		if err != nil {
 			api.WriteError(w, http.StatusInternalServerError, "tactics_readiness_check_failed")
 			return
 		}
-		if !canActivate {
+		if latest.Run == nil || !latest.IsCurrent || latest.Run.TacticalPlanID != planID || !latest.Run.CanActivate {
 			api.WriteError(w, http.StatusConflict, "tactics_readiness_required")
 			return
 		}
+		snapshot, err := h.store.Current(r.Context(), workspace.ID, userID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "tactics_snapshot_failed")
+			return
+		}
+		plan, err := h.store.ActivatePlan(r.Context(), workspace.ID, userID, planID, latest.Run.ID, latest.Run.TacticalPlanRevision, snapshot)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				api.WriteError(w, http.StatusConflict, "tactics_readiness_required_after_changes")
+				return
+			}
+			api.WriteError(w, http.StatusInternalServerError, "tactics_activation_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"tactical_plan": plan})
+		return
 	}
 
 	plan, err := h.store.UpdatePlan(r.Context(), workspace.ID, planID, body.Title, body.Summary, body.Status)
