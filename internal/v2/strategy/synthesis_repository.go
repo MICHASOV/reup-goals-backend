@@ -110,8 +110,8 @@ func (s *Store) CreateSynthesisRun(
 func (s *Store) MarkSynthesisRunRunning(ctx context.Context, workspaceID int, runID int) error {
 	result, err := s.dbx.ExecContext(ctx, `
 		UPDATE v2_strategy_synthesis_runs
-		SET status=$1, started_at=NOW(), error=''
-		WHERE id=$2 AND workspace_id=$3 AND status=$4
+		SET status=$1, started_at=COALESCE(started_at, NOW()), error=''
+		WHERE id=$2 AND workspace_id=$3 AND status IN ($1, $4)
 	`, SynthesisStatusRunning, runID, workspaceID, SynthesisStatusQueued)
 	if err != nil {
 		return err
@@ -245,6 +245,15 @@ func (s *Store) FailSynthesisRun(ctx context.Context, workspaceID int, runID int
 		SET status=$1, duration_ms=$2, error=$3, completed_at=NOW()
 		WHERE id=$4 AND workspace_id=$5 AND status IN ($6, $7)
 	`, SynthesisStatusFailed, durationMS, strings.TrimSpace(errorText), runID, workspaceID, SynthesisStatusQueued, SynthesisStatusRunning)
+	return err
+}
+
+func (s *Store) RequeueSynthesisRun(ctx context.Context, workspaceID int, runID int, errorText string) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_strategy_synthesis_runs
+		SET status=$1, error=$2, started_at=NULL
+		WHERE id=$3 AND workspace_id=$4 AND status IN ($5, $6)
+	`, SynthesisStatusQueued, strings.TrimSpace(errorText), runID, workspaceID, SynthesisStatusQueued, SynthesisStatusRunning)
 	return err
 }
 

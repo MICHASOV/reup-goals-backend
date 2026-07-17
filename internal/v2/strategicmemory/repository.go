@@ -2,7 +2,7 @@ package strategicmemory
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -933,6 +933,27 @@ func (s *Store) ListFiles(ctx context.Context, workspaceID int) ([]StrategicFile
 	return items, rows.Err()
 }
 
+func (s *Store) ListOwnedWorkspaceIDs(ctx context.Context, userID int) ([]int, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT id FROM workspaces
+		WHERE owner_user_id=$1
+		ORDER BY id
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int, 0)
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) UpsertDocuments(ctx context.Context, workspaceID int, docs []StrategicDocument) (int, error) {
 	updated := 0
 	for _, doc := range docs {
@@ -975,24 +996,41 @@ func (s *Store) Reset(ctx context.Context, workspaceID int) error {
 	}
 	defer tx.Rollback()
 
-	tables := []string{
-		"strategic_ai_runs",
-		"strategic_quality_reports",
-		"strategic_document_chat_sessions",
-		"strategic_document_chat_messages",
-		"strategic_documents",
-		"strategic_dialogue_focus",
-		"strategic_research_agenda_items",
-		"strategic_memory_snapshots",
-		"strategic_claims",
-		"strategic_communication_profiles",
-		"strategic_openai_files",
-		"strategic_raw_sources",
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_ai_runs WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
 	}
-	for _, table := range tables {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE workspace_id=$1", workspaceID); err != nil {
-			return err
-		}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_quality_reports WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_document_chat_messages WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_document_chat_sessions WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_documents WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_dialogue_focus WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_research_agenda_items WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_memory_snapshots WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_claims WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_communication_profiles WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_openai_files WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_raw_sources WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE strategic_openai_sessions
@@ -1157,7 +1195,7 @@ func searchTerms(value string, limit int) []string {
 }
 
 func claimKey(value string) string {
-	hash := sha1.Sum([]byte(normalizeForKey(value)))
+	hash := sha256.Sum256([]byte(normalizeForKey(value)))
 	return hex.EncodeToString(hash[:])
 }
 

@@ -1,19 +1,35 @@
-# reup-goals-backend
+# REUP.goals backend
 
-## Environment
+Go API for the REUP.goals product. The current product API is the workspace-scoped `/api/v2` modular monolith; legacy goal/task routes remain only for compatibility with the old Flutter client.
 
-Core backend:
+## Local verification
 
 ```sh
-DB_HOST=
+go test ./...
+go vet ./...
+go run ./cmd/api
+```
+
+## Required environment
+
+```sh
+APP_ENV=development
+DB_HOST=127.0.0.1
 DB_PORT=5432
 DB_USER=
 DB_PASSWORD=
 DB_NAME=
+DB_SSLMODE=disable
 JWT_SECRET=
-CORS_ALLOWED_ORIGINS=https://reupgoals.pro,https://www.reupgoals.pro
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4.1
+OPENAI_AUDITOR_MODEL=gpt-5.4
+OPENAI_PROXY_URL=direct
+CORS_ALLOWED_ORIGINS=http://localhost:3000
 ```
 
-If `JWT_SECRET` is empty, the backend falls back to the old development secret for compatibility. Production should set a strong value.
+`JWT_SECRET` must contain at least 32 characters. Staging and production require explicit HTTPS CORS origins, a database password, and TLS for a remote PostgreSQL server (`DB_SSLMODE=verify-full` is preferred). Local PostgreSQL on loopback may use `disable`.
 
-`CORS_ALLOWED_ORIGINS` is optional. If it is empty, the backend keeps the previous permissive CORS behavior.
+The web client authenticates through a secure HttpOnly cookie. Bearer JWT remains supported for the compatibility client. Sessions expire after seven days and are invalidated by logout or password reset.
+
+See [docs/security-baseline.md](docs/security-baseline.md) for the security model, operational controls, and release checklist.

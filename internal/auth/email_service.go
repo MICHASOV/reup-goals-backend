@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -212,5 +213,5 @@ func (s *EmailService) post(method string, values url.Values, out any) error {
 		return fmt.Errorf("unisender http status: %d", resp.StatusCode)
 	}
 
-	return json.NewDecoder(resp.Body).Decode(out)
+	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
 }

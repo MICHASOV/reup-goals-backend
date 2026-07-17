@@ -17,6 +17,7 @@ var (
 	ErrNoActiveCourse = errors.New("no_active_course")
 	ErrNoTacticalPlan = errors.New("no_tactical_plan")
 	ErrForbidden      = errors.New("forbidden")
+	ErrInvalidOwner   = errors.New("invalid_task_owner")
 )
 
 type Store struct {
@@ -286,6 +287,9 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 	if err := s.validateLinks(ctx, workspaceID, workstream, input); err != nil {
 		return Task{}, err
 	}
+	if err := s.validateOwner(ctx, workspaceID, input.OwnerUserID); err != nil {
+		return Task{}, err
+	}
 	secondaryWorkstreamIDs, err := s.validateSecondaryWorkstreams(ctx, workspaceID, ctxData.Plan.ID, workstream.ID, input.SecondaryWorkstreamIDs)
 	if err != nil {
 		return Task{}, err
@@ -413,6 +417,9 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 	if err := s.validateLinks(ctx, workspaceID, workstream, input); err != nil {
 		return Task{}, err
 	}
+	if err := s.validateOwner(ctx, workspaceID, ownerUserID); err != nil {
+		return Task{}, err
+	}
 	secondaryWorkstreamIDs := current.SecondaryWorkstreamIDs
 	if input.SecondaryWorkstreamIDs != nil {
 		secondaryWorkstreamIDs, err = s.validateSecondaryWorkstreams(ctx, workspaceID, current.TacticalPlanID, workstream.ID, input.SecondaryWorkstreamIDs)
@@ -458,6 +465,28 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 		return Task{}, err
 	}
 	return items[0], nil
+}
+
+func (s *Store) validateOwner(ctx context.Context, workspaceID int, ownerUserID *int) error {
+	if ownerUserID == nil {
+		return nil
+	}
+	if *ownerUserID <= 0 {
+		return ErrInvalidOwner
+	}
+	var active bool
+	if err := s.dbx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM workspace_memberships
+			WHERE workspace_id=$1 AND user_id=$2 AND status='active'
+		)
+	`, workspaceID, *ownerUserID).Scan(&active); err != nil {
+		return err
+	}
+	if !active {
+		return ErrInvalidOwner
+	}
+	return nil
 }
 
 func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, taskID int, status string, priorityOrder *int) (Task, error) {
@@ -1005,7 +1034,7 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		var taskID int
 		var workstreamID int
 		if err := secondaryRows.Scan(&taskID, &workstreamID); err != nil {
-			secondaryRows.Close()
+			_ = secondaryRows.Close()
 			return nil, err
 		}
 		secondaryByTask[taskID] = append(secondaryByTask[taskID], workstreamID)
@@ -1038,7 +1067,7 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 			&item.Confidence, &item.PriorityScore, &item.PriorityTier, &item.Recommendation,
 			&item.PriorityReason, &item.ClarificationQuestion, &missingRaw, &flagsRaw, &item.BacklogCategory, &item.CreatedAt,
 		); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		if targets[item.TaskID] {
@@ -1064,7 +1093,7 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		var taskID int
 		var status string
 		if err := jobRows.Scan(&taskID, &status); err != nil {
-			jobRows.Close()
+			_ = jobRows.Close()
 			return nil, err
 		}
 		if targets[taskID] {

@@ -4,17 +4,19 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/auth"
+	"reup-goals-backend/internal/security"
 	"reup-goals-backend/internal/v2/api"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/workspaces"
 )
+
+const maxTacticsFileBytes = 25 << 20
 
 type Handler struct {
 	store       *Store
@@ -199,7 +201,9 @@ func (h *Handler) facilitatorFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxTacticsFileBytes+(2<<20))
+	// #nosec G120 -- MaxBytesReader above enforces a hard request limit.
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "invalid_multipart")
 		return
 	}
@@ -209,8 +213,12 @@ func (h *Handler) facilitatorFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	limited := io.LimitReader(file, 25<<20)
-	response, err := h.facilitator.UploadFile(r.Context(), workspace.ID, userID, header.Filename, header.Header.Get("Content-Type"), header.Size, limited)
+	if err := security.ValidateBusinessDocument(header.Filename, header.Size, maxTacticsFileBytes); err != nil {
+		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	filename := security.SafeFilename(header.Filename)
+	response, err := h.facilitator.UploadFile(r.Context(), workspace.ID, userID, filename, header.Header.Get("Content-Type"), header.Size, file)
 	if err != nil {
 		api.WriteError(w, http.StatusBadGateway, "tactics_file_upload_failed")
 		return

@@ -382,6 +382,10 @@ func writeTask(w http.ResponseWriter, task Task, err error, fallback string) {
 		api.WriteError(w, http.StatusForbidden, "forbidden")
 		return
 	}
+	if errors.Is(err, ErrInvalidOwner) {
+		api.WriteError(w, http.StatusUnprocessableEntity, ErrInvalidOwner.Error())
+		return
+	}
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, fallback)
 		return

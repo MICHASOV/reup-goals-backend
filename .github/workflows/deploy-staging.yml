@@ -21,7 +21,12 @@ jobs:
           cache: true
 
       - name: Test
-        run: go test ./...
+        run: |
+          go test ./...
+          go test -race ./...
+          go vet ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 -quiet -exclude-generated ./...
 
       - name: Build Linux binary
         run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o reup_goals_backend ./cmd/api
@@ -58,15 +63,16 @@ jobs:
           DB_USER=
           DB_PASSWORD=
           DB_NAME=
+          DB_SSLMODE=disable
           APP_ENV=staging
           JWT_SECRET=
-          CORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro,http://staging.reupgoals.pro
+          CORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro
           OPENAI_API_KEY=
           OPENAI_MODEL=gpt-4.1
           OPENAI_AUDITOR_MODEL=gpt-5.4
           OPENAI_AUDITOR_MAX_OUTPUT_TOKENS=1800
           OPENAI_AUDITOR_COMPACT_THRESHOLD=120000
-          ENABLE_AI_BENCHMARK=true
+          ENABLE_AI_BENCHMARK=false
           OPENAI_PROXY_URL=direct
           AI_RATE_LIMIT_PER_MINUTE=60
           AI_DAILY_BUDGET_USD=0
@@ -113,10 +119,23 @@ jobs:
             printf '\nOPENAI_AUDITOR_COMPACT_THRESHOLD=120000\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^ENABLE_AI_BENCHMARK=' /etc/reup-goals-staging/backend.env; then
-            sed -i 's/^ENABLE_AI_BENCHMARK=.*/ENABLE_AI_BENCHMARK=true/' /etc/reup-goals-staging/backend.env
+            sed -i 's/^ENABLE_AI_BENCHMARK=.*/ENABLE_AI_BENCHMARK=false/' /etc/reup-goals-staging/backend.env
           else
-            printf '\nENABLE_AI_BENCHMARK=true\n' >> /etc/reup-goals-staging/backend.env
+            printf '\nENABLE_AI_BENCHMARK=false\n' >> /etc/reup-goals-staging/backend.env
           fi
+          if grep -q '^CORS_ALLOWED_ORIGINS=' /etc/reup-goals-staging/backend.env; then
+            sed -i 's|^CORS_ALLOWED_ORIGINS=.*|CORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro|' /etc/reup-goals-staging/backend.env
+          else
+            printf '\nCORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro\n' >> /etc/reup-goals-staging/backend.env
+          fi
+          if ! grep -q '^DB_SSLMODE=' /etc/reup-goals-staging/backend.env; then
+            printf '\nDB_SSLMODE=disable\n' >> /etc/reup-goals-staging/backend.env
+          fi
+
+          if ! id reupgoals >/dev/null 2>&1; then
+            useradd --system --home /opt/reup-goals-staging --shell /usr/sbin/nologin reupgoals
+          fi
+          chown -R reupgoals:reupgoals /opt/reup-goals-staging/backend
 
           cat >/etc/systemd/system/reup-goals-staging.service <<'SERVICE'
           [Unit]
@@ -132,7 +151,20 @@ jobs:
           RestartSec=3
           StandardOutput=journal
           StandardError=journal
-          User=root
+          User=reupgoals
+          Group=reupgoals
+          NoNewPrivileges=true
+          PrivateTmp=true
+          PrivateDevices=true
+          ProtectSystem=strict
+          ProtectHome=true
+          ProtectKernelTunables=true
+          ProtectKernelModules=true
+          ProtectControlGroups=true
+          RestrictSUIDSGID=true
+          LockPersonality=true
+          MemoryDenyWriteExecute=true
+          RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
           [Install]
           WantedBy=multi-user.target
@@ -145,6 +177,11 @@ jobs:
               server_name api-staging.reupgoals.pro;
 
               client_max_body_size 90m;
+
+              add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+              add_header X-Content-Type-Options "nosniff" always;
+              add_header X-Frame-Options "DENY" always;
+              add_header Referrer-Policy "no-referrer" always;
 
               location / {
                   proxy_pass http://127.0.0.1:8080;
@@ -179,7 +216,7 @@ jobs:
             "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}" 'bash -s' <<'REMOTE'
           set -euo pipefail
 
-          install -m 755 /tmp/reup_goals_backend /opt/reup-goals-staging/backend/reup_goals_backend
+          install -o reupgoals -g reupgoals -m 755 /tmp/reup_goals_backend /opt/reup-goals-staging/backend/reup_goals_backend
 
           if ! grep -Eq '^DB_HOST=.+$' /etc/reup-goals-staging/backend.env; then
             echo "Staging backend env is not filled yet. Binary installed, service start skipped."

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -26,7 +27,16 @@ type OpenAIClient struct {
 	ProxyURL        string
 	MaxOutputTokens int
 	governance      Governance
+	runtime         *openAIClientRuntime
 }
+
+type openAIClientRuntime struct {
+	once   sync.Once
+	client *http.Client
+	err    error
+}
+
+const maxOpenAIResponseBytes = 8 << 20
 
 func (c *OpenAIClient) ModelName() string {
 	return c.Model
@@ -52,6 +62,7 @@ func New(apiKey, model string, proxyURL ...string) *OpenAIClient {
 		APIKey:   apiKey,
 		Model:    model,
 		ProxyURL: selectedProxyURL,
+		runtime:  &openAIClientRuntime{},
 	}
 }
 
@@ -63,8 +74,18 @@ func (c *OpenAIClient) WithMaxOutputTokens(maxOutputTokens int) *OpenAIClient {
 }
 
 func (c *OpenAIClient) newHTTPClient() (*http.Client, error) {
+	if c.runtime == nil {
+		return c.buildHTTPClient()
+	}
+	c.runtime.once.Do(func() {
+		c.runtime.client, c.runtime.err = c.buildHTTPClient()
+	})
+	return c.runtime.client, c.runtime.err
+}
+
+func (c *OpenAIClient) buildHTTPClient() (*http.Client, error) {
 	if isDirectProxy(c.ProxyURL) {
-		return &http.Client{Timeout: 75 * time.Second}, nil
+		return &http.Client{Transport: defaultOpenAITransport()}, nil
 	}
 
 	proxyURL, err := url.Parse(c.ProxyURL)
@@ -84,12 +105,28 @@ func (c *OpenAIClient) newHTTPClient() (*http.Client, error) {
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
 		},
+		MaxIdleConns:          50,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 75 * time.Second,
 	}
 
-	return &http.Client{
-		Timeout:   75 * time.Second,
-		Transport: transport,
-	}, nil
+	return &http.Client{Transport: transport}, nil
+}
+
+func defaultOpenAITransport() *http.Transport {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          50,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 75 * time.Second,
+	}
 }
 
 func isDirectProxy(value string) bool {
@@ -265,40 +302,20 @@ func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, lan
 		return "", fmt.Errorf("proxy init error: %w", err)
 	}
 
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	fileWriter, err := writer.CreateFormFile("file", safeAudioFilename(filename))
-	if err != nil {
-		return "", fmt.Errorf("multipart file error: %w", err)
-	}
-	if _, err := io.Copy(fileWriter, audio); err != nil {
-		return "", fmt.Errorf("audio copy error: %w", err)
-	}
-
-	_ = writer.WriteField("model", resolved.Model)
-	_ = writer.WriteField("response_format", "json")
-	if strings.TrimSpace(language) != "" {
-		_ = writer.WriteField("language", strings.TrimSpace(language))
-	}
-	_ = writer.WriteField("prompt", resolved.Instructions)
-
-	if err := writer.Close(); err != nil {
-		return "", fmt.Errorf("multipart close error: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		"https://api.openai.com/v1/audio/transcriptions",
-		body,
-	)
+	requestCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	body, contentType := streamingMultipartBody(safeAudioFilename(filename), audio, map[string]string{
+		"model": resolved.Model, "response_format": "json", "language": strings.TrimSpace(language),
+		"prompt": resolved.Instructions,
+	})
+	defer body.Close()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, "https://api.openai.com/v1/audio/transcriptions", body)
 	if err != nil {
 		return "", fmt.Errorf("request error: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -306,15 +323,18 @@ func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, lan
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := readOpenAIResponse(resp.Body)
+	if err != nil {
+		return "", err
+	}
 
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("openai transcription error (%d): %s", resp.StatusCode, string(raw))
+		return "", fmt.Errorf("openai transcription error (%d): %s", resp.StatusCode, safeErrorBody(raw))
 	}
 
 	var parsed transcriptionResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", fmt.Errorf("transcription json decode error: %w | body: %s", err, string(raw))
+		return "", fmt.Errorf("transcription json decode error: %w | body: %s", err, safeErrorBody(raw))
 	}
 	usage = parsed.Usage
 
@@ -375,9 +395,14 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 	if err != nil {
 		return TextResult{}, fmt.Errorf("proxy init error: %w", err)
 	}
+	requestCtx := ctx
+	requestCancel := func() {}
 	if options.RequestTimeout > 0 {
-		httpClient.Timeout = options.RequestTimeout
+		requestCtx, requestCancel = context.WithTimeout(ctx, options.RequestTimeout)
+	} else {
+		requestCtx, requestCancel = context.WithTimeout(ctx, 75*time.Second)
 	}
+	defer requestCancel()
 
 	reqBody := responsesRequest{
 		Model:              resolved.Model,
@@ -416,7 +441,7 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 	}
 
 	req, err := http.NewRequestWithContext(
-		ctx,
+		requestCtx,
 		http.MethodPost,
 		"https://api.openai.com/v1/responses",
 		bytes.NewBuffer(body),
@@ -434,15 +459,18 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := readOpenAIResponse(resp.Body)
+	if err != nil {
+		return TextResult{}, err
+	}
 
 	if resp.StatusCode >= 300 {
-		return TextResult{}, fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
+		return TextResult{}, fmt.Errorf("openai error (%d): %s", resp.StatusCode, safeErrorBody(raw))
 	}
 
 	var parsed responsesResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return TextResult{}, fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
+		return TextResult{}, fmt.Errorf("json decode error: %w | body: %s", err, safeErrorBody(raw))
 	}
 
 	text := firstResponseText(parsed)
@@ -463,29 +491,19 @@ func (c *OpenAIClient) UploadFile(ctx context.Context, filename string, purpose 
 		return OpenAIFile{}, fmt.Errorf("proxy init error: %w", err)
 	}
 
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	fileWriter, err := writer.CreateFormFile("file", safeAudioFilename(filename))
-	if err != nil {
-		return OpenAIFile{}, fmt.Errorf("multipart file error: %w", err)
-	}
-	if _, err := io.Copy(fileWriter, file); err != nil {
-		return OpenAIFile{}, fmt.Errorf("file copy error: %w", err)
-	}
 	if strings.TrimSpace(purpose) == "" {
 		purpose = "assistants"
 	}
-	_ = writer.WriteField("purpose", purpose)
-	if err := writer.Close(); err != nil {
-		return OpenAIFile{}, fmt.Errorf("multipart close error: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/files", body)
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	body, contentType := streamingMultipartBody(safeAudioFilename(filename), file, map[string]string{"purpose": purpose})
+	defer body.Close()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, "https://api.openai.com/v1/files", body)
 	if err != nil {
 		return OpenAIFile{}, fmt.Errorf("request error: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -493,14 +511,17 @@ func (c *OpenAIClient) UploadFile(ctx context.Context, filename string, purpose 
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := readOpenAIResponse(resp.Body)
+	if err != nil {
+		return OpenAIFile{}, err
+	}
 	if resp.StatusCode >= 300 {
-		return OpenAIFile{}, fmt.Errorf("openai file upload error (%d): %s", resp.StatusCode, string(raw))
+		return OpenAIFile{}, fmt.Errorf("openai file upload error (%d): %s", resp.StatusCode, safeErrorBody(raw))
 	}
 
 	var parsed OpenAIFile
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return OpenAIFile{}, fmt.Errorf("file json decode error: %w | body: %s", err, string(raw))
+		return OpenAIFile{}, fmt.Errorf("file json decode error: %w | body: %s", err, safeErrorBody(raw))
 	}
 	if strings.TrimSpace(parsed.ID) == "" {
 		return OpenAIFile{}, fmt.Errorf("empty uploaded file id")
@@ -518,6 +539,52 @@ func (c *OpenAIClient) CreateVectorStore(ctx context.Context, name string) (Open
 		return OpenAIVectorStore{}, fmt.Errorf("empty vector store id")
 	}
 	return parsed, nil
+}
+
+func (c *OpenAIClient) DeleteFile(ctx context.Context, fileID string) error {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return nil
+	}
+	return c.deleteResource(ctx, "https://api.openai.com/v1/files/"+url.PathEscape(fileID))
+}
+
+func (c *OpenAIClient) DeleteVectorStore(ctx context.Context, vectorStoreID string) error {
+	vectorStoreID = strings.TrimSpace(vectorStoreID)
+	if vectorStoreID == "" {
+		return nil
+	}
+	return c.deleteResource(ctx, "https://api.openai.com/v1/vector_stores/"+url.PathEscape(vectorStoreID))
+}
+
+func (c *OpenAIClient) deleteResource(ctx context.Context, endpoint string) error {
+	httpClient, err := c.newHTTPClient()
+	if err != nil {
+		return fmt.Errorf("proxy init error: %w", err)
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("request error: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("http error: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := readOpenAIResponse(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("openai delete error (%d): %s", resp.StatusCode, safeErrorBody(raw))
+	}
+	return nil
 }
 
 func (c *OpenAIClient) AddFileToVectorStore(ctx context.Context, vectorStoreID string, fileID string) (OpenAIVectorStoreFile, error) {
@@ -606,17 +673,73 @@ func (c *OpenAIClient) doJSON(ctx context.Context, method string, endpoint strin
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := readOpenAIResponse(resp.Body)
+	if err != nil {
+		return err
+	}
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("openai error (%d): %s", resp.StatusCode, string(raw))
+		return fmt.Errorf("openai error (%d): %s", resp.StatusCode, safeErrorBody(raw))
 	}
 	if out == nil {
 		return nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("json decode error: %w | body: %s", err, string(raw))
+		return fmt.Errorf("json decode error: %w | body: %s", err, safeErrorBody(raw))
 	}
 	return nil
+}
+
+func streamingMultipartBody(filename string, file io.Reader, fields map[string]string) (*io.PipeReader, string) {
+	reader, writer := io.Pipe()
+	multipartWriter := multipart.NewWriter(writer)
+	contentType := multipartWriter.FormDataContentType()
+	go func() {
+		var writeErr error
+		defer func() {
+			if closeErr := multipartWriter.Close(); writeErr == nil {
+				writeErr = closeErr
+			}
+			_ = writer.CloseWithError(writeErr)
+		}()
+		fileWriter, err := multipartWriter.CreateFormFile("file", filename)
+		if err != nil {
+			writeErr = fmt.Errorf("multipart file error: %w", err)
+			return
+		}
+		if _, err := io.Copy(fileWriter, file); err != nil {
+			writeErr = fmt.Errorf("file copy error: %w", err)
+			return
+		}
+		for key, value := range fields {
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			if err := multipartWriter.WriteField(key, value); err != nil {
+				writeErr = fmt.Errorf("multipart field error: %w", err)
+				return
+			}
+		}
+	}()
+	return reader, contentType
+}
+
+func readOpenAIResponse(body io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, maxOpenAIResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("openai response read error: %w", err)
+	}
+	if len(raw) > maxOpenAIResponseBytes {
+		return nil, fmt.Errorf("openai response exceeded %d bytes", maxOpenAIResponseBytes)
+	}
+	return raw, nil
+}
+
+func safeErrorBody(raw []byte) string {
+	const maxErrorBytes = 4096
+	if len(raw) > maxErrorBytes {
+		return string(raw[:maxErrorBytes]) + "..."
+	}
+	return string(raw)
 }
 
 func cleanStringList(values []string) []string {

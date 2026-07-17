@@ -17,6 +17,7 @@ import (
 	"reup-goals-backend/internal/db"
 	"reup-goals-backend/internal/goals"
 	"reup-goals-backend/internal/migrations"
+	"reup-goals-backend/internal/security"
 	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/tasks"
 	"reup-goals-backend/internal/v2/aiactions"
@@ -39,6 +40,7 @@ func main() {
 		log.Fatal("Configuration error: ", err)
 	}
 	jwtSecret := []byte(cfg.JWTSecret)
+	secureCookie := cfg.Environment == "production" || cfg.Environment == "staging"
 
 	database, err := db.Connect(cfg.ConnString(), db.PoolOptions{
 		MaxOpenConns: cfg.DBMaxOpenConns, MaxIdleConns: cfg.DBMaxIdleConns, ConnMaxLifetime: cfg.DBConnMaxLifetime,
@@ -100,18 +102,19 @@ func main() {
 	})
 
 	// Auth middleware
-	mw := auth.New(jwtSecret)
+	mw := auth.New(database, jwtSecret)
+	authLimiter := security.NewLimiter(10, time.Minute)
 
 	// -----------------------
 	// AUTH (public)
 	// -----------------------
-	mux.Handle("/auth/register", auth.RegisterHandler(database, jwtSecret, emailService))
-	mux.Handle("/auth/login", auth.LoginHandler(database, jwtSecret))
-	mux.Handle("/auth/verify-email", auth.VerifyEmailHandler(database))
-	mux.Handle("/auth/resend-code", auth.ResendCodeHandler(database, emailService))
-	mux.Handle("/auth/forgot-password", auth.ForgotPasswordHandler(database, emailService))
-	mux.Handle("/auth/verify-reset-code", auth.VerifyResetCodeHandler(database))
-	mux.Handle("/auth/reset-password", auth.ResetPasswordHandler(database))
+	mux.Handle("/auth/register", authLimiter.Wrap(auth.RegisterHandler(database, jwtSecret, emailService, secureCookie)))
+	mux.Handle("/auth/login", authLimiter.Wrap(auth.LoginHandler(database, jwtSecret, secureCookie)))
+	mux.Handle("/auth/verify-email", authLimiter.Wrap(auth.VerifyEmailHandler(database)))
+	mux.Handle("/auth/resend-code", authLimiter.Wrap(auth.ResendCodeHandler(database, emailService)))
+	mux.Handle("/auth/forgot-password", authLimiter.Wrap(auth.ForgotPasswordHandler(database, emailService)))
+	mux.Handle("/auth/verify-reset-code", authLimiter.Wrap(auth.VerifyResetCodeHandler(database)))
+	mux.Handle("/auth/reset-password", authLimiter.Wrap(auth.ResetPasswordHandler(database)))
 	mux.Handle("/auth/me", mw.Wrap(auth.MeHandler(database)))
 
 	// -----------------------
@@ -130,59 +133,59 @@ func main() {
 	// -----------------------
 	// V2 FOUNDATION
 	// -----------------------
-	mux.Handle("/api/v2/bootstrap", v2api.RequireAuth(jwtSecret, bootstrapHandler.Bootstrap))
-	mux.Handle("/api/v2/audio/transcriptions", v2api.RequireAuth(jwtSecret, audioHandler.Transcriptions))
-	mux.Handle("/api/v2/ai-actions", v2api.RequireAuth(jwtSecret, aiActionsHandler.Actions))
-	mux.Handle("/api/v2/ai-actions/", v2api.RequireAuth(jwtSecret, aiActionsHandler.Actions))
-	mux.Handle("/api/v2/ai/prompts", v2api.RequireAuth(jwtSecret, aiPlatformHandler.Prompts))
-	mux.Handle("/api/v2/ai/prompts/", v2api.RequireAuth(jwtSecret, aiPlatformHandler.Prompts))
-	mux.Handle("/api/v2/ai/usage-policy", v2api.RequireAuth(jwtSecret, aiPlatformHandler.UsagePolicy))
-	mux.Handle("/api/v2/operations/overview", v2api.RequireAuth(jwtSecret, operationsHandler.Overview))
-	mux.Handle("/api/v2/strategic-director/messages", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
-	mux.Handle("/api/v2/strategic-director/state", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
-	mux.Handle("/api/v2/strategic-director/files", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/bootstrap", v2api.RequireAuth(database, jwtSecret, bootstrapHandler.Bootstrap))
+	mux.Handle("/api/v2/audio/transcriptions", v2api.RequireAuth(database, jwtSecret, audioHandler.Transcriptions))
+	mux.Handle("/api/v2/ai-actions", v2api.RequireAuth(database, jwtSecret, aiActionsHandler.Actions))
+	mux.Handle("/api/v2/ai-actions/", v2api.RequireAuth(database, jwtSecret, aiActionsHandler.Actions))
+	mux.Handle("/api/v2/ai/prompts", v2api.RequireAuth(database, jwtSecret, aiPlatformHandler.Prompts))
+	mux.Handle("/api/v2/ai/prompts/", v2api.RequireAuth(database, jwtSecret, aiPlatformHandler.Prompts))
+	mux.Handle("/api/v2/ai/usage-policy", v2api.RequireAuth(database, jwtSecret, aiPlatformHandler.UsagePolicy))
+	mux.Handle("/api/v2/operations/overview", v2api.RequireAuth(database, jwtSecret, operationsHandler.Overview))
+	mux.Handle("/api/v2/strategic-director/messages", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/strategic-director/state", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/strategic-director/files", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicDirector))
 	if cfg.EnableAIBenchmark {
-		mux.Handle("/api/v2/strategic-director/model-benchmark", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.ModelBenchmark))
+		mux.Handle("/api/v2/strategic-director/model-benchmark", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.ModelBenchmark))
 	}
-	mux.Handle("/api/v2/strategic-memory/snapshot", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
-	mux.Handle("/api/v2/strategic-memory/claims", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
-	mux.Handle("/api/v2/strategic-memory/claims/", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
-	mux.Handle("/api/v2/strategic-memory/agenda", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
-	mux.Handle("/api/v2/strategic-memory/documents", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
-	mux.Handle("/api/v2/strategic-memory/documents/", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
-	mux.Handle("/api/v2/strategic-memory/quality-audit", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
-	mux.Handle("/api/v2/strategic-memory/ai-runs", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
-	mux.Handle("/api/v2/strategic-memory/reset", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicMemory))
-	mux.Handle("/api/v2/strategy/current", v2api.RequireAuth(jwtSecret, strategyHandler.Current))
-	mux.Handle("/api/v2/strategy-research-requests", v2api.RequireAuth(jwtSecret, strategyHandler.ResearchRequests))
-	mux.Handle("/api/v2/strategy-research-requests/", v2api.RequireAuth(jwtSecret, strategyHandler.ResearchRequests))
-	mux.Handle("/api/v2/strategy-versions", v2api.RequireAuth(jwtSecret, strategyHandler.Versions))
-	mux.Handle("/api/v2/strategy/artifacts/", v2api.RequireAuth(jwtSecret, strategyHandler.Artifacts))
-	mux.Handle("/api/v2/strategy/", v2api.RequireAuth(jwtSecret, strategyHandler.Strategy))
-	mux.Handle("/api/v2/strategy-facilitator/state", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
-	mux.Handle("/api/v2/strategy-facilitator/messages", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
-	mux.Handle("/api/v2/strategy-facilitator/files", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
-	mux.Handle("/api/v2/strategy-facilitator/synthesis", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
-	mux.Handle("/api/v2/strategy-facilitator/readiness", v2api.RequireAuth(jwtSecret, strategyHandler.Facilitator))
-	mux.Handle("/api/v2/course/current", v2api.RequireAuth(jwtSecret, courseHandler.Current))
-	mux.Handle("/api/v2/course/", v2api.RequireAuth(jwtSecret, courseHandler.Course))
-	mux.Handle("/api/v2/tactics/current", v2api.RequireAuth(jwtSecret, tacticsHandler.Current))
-	mux.Handle("/api/v2/tactics-facilitator/state", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
-	mux.Handle("/api/v2/tactics-facilitator/messages", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
-	mux.Handle("/api/v2/tactics-facilitator/actions/apply", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
-	mux.Handle("/api/v2/tactics-facilitator/files", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
-	mux.Handle("/api/v2/tactics-facilitator/readiness", v2api.RequireAuth(jwtSecret, tacticsHandler.Facilitator))
-	mux.Handle("/api/v2/tactics/workstreams", v2api.RequireAuth(jwtSecret, tacticsHandler.Workstreams))
-	mux.Handle("/api/v2/tactics/workstreams/", v2api.RequireAuth(jwtSecret, tacticsHandler.Workstreams))
-	mux.Handle("/api/v2/tactics/projects", v2api.RequireAuth(jwtSecret, tacticsHandler.Projects))
-	mux.Handle("/api/v2/tactics/projects/", v2api.RequireAuth(jwtSecret, tacticsHandler.Projects))
-	mux.Handle("/api/v2/tactics/risks", v2api.RequireAuth(jwtSecret, tacticsHandler.Risks))
-	mux.Handle("/api/v2/tactics/risks/", v2api.RequireAuth(jwtSecret, tacticsHandler.Risks))
-	mux.Handle("/api/v2/tactics/opportunities", v2api.RequireAuth(jwtSecret, tacticsHandler.Opportunities))
-	mux.Handle("/api/v2/tactics/opportunities/", v2api.RequireAuth(jwtSecret, tacticsHandler.Opportunities))
-	mux.Handle("/api/v2/tactics/", v2api.RequireAuth(jwtSecret, tacticsHandler.Tactics))
-	mux.Handle("/api/v2/tasks", v2api.RequireAuth(jwtSecret, tasksV2Handler.Tasks))
-	mux.Handle("/api/v2/tasks/", v2api.RequireAuth(jwtSecret, tasksV2Handler.Tasks))
+	mux.Handle("/api/v2/strategic-memory/snapshot", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/claims", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/claims/", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/agenda", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/documents", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/documents/", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/quality-audit", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/ai-runs", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategic-memory/reset", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicMemory))
+	mux.Handle("/api/v2/strategy/current", v2api.RequireAuth(database, jwtSecret, strategyHandler.Current))
+	mux.Handle("/api/v2/strategy-research-requests", v2api.RequireAuth(database, jwtSecret, strategyHandler.ResearchRequests))
+	mux.Handle("/api/v2/strategy-research-requests/", v2api.RequireAuth(database, jwtSecret, strategyHandler.ResearchRequests))
+	mux.Handle("/api/v2/strategy-versions", v2api.RequireAuth(database, jwtSecret, strategyHandler.Versions))
+	mux.Handle("/api/v2/strategy/artifacts/", v2api.RequireAuth(database, jwtSecret, strategyHandler.Artifacts))
+	mux.Handle("/api/v2/strategy/", v2api.RequireAuth(database, jwtSecret, strategyHandler.Strategy))
+	mux.Handle("/api/v2/strategy-facilitator/state", v2api.RequireAuth(database, jwtSecret, strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/messages", v2api.RequireAuth(database, jwtSecret, strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/files", v2api.RequireAuth(database, jwtSecret, strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/synthesis", v2api.RequireAuth(database, jwtSecret, strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/readiness", v2api.RequireAuth(database, jwtSecret, strategyHandler.Facilitator))
+	mux.Handle("/api/v2/course/current", v2api.RequireAuth(database, jwtSecret, courseHandler.Current))
+	mux.Handle("/api/v2/course/", v2api.RequireAuth(database, jwtSecret, courseHandler.Course))
+	mux.Handle("/api/v2/tactics/current", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Current))
+	mux.Handle("/api/v2/tactics-facilitator/state", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/messages", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/actions/apply", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/files", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/readiness", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics/workstreams", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Workstreams))
+	mux.Handle("/api/v2/tactics/workstreams/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Workstreams))
+	mux.Handle("/api/v2/tactics/projects", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Projects))
+	mux.Handle("/api/v2/tactics/projects/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Projects))
+	mux.Handle("/api/v2/tactics/risks", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Risks))
+	mux.Handle("/api/v2/tactics/risks/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Risks))
+	mux.Handle("/api/v2/tactics/opportunities", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Opportunities))
+	mux.Handle("/api/v2/tactics/opportunities/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Opportunities))
+	mux.Handle("/api/v2/tactics/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Tactics))
+	mux.Handle("/api/v2/tasks", v2api.RequireAuth(database, jwtSecret, tasksV2Handler.Tasks))
+	mux.Handle("/api/v2/tasks/", v2api.RequireAuth(database, jwtSecret, tasksV2Handler.Tasks))
 
 	// -----------------------
 	// GOALS (protected)
@@ -202,8 +205,8 @@ func main() {
 	mux.Handle("/task/clarification/create", mw.Wrap(tasks.CreateTaskClarificationHandler(database, taskAI)))
 
 	// ✅ AUTH (protected actions)
-	mux.Handle("/auth/logout", mw.Wrap(auth.LogoutHandler()))
-	mux.Handle("/auth/delete", mw.Wrap(auth.DeleteAccountHandler(database)))
+	mux.Handle("/auth/logout", mw.Wrap(auth.LogoutHandler(database, secureCookie)))
+	mux.Handle("/auth/delete", mw.Wrap(auth.DeleteAccountHandler(database, strategicMemoryHandler)))
 
 	// AI endpoint (protected)
 	mux.Handle("/task/evaluate", mw.Wrap(taskAI.Evaluate))
@@ -213,7 +216,8 @@ func main() {
 		allowedOrigins = []string{"http://localhost:3000", "http://localhost:3002", "http://127.0.0.1:3000", "http://127.0.0.1:3002"}
 	}
 	corsHandler := cors.New(cors.Options{
-		AllowedOrigins: allowedOrigins,
+		AllowedOrigins:   allowedOrigins,
+		AllowCredentials: true,
 		AllowedMethods: []string{
 			http.MethodGet,
 			http.MethodPost,
@@ -225,7 +229,11 @@ func main() {
 		AllowedHeaders: []string{"Authorization", "Content-Type", "X-Request-ID", "X-AI-Admin-Key"},
 		ExposedHeaders: []string{"X-Request-ID", "Server-Timing"},
 	}).Handler(mux)
+	globalLimiter := security.NewLimiter(300, time.Minute)
 	handler := operationsCollector.Middleware(corsHandler)
+	handler = security.RequireTrustedOrigin(allowedOrigins, handler)
+	handler = globalLimiter.Wrap(handler)
+	handler = security.Harden(handler)
 	server := &http.Server{
 		Addr:              ":8080",
 		Handler:           handler,
@@ -233,6 +241,7 @@ func main() {
 		ReadTimeout:       cfg.HTTPReadTimeout,
 		WriteTimeout:      cfg.HTTPWriteTimeout,
 		IdleTimeout:       cfg.HTTPIdleTimeout,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {

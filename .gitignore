@@ -1,4 +1,6 @@
 .env
+.DS_Store
+**/.DS_Store
 reup_goals
 10784528
 reup_goals_backend

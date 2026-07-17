@@ -1,5 +1,7 @@
 # REUP.goals v2 Product and Backend Architecture
 
+> Historical design document. Some implementation details below describe the initial v2 plan and are no longer current. For current security and release requirements, use `docs/security-baseline.md` and the code under `internal/v2` as the source of truth.
+
 Документ фиксирует архитектурную основу REUP.goals v2: продуктовую модель, backend, базу данных, AI-интеграцию и правила разработки.
 
 Ключевая установка: **v2 является целевой основной версией продукта**. Текущий backend не является долгосрочной продуктовой моделью. Его нужно использовать как рабочую основу для auth/email/payments/deploy и как источник данных для будущей миграции, но новые продуктовые сущности должны строиться вокруг v2-модели: workspace, knowledge base, strategy, course, tactics, tasks, AI chats.

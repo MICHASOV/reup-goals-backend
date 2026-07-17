@@ -1,6 +1,6 @@
 module reup-goals-backend
 
-go 1.25.4
+go 1.25.12
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.0
@@ -8,4 +8,4 @@ require (
 	github.com/rs/cors v1.11.1
 )
 
-require golang.org/x/net v0.47.0
+require golang.org/x/net v0.53.0

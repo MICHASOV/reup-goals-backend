@@ -1,6 +1,7 @@
 package strategicmemory
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -9,12 +10,14 @@ import (
 
 	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/auth"
+	"reup-goals-backend/internal/security"
 	"reup-goals-backend/internal/v2/api"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
 const maxStrategicFileUploadBytes = 80 << 20
+const maxStrategicFileUploadRequestBytes = maxStrategicFileUploadBytes + (2 << 20)
 
 type Handler struct {
 	store      *Store
@@ -29,6 +32,10 @@ func NewHandler(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, manager
 		service:    NewService(store, aiClient, compactThreshold, managers...),
 		workspaces: workspaces.NewStore(dbx),
 	}
+}
+
+func (h *Handler) CleanupUserData(ctx context.Context, userID int) error {
+	return h.service.CleanupUserData(ctx, userID)
 }
 
 func (h *Handler) StrategicDirector(w http.ResponseWriter, r *http.Request) {
@@ -175,8 +182,9 @@ func (h *Handler) files(w http.ResponseWriter, r *http.Request, workspaceID int)
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxStrategicFileUploadBytes)
-	if err := r.ParseMultipartForm(maxStrategicFileUploadBytes); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxStrategicFileUploadRequestBytes)
+	// #nosec G120 -- MaxBytesReader above enforces a hard request limit.
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "invalid_file_upload")
 		return
 	}
@@ -187,9 +195,14 @@ func (h *Handler) files(w http.ResponseWriter, r *http.Request, workspaceID int)
 		return
 	}
 	defer file.Close()
+	if err := security.ValidateBusinessDocument(header.Filename, header.Size, maxStrategicFileUploadBytes); err != nil {
+		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 
 	contentType := header.Header.Get("Content-Type")
-	response, err := h.service.UploadFile(r.Context(), workspaceID, userID, header.Filename, contentType, header.Size, file)
+	filename := security.SafeFilename(header.Filename)
+	response, err := h.service.UploadFile(r.Context(), workspaceID, userID, filename, contentType, header.Size, file)
 	if err != nil {
 		api.WriteError(w, http.StatusBadGateway, "strategic_file_upload_failed")
 		return

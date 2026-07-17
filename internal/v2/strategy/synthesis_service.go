@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
@@ -24,6 +25,7 @@ const (
 	strategySynthesisTimeout         = 7 * time.Minute
 	strategySemanticSynthesisTimeout = 4 * time.Minute
 	strategyFormatterTimeout         = 3 * time.Minute
+	strategySynthesisJobType         = "strategy_synthesis"
 )
 
 var synthesisURLPattern = regexp.MustCompile(`https?://[^\s<>()\[\]{}"']+`)
@@ -36,18 +38,30 @@ type SynthesisService struct {
 	memoryStore      *strategicmemory.Store
 	ai               ai.Provider
 	compactThreshold int
+	jobs             *jobs.Manager
 }
 
-func NewSynthesisService(dbx *sql.DB, aiClient ai.Provider, compactThreshold int) *SynthesisService {
+type strategySynthesisJobPayload struct {
+	WorkspaceID int      `json:"workspace_id"`
+	RunID       int      `json:"run_id"`
+	Strategy    Strategy `json:"strategy"`
+}
+
+func NewSynthesisService(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *SynthesisService {
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
 	}
-	return &SynthesisService{
+	service := &SynthesisService{
 		store:            NewStore(dbx),
 		memoryStore:      strategicmemory.NewStore(dbx),
 		ai:               aiClient,
 		compactThreshold: compactThreshold,
 	}
+	if len(managers) > 0 && managers[0] != nil {
+		service.jobs = managers[0]
+		service.jobs.Register(strategySynthesisJobType, service.handleSynthesisJob)
+	}
+	return service
 }
 
 func (s *SynthesisService) Start(ctx context.Context, workspaceID int, userID int) (StrategySynthesisResponse, error) {
@@ -107,7 +121,15 @@ func (s *SynthesisService) StartForRevision(
 		return StrategySynthesisResponse{}, err
 	}
 	if created {
-		go s.executeDetached(workspaceID, run.ID, strategy)
+		if s.jobs == nil {
+			_ = s.store.FailSynthesisRun(ctx, workspaceID, run.ID, 0, "strategy synthesis queue is unavailable")
+			return StrategySynthesisResponse{}, fmt.Errorf("strategy_synthesis_queue_unavailable")
+		}
+		payload := strategySynthesisJobPayload{WorkspaceID: workspaceID, RunID: run.ID, Strategy: strategy}
+		if _, err := s.jobs.Enqueue(ctx, workspaceID, strategySynthesisJobType, fmt.Sprintf("run-%d", run.ID), payload, 3, time.Time{}); err != nil {
+			_ = s.store.FailSynthesisRun(ctx, workspaceID, run.ID, 0, "strategy synthesis queue failed")
+			return StrategySynthesisResponse{}, err
+		}
 	}
 	_ = s.store.LinkSynthesisToSession(ctx, workspaceID, sessionRevision, run.ID)
 	return StrategySynthesisResponse{Run: &run, Documents: []StrategySynthesisDocument{}}, nil
@@ -124,23 +146,33 @@ func (s *SynthesisService) Latest(ctx context.Context, workspaceID int) (Strateg
 	return s.store.LatestSynthesis(ctx, workspaceID, strategy.ID)
 }
 
-func (s *SynthesisService) executeDetached(workspaceID int, runID int, strategy Strategy) {
-	ctx, cancel := context.WithTimeout(context.Background(), strategySynthesisTimeout)
+func (s *SynthesisService) handleSynthesisJob(ctx context.Context, job jobs.Job) (resultErr error) {
+	var payload strategySynthesisJobPayload
+	if err := json.Unmarshal(job.Payload, &payload); err != nil {
+		return fmt.Errorf("strategy synthesis job payload: %w", err)
+	}
+	if payload.WorkspaceID <= 0 || payload.RunID <= 0 || job.WorkspaceID == nil || *job.WorkspaceID != payload.WorkspaceID {
+		return fmt.Errorf("invalid strategy synthesis job scope")
+	}
+	jobCtx, cancel := context.WithTimeout(ctx, strategySynthesisTimeout)
 	defer cancel()
 	started := time.Now()
-	failRun := func(errorText string) {
-		failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer failureCancel()
-		_ = s.store.FailSynthesisRun(failureCtx, workspaceID, runID, time.Since(started).Milliseconds(), errorText)
-	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			failRun(fmt.Sprintf("strategy synthesis panic: %v", recovered))
+			resultErr = fmt.Errorf("strategy synthesis panic: %v", recovered)
+		}
+		if resultErr == nil {
+			return
+		}
+		statusCtx, statusCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer statusCancel()
+		if job.Attempts >= job.MaxAttempts {
+			_ = s.store.FailSynthesisRun(statusCtx, payload.WorkspaceID, payload.RunID, time.Since(started).Milliseconds(), resultErr.Error())
+		} else {
+			_ = s.store.RequeueSynthesisRun(statusCtx, payload.WorkspaceID, payload.RunID, resultErr.Error())
 		}
 	}()
-	if err := s.execute(ctx, workspaceID, runID, strategy); err != nil {
-		failRun(err.Error())
-	}
+	return s.execute(jobCtx, payload.WorkspaceID, payload.RunID, payload.Strategy)
 }
 
 func (s *SynthesisService) execute(ctx context.Context, workspaceID int, runID int, strategy Strategy) error {

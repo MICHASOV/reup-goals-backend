@@ -7,10 +7,12 @@ import (
 
 	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/auth"
+	"reup-goals-backend/internal/security"
 	"reup-goals-backend/internal/v2/api"
 )
 
-const maxAudioUploadBytes = 26 << 20
+const maxAudioFileBytes = 25 << 20
+const maxAudioUploadBytes = maxAudioFileBytes + (1 << 20)
 
 type Handler struct {
 	dbx *sql.DB
@@ -28,7 +30,8 @@ func (h *Handler) Transcriptions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxAudioUploadBytes)
-	if err := r.ParseMultipartForm(maxAudioUploadBytes); err != nil {
+	// #nosec G120 -- MaxBytesReader above enforces a hard request limit.
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "invalid_audio_upload")
 		return
 	}
@@ -39,6 +42,10 @@ func (h *Handler) Transcriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+	if err := security.ValidateAudio(header.Filename, header.Size, maxAudioFileBytes); err != nil {
+		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 
 	language := strings.TrimSpace(r.FormValue("language"))
 	if language == "" {
@@ -48,7 +55,7 @@ func (h *Handler) Transcriptions(w http.ResponseWriter, r *http.Request) {
 	userID, _ := auth.UserIDFromContext(r.Context())
 	workspaceID := h.workspaceID(r, userID)
 	aiCtx := ai.WithScenario(r.Context(), workspaceID, userID, "audio_transcription", "v1")
-	text, err := h.ai.TranscribeAudio(aiCtx, header.Filename, language, file)
+	text, err := h.ai.TranscribeAudio(aiCtx, security.SafeFilename(header.Filename), language, file)
 	if err != nil {
 		api.WriteError(w, http.StatusBadGateway, "audio_transcription_failed")
 		return

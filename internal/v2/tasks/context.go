@@ -135,7 +135,7 @@ func (b *taskContextBuilder) strategyContext(ctx context.Context, workspaceID in
 	for rows.Next() {
 		var item compactContextDocument
 		if err := rows.Scan(&item.Type, &item.Title, &item.Content); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return "", nil, err
 		}
 		item.Content = truncateRunes(item.Content, 1200)

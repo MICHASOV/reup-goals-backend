@@ -439,8 +439,11 @@ func (h *Handler) statusForUser(uid int) (map[string]any, error) {
 }
 
 func (h *Handler) storeEvent(eventType string, uid int, subscriptionID int, transactionID string, cpSubscriptionID string, accountID string, amount float64, currency string, form url.Values) error {
-	payload := make(map[string]any, len(form))
+	payload := make(map[string]any)
 	for key, values := range form {
+		if !safePaymentEventField(key) {
+			continue
+		}
 		if len(values) == 1 {
 			payload[key] = values[0]
 		} else {
@@ -462,6 +465,15 @@ func (h *Handler) storeEvent(eventType string, uid int, subscriptionID int, tran
 	`, eventType, uid, subscriptionID, transactionID, cpSubscriptionID, accountID, amount, currency, string(rawPayload))
 
 	return err
+}
+
+func safePaymentEventField(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "status", "statuscode", "reason", "reasoncode", "testmode", "datetime", "operationtype", "paymentamount":
+		return true
+	default:
+		return false
+	}
 }
 
 func accountIDForUser(uid int) string {

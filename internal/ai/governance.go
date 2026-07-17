@@ -44,6 +44,13 @@ type Provider interface {
 	WaitVectorStoreFileReady(context.Context, string, string, string, time.Duration) (OpenAIVectorStoreFile, error)
 }
 
+// ResourceCleaner is optional so test and alternate providers can implement
+// generation without claiming support for persistent external resources.
+type ResourceCleaner interface {
+	DeleteFile(context.Context, string) error
+	DeleteVectorStore(context.Context, string) error
+}
+
 type callMetadataKey struct{}
 
 func WithCallMetadata(ctx context.Context, metadata CallMetadata) context.Context {

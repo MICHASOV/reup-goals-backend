@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
@@ -37,6 +38,10 @@ var (
 
 func VerifyEmailHandler(dbx *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeAPIError(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		var body struct {
 			Email string `json:"email"`
 			Code  string `json:"code"`
@@ -52,15 +57,9 @@ func VerifyEmailHandler(dbx *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		codeID, userID, err := verifyCode(dbx, email, codeTypeVerifyEmail, body.Code)
+		tx, codeID, userID, err := beginVerifiedCode(r.Context(), dbx, email, codeTypeVerifyEmail, body.Code)
 		if err != nil {
 			writeCodeError(w, err)
-			return
-		}
-
-		tx, err := dbx.Begin()
-		if err != nil {
-			writeAPIError(w, "db_begin_failed", http.StatusInternalServerError)
 			return
 		}
 		defer tx.Rollback()
@@ -102,6 +101,10 @@ func VerifyEmailHandler(dbx *sql.DB) http.HandlerFunc {
 
 func ResendCodeHandler(dbx *sql.DB, emailService *EmailService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeAPIError(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		var body struct {
 			Email string `json:"email"`
 			Type  string `json:"type"`
@@ -149,6 +152,10 @@ func ResendCodeHandler(dbx *sql.DB, emailService *EmailService) http.HandlerFunc
 
 func ForgotPasswordHandler(dbx *sql.DB, emailService *EmailService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeAPIError(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		var body struct {
 			Email string `json:"email"`
 		}
@@ -186,6 +193,10 @@ func ForgotPasswordHandler(dbx *sql.DB, emailService *EmailService) http.Handler
 
 func VerifyResetCodeHandler(dbx *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeAPIError(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		var body struct {
 			Email string `json:"email"`
 			Code  string `json:"code"`
@@ -201,12 +212,6 @@ func VerifyResetCodeHandler(dbx *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		codeID, _, err := verifyCode(dbx, email, codeTypeResetPassword, body.Code)
-		if err != nil {
-			writeCodeError(w, err)
-			return
-		}
-
 		resetToken, err := randomToken()
 		if err != nil {
 			writeAPIError(w, "token_generation_failed", http.StatusInternalServerError)
@@ -219,7 +224,14 @@ func VerifyResetCodeHandler(dbx *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		if _, err := dbx.Exec(
+		tx, codeID, _, err := beginVerifiedCode(r.Context(), dbx, email, codeTypeResetPassword, body.Code)
+		if err != nil {
+			writeCodeError(w, err)
+			return
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.ExecContext(r.Context(),
 			`UPDATE auth_email_codes
 			 SET reset_token_hash=$1, reset_token_expires_at=NOW() + $2::interval, updated_at=NOW()
 			 WHERE id=$3`,
@@ -228,6 +240,10 @@ func VerifyResetCodeHandler(dbx *sql.DB) http.HandlerFunc {
 			codeID,
 		); err != nil {
 			writeAPIError(w, "db_update_failed", http.StatusInternalServerError)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			writeAPIError(w, "db_commit_failed", http.StatusInternalServerError)
 			return
 		}
 
@@ -240,6 +256,10 @@ func VerifyResetCodeHandler(dbx *sql.DB) http.HandlerFunc {
 
 func ResetPasswordHandler(dbx *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeAPIError(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		var body struct {
 			Email       string `json:"email"`
 			ResetToken  string `json:"reset_token"`
@@ -257,14 +277,27 @@ func ResetPasswordHandler(dbx *sql.DB) http.HandlerFunc {
 		}
 
 		newPassword := strings.TrimSpace(body.NewPassword)
-		if len(newPassword) < 6 {
+		if len(newPassword) < 12 || len(newPassword) > 1024 {
 			writeAPIError(w, errWeakPassword.Error(), http.StatusBadRequest)
 			return
 		}
 
+		passwordHash, err := hashPassword(newPassword)
+		if err != nil {
+			writeAPIError(w, "password_hash_failed", http.StatusInternalServerError)
+			return
+		}
+
+		tx, err := dbx.BeginTx(r.Context(), nil)
+		if err != nil {
+			writeAPIError(w, "db_begin_failed", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
 		var codeID int
 		var resetTokenHash string
-		err := dbx.QueryRow(`
+		err = tx.QueryRowContext(r.Context(), `
 			SELECT id, reset_token_hash
 			FROM auth_email_codes
 			WHERE lower(email)=lower($1)
@@ -275,26 +308,14 @@ func ResetPasswordHandler(dbx *sql.DB) http.HandlerFunc {
 				AND reset_token_expires_at > NOW()
 			ORDER BY updated_at DESC
 			LIMIT 1
+			FOR UPDATE
 		`, email, codeTypeResetPassword).Scan(&codeID, &resetTokenHash)
 		if err != nil || !passwordMatches(resetTokenHash, body.ResetToken) {
 			writeAPIError(w, errInvalidResetToken.Error(), http.StatusBadRequest)
 			return
 		}
 
-		passwordHash, err := hashPassword(newPassword)
-		if err != nil {
-			writeAPIError(w, "password_hash_failed", http.StatusInternalServerError)
-			return
-		}
-
-		tx, err := dbx.Begin()
-		if err != nil {
-			writeAPIError(w, "db_begin_failed", http.StatusInternalServerError)
-			return
-		}
-		defer tx.Rollback()
-
-		result, err := tx.Exec(`UPDATE users SET password=$1 WHERE lower(email)=lower($2)`, passwordHash, email)
+		result, err := tx.ExecContext(r.Context(), `UPDATE users SET password=$1, auth_version=auth_version+1 WHERE lower(email)=lower($2)`, passwordHash, email)
 		if err != nil {
 			writeAPIError(w, "db_update_failed", http.StatusInternalServerError)
 			return
@@ -305,7 +326,7 @@ func ResetPasswordHandler(dbx *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		if _, err := tx.Exec(
+		if _, err := tx.ExecContext(r.Context(),
 			`UPDATE auth_email_codes
 			 SET used_at=NOW(), reset_token_used_at=NOW(), updated_at=NOW()
 			 WHERE id=$1`,
@@ -382,10 +403,18 @@ func createAndSendCode(dbx *sql.DB, emailService *EmailService, email string, us
 	return nil
 }
 
-func verifyCode(dbx *sql.DB, email, codeType, code string) (int, int, error) {
+func beginVerifiedCode(ctx context.Context, dbx *sql.DB, email, codeType, code string) (*sql.Tx, int, int, error) {
 	code = strings.TrimSpace(code)
 	if len(code) != 6 {
-		return 0, 0, errInvalidCode
+		return nil, 0, 0, errInvalidCode
+	}
+	tx, err := dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	fail := func(err error) (*sql.Tx, int, int, error) {
+		_ = tx.Rollback()
+		return nil, 0, 0, err
 	}
 
 	var codeID int
@@ -394,38 +423,44 @@ func verifyCode(dbx *sql.DB, email, codeType, code string) (int, int, error) {
 	var expiresAt time.Time
 	var attempts int
 
-	err := dbx.QueryRow(`
+	err = tx.QueryRowContext(ctx, `
 		SELECT id, user_id, code_hash, expires_at, attempts
 		FROM auth_email_codes
 		WHERE lower(email)=lower($1) AND code_type=$2 AND used_at IS NULL
 		ORDER BY created_at DESC
 		LIMIT 1
+		FOR UPDATE
 	`, email, codeType).Scan(&codeID, &userID, &codeHash, &expiresAt, &attempts)
 	if err != nil {
-		return 0, 0, errInvalidCode
+		return fail(errInvalidCode)
 	}
 
 	if attempts >= maxCodeAttempts {
-		return 0, 0, errTooManyAttempts
+		return fail(errTooManyAttempts)
 	}
 
 	if time.Now().After(expiresAt) {
-		return 0, 0, errCodeExpired
+		return fail(errCodeExpired)
 	}
 
 	if !passwordMatches(codeHash, code) {
-		_, _ = dbx.Exec(
+		if _, err := tx.ExecContext(ctx,
 			`UPDATE auth_email_codes SET attempts=attempts + 1, updated_at=NOW() WHERE id=$1`,
 			codeID,
-		)
-		return 0, 0, errInvalidCode
+		); err != nil {
+			return fail(err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, 0, 0, err
+		}
+		return nil, 0, 0, errInvalidCode
 	}
 
 	if userID.Valid {
-		return codeID, int(userID.Int64), nil
+		return tx, codeID, int(userID.Int64), nil
 	}
 
-	return codeID, 0, nil
+	return tx, codeID, 0, nil
 }
 
 func enforceCooldown(dbx *sql.DB, email, codeType string) error {

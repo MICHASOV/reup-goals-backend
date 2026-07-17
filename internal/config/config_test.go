@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -10,6 +11,47 @@ func TestValidateRejectsUnsafeSecret(t *testing.T) {
 	err := config.Validate()
 	if err == nil || !strings.Contains(err.Error(), "32") {
 		t.Fatalf("expected JWT length error, got %v", err)
+	}
+}
+
+func TestConnStringEscapesCredentials(t *testing.T) {
+	config := &Config{
+		DBHost: "db.example.com", DBPort: 5432, DBUser: "reup user",
+		DBPassword: "p@ss:word/with spaces", DBName: "reup goals", DBSSLMode: "verify-full",
+	}
+	parsed, err := url.Parse(config.ConnString())
+	if err != nil {
+		t.Fatalf("parse connection string: %v", err)
+	}
+	password, _ := parsed.User.Password()
+	if parsed.User.Username() != config.DBUser || password != config.DBPassword {
+		t.Fatalf("credentials were not preserved: %s", config.ConnString())
+	}
+	if parsed.Query().Get("sslmode") != "verify-full" {
+		t.Fatalf("expected verify-full, got %q", parsed.Query().Get("sslmode"))
+	}
+}
+
+func TestValidateRejectsUnencryptedRemoteDatabase(t *testing.T) {
+	config := &Config{
+		DBHost: "db.example.com", DBUser: "user", DBPassword: "secret", DBName: "reup",
+		DBSSLMode: "disable", OpenAIKey: "key", JWTSecret: strings.Repeat("x", 32),
+		Environment: "production", CORSAllowedOrigins: []string{"https://reupgoals.pro"},
+	}
+	err := config.Validate()
+	if err == nil || !strings.Contains(err.Error(), "DB_SSLMODE") {
+		t.Fatalf("expected remote database TLS error, got %v", err)
+	}
+}
+
+func TestValidateAllowsLocalStagingDatabaseWithoutTLS(t *testing.T) {
+	config := &Config{
+		DBHost: "127.0.0.1", DBUser: "user", DBPassword: "secret", DBName: "reup",
+		DBSSLMode: "disable", OpenAIKey: "key", JWTSecret: strings.Repeat("x", 32),
+		Environment: "staging", CORSAllowedOrigins: []string{"https://staging.reupgoals.pro"},
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("expected valid local staging database config, got %v", err)
 	}
 }
 

@@ -8,13 +8,20 @@ import (
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
-func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService) http.HandlerFunc {
+func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, secureCookie bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		var body struct {
 			Email    string `json:"email"`
 			Password string `json:"password"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
 
 		email, ok := normalizeAndValidateEmail(body.Email)
 		if !ok {
@@ -26,7 +33,7 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService) htt
 			http.Error(w, "email & password required", http.StatusBadRequest)
 			return
 		}
-		if len(password) < 6 {
+		if len(password) < 12 || len(password) > 1024 {
 			http.Error(w, "weak_password", http.StatusBadRequest)
 			return
 		}
@@ -62,7 +69,12 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService) htt
 			return
 		}
 
-		token, _ := GenerateToken(secret, id)
+		token, err := GenerateToken(secret, id, 1)
+		if err != nil {
+			http.Error(w, "token generation failed", http.StatusInternalServerError)
+			return
+		}
+		SetSessionCookie(w, token, secureCookie)
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -72,8 +84,12 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService) htt
 	}
 }
 
-func LoginHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
+func LoginHandler(dbx *sql.DB, secret []byte, secureCookie bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		var body struct {
 			Email    string `json:"email"`
 			Password string `json:"password"`
@@ -95,19 +111,24 @@ func LoginHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 			http.Error(w, "email & password required", http.StatusBadRequest)
 			return
 		}
+		if len(password) > 1024 {
+			http.Error(w, "invalid login", http.StatusUnauthorized)
+			return
+		}
 
 		var id int
 		var storedPassword string
+		var authVersion int
 		err := dbx.QueryRow(`
-			SELECT id, password FROM users WHERE email=$1
-		`, email).Scan(&id, &storedPassword)
+			SELECT id, password, auth_version FROM users WHERE email=$1
+		`, email).Scan(&id, &storedPassword, &authVersion)
 
 		if err != nil || !passwordMatches(storedPassword, password) {
 			http.Error(w, "invalid login", http.StatusUnauthorized)
 			return
 		}
 
-		if !isPasswordHash(storedPassword) {
+		if passwordNeedsRehash(storedPassword) {
 			passwordHash, err := hashPassword(password)
 			if err != nil {
 				http.Error(w, "password migration failed", http.StatusInternalServerError)
@@ -124,11 +145,12 @@ func LoginHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 			}
 		}
 
-		token, err := GenerateToken(secret, id)
+		token, err := GenerateToken(secret, id, authVersion)
 		if err != nil {
 			http.Error(w, "token generation failed", http.StatusInternalServerError)
 			return
 		}
+		SetSessionCookie(w, token, secureCookie)
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -140,6 +162,10 @@ func LoginHandler(dbx *sql.DB, secret []byte) http.HandlerFunc {
 
 func MeHandler(dbx *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		uid, ok := UserIDFromContext(r.Context())
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

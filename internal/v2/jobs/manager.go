@@ -163,8 +163,8 @@ func (m *Manager) runOne(ctx context.Context) (bool, error) {
 		return true, m.fail(ctx, job, fmt.Errorf("no handler registered for %s", job.Type))
 	}
 
-	jobCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	err = handler(jobCtx, job)
+	jobCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	err = invokeHandler(jobCtx, handler, job)
 	cancel()
 	if err != nil {
 		return true, m.fail(ctx, job, err)
@@ -175,6 +175,15 @@ func (m *Manager) runOne(ctx context.Context) (bool, error) {
 		WHERE id=$1 AND status=$3
 	`, job.ID, StatusCompleted, StatusRunning)
 	return true, err
+}
+
+func invokeHandler(ctx context.Context, handler Handler, job Job) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("job handler panic: %v", recovered)
+		}
+	}()
+	return handler(ctx, job)
 }
 
 func (m *Manager) claim(ctx context.Context) (Job, error) {

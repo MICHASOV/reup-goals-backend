@@ -15,7 +15,7 @@ func TestRequireAuthHTTPFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := RequireAuth(secret, func(w http.ResponseWriter, r *http.Request) {
+	handler := RequireAuth(nil, secret, func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := auth.UserIDFromContext(r.Context())
 		if !ok || userID != 42 {
 			t.Fatalf("unexpected authenticated user: %d %v", userID, ok)
@@ -33,7 +33,7 @@ func TestRequireAuthHTTPFlow(t *testing.T) {
 }
 
 func TestRequireAuthRejectsMissingToken(t *testing.T) {
-	handler := RequireAuth([]byte(strings.Repeat("s", 32)), func(http.ResponseWriter, *http.Request) {
+	handler := RequireAuth(nil, []byte(strings.Repeat("s", 32)), func(http.ResponseWriter, *http.Request) {
 		t.Fatal("protected handler must not run")
 	})
 	response := httptest.NewRecorder()

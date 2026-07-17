@@ -1,15 +1,32 @@
 package auth
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 )
 
-func LogoutHandler() http.HandlerFunc {
+type AccountDataCleaner interface {
+	CleanupUserData(context.Context, int) error
+}
+
+func LogoutHandler(dbx *sql.DB, secureCookie bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// JWT stateless => сервер ничего не “разлогинивает”.
-		// Фронт просто удаляет токен.
+		if r.Method != http.MethodPost {
+			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		uid, ok := UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if _, err := dbx.ExecContext(r.Context(), `UPDATE users SET auth_version=auth_version+1 WHERE id=$1`, uid); err != nil {
+			http.Error(w, "logout_failed", http.StatusInternalServerError)
+			return
+		}
+		ClearSessionCookie(w, secureCookie)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": true,
@@ -17,12 +34,25 @@ func LogoutHandler() http.HandlerFunc {
 	}
 }
 
-func DeleteAccountHandler(dbx *sql.DB) http.HandlerFunc {
+func DeleteAccountHandler(dbx *sql.DB, cleaners ...AccountDataCleaner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		uid, ok := UserIDFromContext(r.Context())
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		for _, cleaner := range cleaners {
+			if cleaner == nil {
+				continue
+			}
+			if err := cleaner.CleanupUserData(r.Context(), uid); err != nil {
+				http.Error(w, "external_data_cleanup_failed", http.StatusBadGateway)
+				return
+			}
 		}
 
 		tx, err := dbx.Begin()

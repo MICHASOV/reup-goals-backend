@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ type Config struct {
 	DBUser            string
 	DBPassword        string
 	DBName            string
+	DBSSLMode         string
 	DBMaxOpenConns    int
 	DBMaxIdleConns    int
 	DBConnMaxLifetime time.Duration
@@ -125,12 +128,18 @@ func Load() *Config {
 
 	cloudPaymentsTrialDays := parseIntEnv("CLOUDPAYMENTS_TRIAL_DAYS", 14)
 
+	dbSSLMode := strings.ToLower(strings.TrimSpace(os.Getenv("DB_SSLMODE")))
+	if dbSSLMode == "" {
+		dbSSLMode = "disable"
+	}
+
 	return &Config{
 		DBHost:            os.Getenv("DB_HOST"),
 		DBPort:            port,
 		DBUser:            os.Getenv("DB_USER"),
 		DBPassword:        os.Getenv("DB_PASSWORD"),
 		DBName:            os.Getenv("DB_NAME"),
+		DBSSLMode:         dbSSLMode,
 		DBMaxOpenConns:    parseIntEnv("DB_MAX_OPEN_CONNS", 25),
 		DBMaxIdleConns:    parseIntEnv("DB_MAX_IDLE_CONNS", 10),
 		DBConnMaxLifetime: parseDurationEnv("DB_CONN_MAX_LIFETIME", 30*time.Minute),
@@ -256,12 +265,52 @@ func (c *Config) Validate() error {
 	if (c.Environment == "production" || c.Environment == "staging") && len(c.CORSAllowedOrigins) == 0 {
 		return fmt.Errorf("CORS_ALLOWED_ORIGINS is required in %s", c.Environment)
 	}
+	if c.DBSSLMode != "disable" && c.DBSSLMode != "require" && c.DBSSLMode != "verify-ca" && c.DBSSLMode != "verify-full" {
+		return fmt.Errorf("DB_SSLMODE must be disable, require, verify-ca, or verify-full")
+	}
+	if c.Environment == "production" || c.Environment == "staging" {
+		if strings.TrimSpace(c.DBPassword) == "" {
+			return fmt.Errorf("DB_PASSWORD is required in %s", c.Environment)
+		}
+		if !isLoopbackDatabaseHost(c.DBHost) && c.DBSSLMode == "disable" {
+			return fmt.Errorf("DB_SSLMODE must enable TLS for a remote database in %s", c.Environment)
+		}
+		if c.EnableAIBenchmark {
+			return fmt.Errorf("ENABLE_AI_BENCHMARK must be disabled in %s", c.Environment)
+		}
+		for _, origin := range c.CORSAllowedOrigins {
+			if strings.Contains(origin, "*") || !strings.HasPrefix(origin, "https://") {
+				return fmt.Errorf("CORS origin %q must be an explicit HTTPS origin in %s", origin, c.Environment)
+			}
+		}
+	}
+	if (strings.TrimSpace(c.CloudPaymentsPublicID) == "") != (strings.TrimSpace(c.CloudPaymentsAPISecret) == "") {
+		return fmt.Errorf("CLOUDPAYMENTS_PUBLIC_ID and CLOUDPAYMENTS_API_SECRET must be configured together")
+	}
 	return nil
 }
 
 func (c *Config) ConnString() string {
-	return fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		c.DBHost, c.DBPort, c.DBUser, c.DBPassword, c.DBName,
-	)
+	connection := &url.URL{
+		Scheme: "postgres",
+		Host:   net.JoinHostPort(c.DBHost, strconv.Itoa(c.DBPort)),
+		Path:   "/" + c.DBName,
+	}
+	if c.DBPassword == "" {
+		connection.User = url.User(c.DBUser)
+	} else {
+		connection.User = url.UserPassword(c.DBUser, c.DBPassword)
+	}
+	query := connection.Query()
+	query.Set("sslmode", c.DBSSLMode)
+	connection.RawQuery = query.Encode()
+	return connection.String()
+}
+
+func isLoopbackDatabaseHost(host string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(host))
+	if normalized == "localhost" || normalized == "127.0.0.1" || normalized == "::1" {
+		return true
+	}
+	return net.ParseIP(normalized) != nil && net.ParseIP(normalized).IsLoopback()
 }

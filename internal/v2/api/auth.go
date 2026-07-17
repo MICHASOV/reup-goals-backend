@@ -1,29 +1,34 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"reup-goals-backend/internal/auth"
 )
 
-func RequireAuth(secret []byte, next http.HandlerFunc) http.HandlerFunc {
+func RequireAuth(dbx *sql.DB, secret []byte, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		if !strings.HasPrefix(header, "Bearer ") {
+		tokenString, ok := auth.TokenFromRequest(r)
+		if !ok {
 			WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-
-		tokenString := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-		userID, err := auth.ParseToken(secret, tokenString)
+		claims, err := auth.ParseTokenClaims(secret, tokenString)
 		if err != nil {
 			WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
+		if dbx != nil {
+			var version int
+			if dbx.QueryRowContext(r.Context(), `SELECT auth_version FROM users WHERE id=$1`, claims.UserID).Scan(&version) != nil || version != claims.AuthVersion {
+				WriteError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+		}
 
-		ctx := auth.ContextWithUserID(r.Context(), userID)
+		ctx := auth.ContextWithUserID(r.Context(), claims.UserID)
 		next(w, r.WithContext(ctx))
 	}
 }

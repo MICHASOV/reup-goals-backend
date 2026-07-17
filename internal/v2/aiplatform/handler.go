@@ -1,6 +1,7 @@
 package aiplatform
 
 import (
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -40,6 +41,10 @@ func NewHandler(dbx *sql.DB, adminKey string) *Handler {
 }
 
 func (h *Handler) Prompts(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		api.WriteError(w, http.StatusForbidden, "ai_admin_required")
+		return
+	}
 	switch {
 	case r.URL.Path == "/api/v2/ai/prompts" && r.Method == http.MethodGet:
 		h.list(w, r)
@@ -286,7 +291,9 @@ func (h *Handler) setActive(r *http.Request, name string, version string) error 
 }
 
 func (h *Handler) authorized(r *http.Request) bool {
-	return h.adminKey != "" && strings.TrimSpace(r.Header.Get("X-AI-Admin-Key")) == h.adminKey
+	provided := strings.TrimSpace(r.Header.Get("X-AI-Admin-Key"))
+	return h.adminKey != "" && len(provided) == len(h.adminKey) &&
+		subtle.ConstantTimeCompare([]byte(provided), []byte(h.adminKey)) == 1
 }
 
 func promptPath(path string, action string) (string, string, bool) {

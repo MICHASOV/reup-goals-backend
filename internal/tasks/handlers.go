@@ -77,19 +77,18 @@ func (h *TaskHandler) EvaluateAndStore(
 ) (AIParsedResult, error) {
 
 	var deadline *string
-var duration *string
-var category *string
-var userState *string
+	var duration *string
+	var category *string
+	var userState *string
 
-input := ai.BuildUserPrompt(
-  goalSummary,
-  taskRaw,
-  deadline,
-  duration,
-  category,
-  userState,
-)
-
+	input := ai.BuildUserPrompt(
+		goalSummary,
+		taskRaw,
+		deadline,
+		duration,
+		category,
+		userState,
+	)
 
 	// Call OpenAI
 	rawResult, err := h.AI.EvaluateTask(ctx, input)
@@ -126,13 +125,13 @@ input := ai.BuildUserPrompt(
 	)
 
 	effort := int(
-		(float64(parsed.Scores.EffortSub.Complexity)*1.0+
-			float64(parsed.Scores.EffortSub.Emotion)*0.5+
-			float64(parsed.Scores.EffortSub.Uncertainty)*0.5)/2,
+		(float64(parsed.Scores.EffortSub.Complexity)*1.0 +
+			float64(parsed.Scores.EffortSub.Emotion)*0.5 +
+			float64(parsed.Scores.EffortSub.Uncertainty)*0.5) / 2,
 	)
 
 	// --- UPSERT AI RESULT INTO DATABASE (1 row per task) ---
-_, err = h.DB.Exec(`
+	_, err = h.DB.Exec(`
 	INSERT INTO task_ai_state (
 		task_id, model_version,
 		relevance, impact, urgency, effort,
@@ -158,23 +157,23 @@ _, err = h.DB.Exec(`
 		tags = EXCLUDED.tags,
 		updated_at = now()
 `,
-	taskID,
-	h.AI.Model,
+		taskID,
+		h.AI.Model,
 
-	relevance,
-	impact,
-	urgency,
-	effort,
+		relevance,
+		impact,
+		urgency,
+		effort,
 
-	parsed.NormalizedTask,
-	parsed.AvoidanceFlag,
-	parsed.TrapTask,
-	parsed.ClarificationNeeded,
-	parsed.ClarificationQ,
-	parsed.Explanation,
+		parsed.NormalizedTask,
+		parsed.AvoidanceFlag,
+		parsed.TrapTask,
+		parsed.ClarificationNeeded,
+		parsed.ClarificationQ,
+		parsed.Explanation,
 
-	pq.Array([]string{}),
-)
+		pq.Array([]string{}),
+	)
 	if err != nil {
 		return AIParsedResult{}, err
 	}
@@ -205,5 +204,5 @@ func (h *TaskHandler) Evaluate(w http.ResponseWriter, r *http.Request) {
 
 	// Return parsed LLM output to client
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(parsed)
+	_ = json.NewEncoder(w).Encode(parsed)
 }

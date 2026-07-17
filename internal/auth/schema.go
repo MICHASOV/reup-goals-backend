@@ -5,6 +5,7 @@ import "database/sql"
 func EnsureSchema(dbx *sql.DB) error {
 	statements := []string{
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 1`,
 		`CREATE TABLE IF NOT EXISTS auth_email_codes (
 			id SERIAL PRIMARY KEY,
 			email TEXT NOT NULL,

@@ -35,7 +35,7 @@ func Connect(connString string, options ...PoolOptions) (*sql.DB, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err = database.PingContext(ctx); err != nil {
-		database.Close()
+		_ = database.Close()
 		return nil, err
 	}
 

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"reup-goals-backend/internal/config"
 )
@@ -37,7 +38,9 @@ func NewCloudPaymentsClient(cfg *config.Config) *CloudPaymentsClient {
 		firstAmount: cfg.CloudPaymentsFirstPaymentAmount,
 		currency:    cfg.CloudPaymentsCurrency,
 		trialDays:   cfg.CloudPaymentsTrialDays,
-		client:      http.DefaultClient,
+		client: &http.Client{
+			Timeout: 15 * time.Second,
+		},
 	}
 }
 
@@ -66,8 +69,8 @@ func (c *CloudPaymentsClient) TrialDays() int {
 }
 
 func (c *CloudPaymentsClient) VerifyWebhook(rawBody []byte, hmacHeader string) bool {
-	if c.secret == "" {
-		return true
+	if strings.TrimSpace(c.secret) == "" {
+		return false
 	}
 	if hmacHeader == "" {
 		return false
@@ -103,7 +106,10 @@ func (c *CloudPaymentsClient) CancelSubscription(subscriptionID string) error {
 	}
 	defer resp.Body.Close()
 
-	data, _ := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("cloudpayments_cancel_http_%d", resp.StatusCode)
 	}

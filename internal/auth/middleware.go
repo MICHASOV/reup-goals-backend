@@ -2,8 +2,8 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
-	"strings"
 
 	"reup-goals-backend/internal/analytics"
 )
@@ -13,32 +13,43 @@ type ctxKey string
 const userIDKey ctxKey = "user_id"
 
 type Middleware struct {
+	dbx    *sql.DB
 	secret []byte
 }
 
-func New(secret []byte) Middleware {
-	return Middleware{secret: secret}
+func New(dbx *sql.DB, secret []byte) Middleware {
+	return Middleware{dbx: dbx, secret: secret}
 }
 
 func (m Middleware) Wrap(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		h := r.Header.Get("Authorization")
-		if !strings.HasPrefix(h, "Bearer ") {
+		tokenString, ok := TokenFromRequest(r)
+		if !ok {
 			http.Error(w, "missing token", http.StatusUnauthorized)
 			return
 		}
-
-		tokenString := strings.TrimPrefix(h, "Bearer ")
-		userID, err := ParseToken(m.secret, tokenString)
+		claims, err := ParseTokenClaims(m.secret, tokenString)
 		if err != nil {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
+		if !sessionVersionMatches(r.Context(), m.dbx, claims.UserID, claims.AuthVersion) {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
 
-		ctx := ContextWithUserID(r.Context(), userID)
+		ctx := ContextWithUserID(r.Context(), claims.UserID)
 
 		next(w, r.WithContext(ctx))
 	}
+}
+
+func sessionVersionMatches(ctx context.Context, dbx *sql.DB, userID int, expected int) bool {
+	if dbx == nil || userID <= 0 || expected <= 0 {
+		return false
+	}
+	var actual int
+	return dbx.QueryRowContext(ctx, `SELECT auth_version FROM users WHERE id=$1`, userID).Scan(&actual) == nil && actual == expected
 }
 
 func ContextWithUserID(ctx context.Context, userID int) context.Context {

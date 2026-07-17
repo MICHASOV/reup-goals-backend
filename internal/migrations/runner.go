@@ -1947,6 +1947,9 @@ func runOne(dbx *sql.DB, migration Migration) error {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(728490217)`); err != nil {
+		return fmt.Errorf("migration lock failed: %w", err)
+	}
 
 	var exists bool
 	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE id=$1)`, migration.ID).Scan(&exists); err != nil {

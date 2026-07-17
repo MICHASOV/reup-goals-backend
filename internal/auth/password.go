@@ -13,7 +13,7 @@ import (
 
 func hashPassword(password string) (string, error) {
 	const (
-		iterations = 210000
+		iterations = 600000
 		keyLength  = 32
 	)
 
@@ -33,6 +33,18 @@ func hashPassword(password string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(salt),
 		base64.RawStdEncoding.EncodeToString(key),
 	), nil
+}
+
+func passwordNeedsRehash(stored string) bool {
+	if !isPasswordHash(stored) {
+		return true
+	}
+	parts := strings.Split(stored, "$")
+	if len(parts) != 4 {
+		return true
+	}
+	iterations, err := strconv.Atoi(parts[1])
+	return err != nil || iterations < 600000
 }
 
 func isPasswordHash(stored string) bool {
