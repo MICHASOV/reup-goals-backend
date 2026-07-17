@@ -50,8 +50,16 @@ jobs:
             "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}" 'bash -s' <<'REMOTE'
           set -euo pipefail
 
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot python3-certbot-nginx
+          for attempt in $(seq 1 20); do
+            if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot python3-certbot-nginx; then
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              echo "apt remained locked after 20 attempts"
+              exit 1
+            fi
+            sleep 10
+          done
 
           mkdir -p /opt/reup-goals-staging/backend /etc/reup-goals-staging
 
