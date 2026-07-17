@@ -12,6 +12,7 @@ import (
 	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/auth"
 	"reup-goals-backend/internal/v2/api"
+	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -23,10 +24,10 @@ type Handler struct {
 	readiness   *ReadinessService
 }
 
-func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *Handler {
+func NewHandler(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *Handler {
 	synthesis := NewSynthesisService(dbx, aiClient, compactThreshold)
 	readiness := NewReadinessService(dbx, aiClient, compactThreshold)
-	facilitator := NewFacilitatorService(dbx, aiClient, compactThreshold)
+	facilitator := NewFacilitatorService(dbx, aiClient, compactThreshold, managers...)
 	facilitator.SetReadinessService(readiness)
 	readiness.StartWorker()
 	return &Handler{

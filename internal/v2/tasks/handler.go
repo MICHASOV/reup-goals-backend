@@ -21,7 +21,7 @@ type Handler struct {
 	evaluator  *TaskEvaluatorService
 }
 
-func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *Handler {
+func NewHandler(dbx *sql.DB, aiClient ai.Provider, compactThreshold int) *Handler {
 	evaluator := NewTaskEvaluatorService(dbx, aiClient)
 	evaluator.StartWorker()
 	return &Handler{
@@ -175,9 +175,12 @@ func (h *Handler) workstream(w http.ResponseWriter, r *http.Request, workspaceID
 func (h *Handler) tasks(w http.ResponseWriter, r *http.Request, workspaceID int, userID int) {
 	switch r.Method {
 	case http.MethodGet:
+		page := api.ParsePagination(r, 100, 200)
 		filter := ListFilter{
 			IncludeArchived: r.URL.Query().Get("include_archived") == "true",
 			Query:           strings.TrimSpace(r.URL.Query().Get("q")),
+			Limit:           page.Limit,
+			Offset:          page.Offset,
 		}
 		if status := strings.TrimSpace(r.URL.Query().Get("status")); status != "" {
 			if !ValidStatus(status) {
@@ -197,7 +200,12 @@ func (h *Handler) tasks(w http.ResponseWriter, r *http.Request, workspaceID int,
 			api.WriteError(w, http.StatusInternalServerError, "tasks_list_failed")
 			return
 		}
-		api.WriteJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+		total, err := h.store.Count(r.Context(), workspaceID, filter)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "tasks_count_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"tasks": tasks, "pagination": api.PaginationMeta(page, total)})
 	case http.MethodPost:
 		input, ok := decodeTaskInput(w, r)
 		if !ok {

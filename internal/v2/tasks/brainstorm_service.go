@@ -17,14 +17,14 @@ type BrainstormService struct {
 	store            *Store
 	context          *taskContextBuilder
 	memory           *strategicmemory.Store
-	ai               *ai.OpenAIClient
+	ai               ai.Provider
 	evaluator        *TaskEvaluatorService
 	compactThreshold int
 }
 
 func NewBrainstormService(
 	dbx *sql.DB,
-	aiClient *ai.OpenAIClient,
+	aiClient ai.Provider,
 	evaluator *TaskEvaluatorService,
 	compactThreshold int,
 ) *BrainstormService {
@@ -87,7 +87,8 @@ func (s *BrainstormService) HandleMessage(
 		input = brainstormFreshInput(pack, request.Message)
 	}
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(ctx, taskBrainstormPrompt, input, ai.ResponseContextOptions{
+	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "task_brainstorm", taskBrainstormPromptVersion)
+	result, err := s.ai.GenerateJSONNative(aiCtx, taskBrainstormPrompt, input, ai.ResponseContextOptions{
 		PreviousResponseID: session.PreviousResponseID, VectorStoreIDs: vectorStoreIDs,
 		CompactThreshold: session.CompactThreshold, PromptCacheKey: session.PromptCacheKey,
 		MaxFileSearchResults: 6, MaxOutputTokens: 8000, RequestTimeout: 2 * time.Minute,
@@ -97,7 +98,7 @@ func (s *BrainstormService) HandleMessage(
 		_ = s.store.UpdateBrainstormPreviousResponseID(ctx, workspaceID, request.WorkstreamID, "")
 		usedPreviousResponseID = ""
 		started = time.Now()
-		result, err = s.ai.GenerateJSONNative(ctx, taskBrainstormPrompt, brainstormFreshInput(pack, request.Message), ai.ResponseContextOptions{
+		result, err = s.ai.GenerateJSONNative(aiCtx, taskBrainstormPrompt, brainstormFreshInput(pack, request.Message), ai.ResponseContextOptions{
 			VectorStoreIDs: vectorStoreIDs, CompactThreshold: session.CompactThreshold,
 			PromptCacheKey: session.PromptCacheKey, MaxFileSearchResults: 6,
 			MaxOutputTokens: 8000, RequestTimeout: 2 * time.Minute,
@@ -105,14 +106,14 @@ func (s *BrainstormService) HandleMessage(
 		duration = time.Since(started).Milliseconds()
 	}
 	if err != nil {
-		s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_brainstorm", s.ai.Model, taskBrainstormPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_brainstorm", s.ai.ModelName(), taskBrainstormPromptVersion, duration, 0, 0, "failed", err.Error())
 		return BrainstormMessageResponse{}, err
 	}
 
 	output, err := parseBrainstormOutput(result.Text, pack)
 	if err != nil {
 		_ = s.store.UpdateBrainstormPreviousResponseID(ctx, workspaceID, request.WorkstreamID, "")
-		s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_brainstorm", s.ai.Model, taskBrainstormPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
+		s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_brainstorm", s.ai.ModelName(), taskBrainstormPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
 		return BrainstormMessageResponse{}, err
 	}
 	if strings.TrimSpace(result.ResponseID) != "" {
@@ -135,7 +136,7 @@ func (s *BrainstormService) HandleMessage(
 		}
 		message.ActionStates = actionStates
 	}
-	s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_brainstorm", s.ai.Model, taskBrainstormPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_brainstorm", s.ai.ModelName(), taskBrainstormPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	return BrainstormMessageResponse{
 		WorkspaceID: workspaceID, AssistantMessage: output.Message, UserMessage: userMessage, Message: message,
 		InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens,

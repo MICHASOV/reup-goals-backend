@@ -25,6 +25,22 @@ type OpenAIClient struct {
 	Model           string
 	ProxyURL        string
 	MaxOutputTokens int
+	governance      Governance
+}
+
+func (c *OpenAIClient) ModelName() string {
+	return c.Model
+}
+
+func (c *OpenAIClient) ForModel(model string) Provider {
+	clone := *c
+	clone.Model = strings.TrimSpace(model)
+	return &clone
+}
+
+func (c *OpenAIClient) WithGovernance(governance Governance) *OpenAIClient {
+	c.governance = governance
+	return c
 }
 
 func New(apiKey, model string, proxyURL ...string) *OpenAIClient {
@@ -110,13 +126,21 @@ type responsesResponse struct {
 }
 
 type transcriptionResponse struct {
-	Text string `json:"text"`
+	Text  string `json:"text"`
+	Usage Usage  `json:"usage"`
 }
 
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens       int `json:"input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
+	TotalTokens       int `json:"total_tokens"`
+	InputTokenDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
+}
+
+func (u Usage) CachedInputTokens() int {
+	return u.InputTokenDetails.CachedTokens
 }
 
 type TextResult struct {
@@ -133,6 +157,7 @@ type ResponseContextOptions struct {
 	MaxFileSearchResults int
 	MaxOutputTokens      int
 	RequestTimeout       time.Duration
+	Model                string
 }
 
 type OpenAIFile struct {
@@ -207,7 +232,34 @@ func (c *OpenAIClient) GenerateJSONNative(ctx context.Context, instructions stri
 	}, options)
 }
 
-func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, language string, audio io.Reader) (string, error) {
+func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, language string, audio io.Reader) (text string, resultErr error) {
+	model := strings.TrimSpace(c.Model)
+	if model == "" {
+		model = "gpt-4o-transcribe"
+	}
+	prompt := "Русская разговорная речь пользователя о бизнесе, продукте, стратегии, целях, клиентах, продажах, маркетинге, CRM, SaaS, метриках, LTV, CAC, юнит-экономике, проблемах и ограничениях. Сохраняй смысл, термины, названия компаний и стиль речи."
+	resolved := ResolvedCall{
+		Metadata: CallMetadataFromContext(ctx), Instructions: prompt, Model: model, Provider: "openai",
+	}
+	if c.governance != nil {
+		var err error
+		resolved, err = c.governance.BeforeCall(ctx, resolved.Metadata, prompt, model)
+		if err != nil {
+			return "", err
+		}
+	}
+	started := time.Now()
+	var usage Usage
+	if c.governance != nil {
+		defer func() {
+			logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+			defer cancel()
+			c.governance.AfterCall(logCtx, resolved, CallResult{
+				Usage: usage, LatencyMS: time.Since(started).Milliseconds(), Err: resultErr,
+			})
+		}()
+	}
+
 	httpClient, err := c.newHTTPClient()
 	if err != nil {
 		return "", fmt.Errorf("proxy init error: %w", err)
@@ -224,16 +276,12 @@ func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, lan
 		return "", fmt.Errorf("audio copy error: %w", err)
 	}
 
-	model := strings.TrimSpace(c.Model)
-	if model == "" {
-		model = "gpt-4o-transcribe"
-	}
-	_ = writer.WriteField("model", model)
+	_ = writer.WriteField("model", resolved.Model)
 	_ = writer.WriteField("response_format", "json")
 	if strings.TrimSpace(language) != "" {
 		_ = writer.WriteField("language", strings.TrimSpace(language))
 	}
-	_ = writer.WriteField("prompt", "Русская разговорная речь пользователя о бизнесе, продукте, стратегии, целях, клиентах, продажах, маркетинге, CRM, SaaS, метриках, LTV, CAC, юнит-экономике, проблемах и ограничениях. Сохраняй смысл, термины, названия компаний и стиль речи.")
+	_ = writer.WriteField("prompt", resolved.Instructions)
 
 	if err := writer.Close(); err != nil {
 		return "", fmt.Errorf("multipart close error: %w", err)
@@ -268,8 +316,9 @@ func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, lan
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", fmt.Errorf("transcription json decode error: %w | body: %s", err, string(raw))
 	}
+	usage = parsed.Usage
 
-	text := strings.TrimSpace(parsed.Text)
+	text = strings.TrimSpace(parsed.Text)
 	if text == "" {
 		return "", fmt.Errorf("empty transcription")
 	}
@@ -290,7 +339,38 @@ func (c *OpenAIClient) generateResponseText(ctx context.Context, instructions st
 	return c.generateResponseTextWithOptions(ctx, instructions, input, textFormat, ResponseContextOptions{})
 }
 
-func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, instructions string, input string, textFormat map[string]interface{}, options ResponseContextOptions) (TextResult, error) {
+func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, instructions string, input string, textFormat map[string]interface{}, options ResponseContextOptions) (result TextResult, resultErr error) {
+	model := strings.TrimSpace(options.Model)
+	if model == "" {
+		model = c.Model
+	}
+	resolved := ResolvedCall{
+		Metadata:     CallMetadataFromContext(ctx),
+		Instructions: instructions,
+		Model:        model,
+		Provider:     "openai",
+	}
+	if c.governance != nil {
+		var err error
+		resolved, err = c.governance.BeforeCall(ctx, resolved.Metadata, instructions, model)
+		if err != nil {
+			return TextResult{}, err
+		}
+	}
+	started := time.Now()
+	if c.governance != nil {
+		defer func() {
+			logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+			defer cancel()
+			c.governance.AfterCall(logCtx, resolved, CallResult{
+				ResponseID: result.ResponseID,
+				Usage:      result.Usage,
+				LatencyMS:  time.Since(started).Milliseconds(),
+				Err:        resultErr,
+			})
+		}()
+	}
+
 	httpClient, err := c.newHTTPClient()
 	if err != nil {
 		return TextResult{}, fmt.Errorf("proxy init error: %w", err)
@@ -300,9 +380,9 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 	}
 
 	reqBody := responsesRequest{
-		Model:              c.Model,
+		Model:              resolved.Model,
 		Input:              input,
-		Instructions:       instructions,
+		Instructions:       resolved.Instructions,
 		MaxOutputTokens:    c.MaxOutputTokens,
 		Text:               textFormat,
 		PreviousResponseID: strings.TrimSpace(options.PreviousResponseID),

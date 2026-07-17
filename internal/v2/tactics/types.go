@@ -27,9 +27,11 @@ const (
 	ProjectStatusCompleted  = "completed"
 	ProjectStatusFailed     = "failed"
 
-	EntityPlan       = "tactical_plan"
-	EntityWorkstream = "workstream"
-	EntityProject    = "project"
+	EntityPlan        = "tactical_plan"
+	EntityWorkstream  = "workstream"
+	EntityProject     = "project"
+	EntityRisk        = "risk"
+	EntityOpportunity = "opportunity"
 
 	CoverageUncovered        = "uncovered"
 	CoveragePartiallyCovered = "partially_covered"

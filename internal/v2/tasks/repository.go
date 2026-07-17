@@ -121,11 +121,19 @@ type ListFilter struct {
 	ProjectID       *int
 	Query           string
 	IncludeArchived bool
+	Limit           int
+	Offset          int
 }
 
 func (s *Store) List(ctx context.Context, workspaceID int, filter ListFilter) ([]Task, error) {
 	if err := s.archiveCompletedTasks(ctx, workspaceID); err != nil {
 		return nil, err
+	}
+	if filter.Limit <= 0 || filter.Limit > 200 {
+		filter.Limit = 100
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
 	}
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT
@@ -134,16 +142,25 @@ func (s *Store) List(ctx context.Context, workspaceID int, filter ListFilter) ([
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
 			updated_at, started_at, completed_at, archived_at
-		FROM v2_tasks
-		WHERE workspace_id=$1
+		FROM v2_tasks task
+		LEFT JOIN LATERAL (
+			SELECT priority_score
+			FROM v2_task_evaluations evaluation
+			WHERE evaluation.task_id=task.id AND evaluation.workspace_id=task.workspace_id
+			ORDER BY evaluation.created_at DESC, evaluation.id DESC
+			LIMIT 1
+		) latest_evaluation ON TRUE
+		WHERE task.workspace_id=$1
 			AND ($2::TEXT IS NULL OR status=$2)
 			AND ($3::INTEGER IS NULL OR workstream_id=$3)
 			AND ($4::INTEGER IS NULL OR project_id=$4)
 			AND ($5::BOOLEAN = TRUE OR archived_at IS NULL)
 			AND ($6::TEXT = '' OR title ILIKE '%' || $6 || '%' OR description ILIKE '%' || $6 || '%'
 				OR expected_result ILIKE '%' || $6 || '%' OR success_criteria ILIKE '%' || $6 || '%' OR why_now ILIKE '%' || $6 || '%')
-		ORDER BY COALESCE(priority_order, 9999), updated_at DESC, id DESC
-	`, workspaceID, nullableString(filter.Status), nullableInt(filter.WorkstreamID), nullableInt(filter.ProjectID), filter.IncludeArchived, strings.TrimSpace(filter.Query))
+		ORDER BY COALESCE(task.manual_priority_score, latest_evaluation.priority_score, 0) DESC,
+			COALESCE(task.priority_order, 9999), task.updated_at DESC, task.id DESC
+		LIMIT $7 OFFSET $8
+	`, workspaceID, nullableString(filter.Status), nullableInt(filter.WorkstreamID), nullableInt(filter.ProjectID), filter.IncludeArchived, strings.TrimSpace(filter.Query), filter.Limit, filter.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +196,22 @@ func (s *Store) List(ctx context.Context, workspaceID int, filter ListFilter) ([
 		return leftOrder < rightOrder
 	})
 	return decorated, nil
+}
+
+func (s *Store) Count(ctx context.Context, workspaceID int, filter ListFilter) (int, error) {
+	var count int
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM v2_tasks
+		WHERE workspace_id=$1
+			AND ($2::TEXT IS NULL OR status=$2)
+			AND ($3::INTEGER IS NULL OR workstream_id=$3)
+			AND ($4::INTEGER IS NULL OR project_id=$4)
+			AND ($5::BOOLEAN = TRUE OR archived_at IS NULL)
+			AND ($6::TEXT = '' OR title ILIKE '%' || $6 || '%' OR description ILIKE '%' || $6 || '%'
+				OR expected_result ILIKE '%' || $6 || '%' OR success_criteria ILIKE '%' || $6 || '%' OR why_now ILIKE '%' || $6 || '%')
+	`, workspaceID, nullableString(filter.Status), nullableInt(filter.WorkstreamID), nullableInt(filter.ProjectID), filter.IncludeArchived, strings.TrimSpace(filter.Query)).Scan(&count)
+	return count, err
 }
 
 func (s *Store) archiveCompletedTasks(ctx context.Context, workspaceID int) error {

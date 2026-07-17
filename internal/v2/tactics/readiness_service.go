@@ -51,7 +51,7 @@ var tacticsReadinessCriterionOrder = []string{
 type TacticsReadinessService struct {
 	store            *Store
 	memoryStore      *strategicmemory.Store
-	ai               *ai.OpenAIClient
+	ai               ai.Provider
 	compactThreshold int
 	wake             chan struct{}
 }
@@ -63,7 +63,7 @@ type tacticsReadinessSource struct {
 	Label      string `json:"label"`
 }
 
-func NewTacticsReadinessService(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *TacticsReadinessService {
+func NewTacticsReadinessService(dbx *sql.DB, aiClient ai.Provider, compactThreshold int) *TacticsReadinessService {
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
 	}
@@ -152,7 +152,7 @@ func (s *TacticsReadinessService) signalWorker() {
 func (s *TacticsReadinessService) processDueAudits() {
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		run, err := s.store.ClaimDueTacticsReadinessAudit(ctx, s.ai.Model)
+		run, err := s.store.ClaimDueTacticsReadinessAudit(ctx, s.ai.ModelName())
 		cancel()
 		if errors.Is(err, sql.ErrNoRows) {
 			return
@@ -271,7 +271,8 @@ func (s *TacticsReadinessService) execute(ctx context.Context, run TacticsReadin
 		vectorStoreIDs = append(vectorStoreIDs, strings.TrimSpace(openAISession.VectorStoreID))
 	}
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(ctx, tacticsReadinessPrompt, string(rawInput), ai.ResponseContextOptions{
+	aiCtx := ai.WithScenario(ctx, run.WorkspaceID, 0, "tactics_readiness_auditor", TacticsReadinessPromptVersion)
+	result, err := s.ai.GenerateJSONNative(aiCtx, tacticsReadinessPrompt, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     openAISession.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-tactics-readiness-workspace-%d-v1", run.WorkspaceID),
@@ -281,13 +282,13 @@ func (s *TacticsReadinessService) execute(ctx context.Context, run TacticsReadin
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.memoryStore.LogAIRunWithUsage(ctx, run.WorkspaceID, "tactics_readiness_auditor", s.ai.Model, TacticsReadinessPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.memoryStore.LogAIRunWithUsage(ctx, run.WorkspaceID, "tactics_readiness_auditor", s.ai.ModelName(), TacticsReadinessPromptVersion, duration, 0, 0, "failed", err.Error())
 		return err
 	}
 
 	var report TacticsReadinessReport
 	if err := json.Unmarshal([]byte(result.Text), &report); err != nil {
-		s.memoryStore.LogAIRunWithUsage(ctx, run.WorkspaceID, "tactics_readiness_auditor", s.ai.Model, TacticsReadinessPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
+		s.memoryStore.LogAIRunWithUsage(ctx, run.WorkspaceID, "tactics_readiness_auditor", s.ai.ModelName(), TacticsReadinessPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
 		return fmt.Errorf("tactics readiness json decode error: %w", err)
 	}
 	report = normalizeTacticsReadinessReport(report, run, sourceIndex)
@@ -295,7 +296,7 @@ func (s *TacticsReadinessService) execute(ctx context.Context, run TacticsReadin
 	if err != nil {
 		return err
 	}
-	s.memoryStore.LogAIRunWithUsage(ctx, run.WorkspaceID, "tactics_readiness_auditor", s.ai.Model, TacticsReadinessPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.memoryStore.LogAIRunWithUsage(ctx, run.WorkspaceID, "tactics_readiness_auditor", s.ai.ModelName(), TacticsReadinessPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	return nil
 }
 

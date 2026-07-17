@@ -1,21 +1,24 @@
 package audio
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/auth"
 	"reup-goals-backend/internal/v2/api"
 )
 
 const maxAudioUploadBytes = 26 << 20
 
 type Handler struct {
-	ai *ai.OpenAIClient
+	dbx *sql.DB
+	ai  *ai.OpenAIClient
 }
 
-func NewHandler(aiClient *ai.OpenAIClient) *Handler {
-	return &Handler{ai: aiClient}
+func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient) *Handler {
+	return &Handler{dbx: dbx, ai: aiClient}
 }
 
 func (h *Handler) Transcriptions(w http.ResponseWriter, r *http.Request) {
@@ -42,11 +45,29 @@ func (h *Handler) Transcriptions(w http.ResponseWriter, r *http.Request) {
 		language = "ru"
 	}
 
-	text, err := h.ai.TranscribeAudio(r.Context(), header.Filename, language, file)
+	userID, _ := auth.UserIDFromContext(r.Context())
+	workspaceID := h.workspaceID(r, userID)
+	aiCtx := ai.WithScenario(r.Context(), workspaceID, userID, "audio_transcription", "v1")
+	text, err := h.ai.TranscribeAudio(aiCtx, header.Filename, language, file)
 	if err != nil {
 		api.WriteError(w, http.StatusBadGateway, "audio_transcription_failed")
 		return
 	}
 
 	api.WriteJSON(w, http.StatusOK, map[string]string{"text": text})
+}
+
+func (h *Handler) workspaceID(r *http.Request, userID int) int {
+	if h.dbx == nil || userID <= 0 {
+		return 0
+	}
+	var workspaceID int
+	_ = h.dbx.QueryRowContext(r.Context(), `
+		SELECT workspace_id
+		FROM workspace_memberships
+		WHERE user_id=$1 AND status='active'
+		ORDER BY is_default DESC, created_at
+		LIMIT 1
+	`, userID).Scan(&workspaceID)
+	return workspaceID
 }

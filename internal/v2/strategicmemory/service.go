@@ -10,28 +10,35 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/jobs"
 )
 
 const autoQualityAuditThrottle = 10 * time.Minute
 
 type Service struct {
 	store                  *Store
-	ai                     *ai.OpenAIClient
+	ai                     ai.Provider
 	compactThreshold       int
 	qualityAuditMu         sync.Mutex
 	qualityAuditReservedAt map[int]time.Time
+	jobs                   *jobs.Manager
 }
 
-func NewService(store *Store, aiClient *ai.OpenAIClient, compactThreshold int) *Service {
+func NewService(store *Store, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *Service {
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
 	}
-	return &Service{
+	service := &Service{
 		store:                  store,
 		ai:                     aiClient,
 		compactThreshold:       compactThreshold,
 		qualityAuditReservedAt: map[int]time.Time{},
 	}
+	if len(managers) > 0 && managers[0] != nil {
+		service.jobs = managers[0]
+		service.registerJobHandlers()
+	}
+	return service
 }
 
 func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, error) {
@@ -121,8 +128,9 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		input = "Контекст для ответа в формате JSON:\n" + string(rawInput)
 	}
 	vectorStoreIDs := vectorStoreIDsFromSession(session)
+	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "business_auditor_openai_native", StrategicMemoryPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateTextNative(ctx, businessAuditorPrompt, input, ai.ResponseContextOptions{
+	result, err := s.ai.GenerateTextNative(aiCtx, businessAuditorPrompt, input, ai.ResponseContextOptions{
 		PreviousResponseID:   session.PreviousResponseID,
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
@@ -135,7 +143,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 			_ = s.store.UpdateOpenAIPreviousResponseID(ctx, workspaceID, "")
 			retryInput := buildFreshContextInput(workspaceID, message, state, relevantMessages)
 			started = time.Now()
-			result, err = s.ai.GenerateTextNative(ctx, businessAuditorPrompt, retryInput, ai.ResponseContextOptions{
+			result, err = s.ai.GenerateTextNative(aiCtx, businessAuditorPrompt, retryInput, ai.ResponseContextOptions{
 				VectorStoreIDs:       vectorStoreIDs,
 				CompactThreshold:     session.CompactThreshold,
 				PromptCacheKey:       session.PromptCacheKey,
@@ -144,11 +152,11 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 			duration = time.Since(started).Milliseconds()
 		}
 		if err != nil {
-			s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.Model, StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
+			s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
 			return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
 		}
 	}
-	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.Model, StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	if strings.TrimSpace(result.ResponseID) != "" {
 		_ = s.store.UpdateOpenAIPreviousResponseID(ctx, workspaceID, result.ResponseID)
 	}

@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/rs/cors"
 
@@ -15,10 +20,13 @@ import (
 	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/tasks"
 	"reup-goals-backend/internal/v2/aiactions"
+	"reup-goals-backend/internal/v2/aiplatform"
 	v2api "reup-goals-backend/internal/v2/api"
 	audioapi "reup-goals-backend/internal/v2/audio"
 	"reup-goals-backend/internal/v2/bootstrap"
 	"reup-goals-backend/internal/v2/course"
+	"reup-goals-backend/internal/v2/jobs"
+	"reup-goals-backend/internal/v2/operations"
 	"reup-goals-backend/internal/v2/strategicmemory"
 	"reup-goals-backend/internal/v2/strategy"
 	"reup-goals-backend/internal/v2/tactics"
@@ -27,9 +35,14 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatal("Configuration error: ", err)
+	}
 	jwtSecret := []byte(cfg.JWTSecret)
 
-	database, err := db.Connect(cfg.ConnString())
+	database, err := db.Connect(cfg.ConnString(), db.PoolOptions{
+		MaxOpenConns: cfg.DBMaxOpenConns, MaxIdleConns: cfg.DBMaxIdleConns, ConnMaxLifetime: cfg.DBConnMaxLifetime,
+	})
 	if err != nil {
 		log.Fatal("DB error:", err)
 	}
@@ -45,22 +58,39 @@ func main() {
 		log.Fatal("DB migration error:", err)
 	}
 
-	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel, cfg.OpenAIProxyURL)
+	rootCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+
+	aiGovernance := aiplatform.NewGovernance(database, aiplatform.Limits{
+		RequestsPerMinute: cfg.AIRequestsPerMinute,
+		DailyBudgetUSD:    cfg.AIDailyBudgetUSD,
+		MonthlyBudgetUSD:  cfg.AIMonthlyBudgetUSD,
+	})
+	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel, cfg.OpenAIProxyURL).WithGovernance(aiGovernance)
 	auditorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIAuditorModel, cfg.OpenAIProxyURL).
-		WithMaxOutputTokens(cfg.OpenAIAuditorMaxOutputTokens)
-	transcriptionAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITranscriptionModel, cfg.OpenAIProxyURL)
+		WithMaxOutputTokens(cfg.OpenAIAuditorMaxOutputTokens).
+		WithGovernance(aiGovernance)
+	transcriptionAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITranscriptionModel, cfg.OpenAIProxyURL).WithGovernance(aiGovernance)
+	jobManager := jobs.NewManager(database)
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)
 	cloudPayments := subscriptions.NewCloudPaymentsClient(cfg)
 	subscriptionHandler := subscriptions.NewHandler(database, cloudPayments)
-	audioHandler := audioapi.NewHandler(transcriptionAIClient)
+	audioHandler := audioapi.NewHandler(database, transcriptionAIClient)
 	aiActionsHandler := aiactions.NewHandler(database)
+	aiPlatformHandler := aiplatform.NewHandler(database, cfg.AIAdminKey)
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
-	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
-	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
-	tacticsHandler := tactics.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
+	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager)
+	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager)
+	tacticsHandler := tactics.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager)
 	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
+	operationsHandler := operations.NewHandler(database, jobManager)
+	operationsCollector := operations.NewCollector(database, jwtSecret)
+	operationsCollector.Start(rootCtx)
+	defer operationsCollector.Stop()
+	jobManager.Start(rootCtx, cfg.AIJobWorkers)
+	defer jobManager.Stop()
 
 	mux := http.NewServeMux()
 
@@ -104,6 +134,10 @@ func main() {
 	mux.Handle("/api/v2/audio/transcriptions", v2api.RequireAuth(jwtSecret, audioHandler.Transcriptions))
 	mux.Handle("/api/v2/ai-actions", v2api.RequireAuth(jwtSecret, aiActionsHandler.Actions))
 	mux.Handle("/api/v2/ai-actions/", v2api.RequireAuth(jwtSecret, aiActionsHandler.Actions))
+	mux.Handle("/api/v2/ai/prompts", v2api.RequireAuth(jwtSecret, aiPlatformHandler.Prompts))
+	mux.Handle("/api/v2/ai/prompts/", v2api.RequireAuth(jwtSecret, aiPlatformHandler.Prompts))
+	mux.Handle("/api/v2/ai/usage-policy", v2api.RequireAuth(jwtSecret, aiPlatformHandler.UsagePolicy))
+	mux.Handle("/api/v2/operations/overview", v2api.RequireAuth(jwtSecret, operationsHandler.Overview))
 	mux.Handle("/api/v2/strategic-director/messages", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/state", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/files", v2api.RequireAuth(jwtSecret, strategicMemoryHandler.StrategicDirector))
@@ -174,24 +208,44 @@ func main() {
 	// AI endpoint (protected)
 	mux.Handle("/task/evaluate", mw.Wrap(taskAI.Evaluate))
 
-	var handler http.Handler
-	if len(cfg.CORSAllowedOrigins) > 0 {
-		handler = cors.New(cors.Options{
-			AllowedOrigins: cfg.CORSAllowedOrigins,
-			AllowedMethods: []string{
-				http.MethodGet,
-				http.MethodPost,
-				http.MethodPatch,
-				http.MethodPut,
-				http.MethodDelete,
-				http.MethodOptions,
-			},
-			AllowedHeaders: []string{"Authorization", "Content-Type"},
-		}).Handler(mux)
-	} else {
-		handler = cors.AllowAll().Handler(mux)
+	allowedOrigins := cfg.CORSAllowedOrigins
+	if len(allowedOrigins) == 0 {
+		allowedOrigins = []string{"http://localhost:3000", "http://localhost:3002", "http://127.0.0.1:3000", "http://127.0.0.1:3002"}
+	}
+	corsHandler := cors.New(cors.Options{
+		AllowedOrigins: allowedOrigins,
+		AllowedMethods: []string{
+			http.MethodGet,
+			http.MethodPost,
+			http.MethodPatch,
+			http.MethodPut,
+			http.MethodDelete,
+			http.MethodOptions,
+		},
+		AllowedHeaders: []string{"Authorization", "Content-Type", "X-Request-ID", "X-AI-Admin-Key"},
+		ExposedHeaders: []string{"X-Request-ID", "Server-Timing"},
+	}).Handler(mux)
+	handler := operationsCollector.Middleware(corsHandler)
+	server := &http.Server{
+		Addr:              ":8080",
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
 	}
 
-	log.Println("🚀 SERVER RUNNING ON :8080")
-	_ = http.ListenAndServe(":8080", handler)
+	go func() {
+		<-rootCtx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("HTTP shutdown error: %v", err)
+		}
+	}()
+
+	log.Println("SERVER RUNNING ON :8080")
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal("HTTP server error: ", err)
+	}
 }

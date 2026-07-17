@@ -34,11 +34,11 @@ var synthesisExcessiveBreaksPattern = regexp.MustCompile(`\n{3,}`)
 type SynthesisService struct {
 	store            *Store
 	memoryStore      *strategicmemory.Store
-	ai               *ai.OpenAIClient
+	ai               ai.Provider
 	compactThreshold int
 }
 
-func NewSynthesisService(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *SynthesisService {
+func NewSynthesisService(dbx *sql.DB, aiClient ai.Provider, compactThreshold int) *SynthesisService {
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
 	}
@@ -102,7 +102,7 @@ func (s *SynthesisService) StartForRevision(
 		return StrategySynthesisResponse{}, fmt.Errorf("strategy_synthesis_stale_revision")
 	}
 
-	run, created, err := s.store.CreateSynthesisRun(ctx, workspaceID, strategy.ID, userID, sessionRevision, throughMessageID, s.ai.Model)
+	run, created, err := s.store.CreateSynthesisRun(ctx, workspaceID, strategy.ID, userID, sessionRevision, throughMessageID, s.ai.ModelName())
 	if err != nil {
 		return StrategySynthesisResponse{}, err
 	}
@@ -182,7 +182,8 @@ func (s *SynthesisService) execute(ctx context.Context, workspaceID int, runID i
 	}
 
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(ctx, strategySynthesizerPrompt, string(rawInput), ai.ResponseContextOptions{
+	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "strategy_synthesizer", StrategySynthesizerPromptVersion)
+	result, err := s.ai.GenerateJSONNative(aiCtx, strategySynthesizerPrompt, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       synthesisVectorStoreIDs(session),
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-strategy-synthesizer-workspace-%d-v1", workspaceID),
@@ -192,13 +193,13 @@ func (s *SynthesisService) execute(ctx context.Context, workspaceID int, runID i
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_synthesizer", s.ai.Model, StrategySynthesizerPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_synthesizer", s.ai.ModelName(), StrategySynthesizerPromptVersion, duration, 0, 0, "failed", err.Error())
 		return err
 	}
 
 	var output strategySynthesisModelOutput
 	if err := json.Unmarshal([]byte(result.Text), &output); err != nil {
-		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_synthesizer", s.ai.Model, StrategySynthesizerPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
+		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_synthesizer", s.ai.ModelName(), StrategySynthesizerPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
 		return fmt.Errorf("strategy synthesis json decode error: %w", err)
 	}
 	if len(output.Documents) == 0 {
@@ -227,7 +228,7 @@ func (s *SynthesisService) execute(ctx context.Context, workspaceID int, runID i
 		}
 		return err
 	}
-	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_synthesizer", s.ai.Model, StrategySynthesizerPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_synthesizer", s.ai.ModelName(), StrategySynthesizerPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	return nil
 }
 
@@ -260,23 +261,24 @@ func (s *SynthesisService) formatSynthesisDocuments(
 	defer cancel()
 
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(formatterCtx, strategyArtifactFormatterPrompt, string(rawInput), ai.ResponseContextOptions{
+	aiCtx := ai.WithScenario(formatterCtx, workspaceID, 0, "strategy_artifact_formatter", StrategyArtifactFormatterPromptVersion)
+	result, err := s.ai.GenerateJSONNative(aiCtx, strategyArtifactFormatterPrompt, string(rawInput), ai.ResponseContextOptions{
 		PromptCacheKey:  fmt.Sprintf("reupgoals-strategy-artifact-formatter-workspace-%d-v1", workspaceID),
 		MaxOutputTokens: strategyFormatterMaxOutputTokens,
 		RequestTimeout:  strategyFormatterTimeout - 10*time.Second,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_artifact_formatter", s.ai.Model, StrategyArtifactFormatterPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_artifact_formatter", s.ai.ModelName(), StrategyArtifactFormatterPromptVersion, duration, 0, 0, "failed", err.Error())
 		return nil, err
 	}
 
 	var output strategyArtifactFormatterModelOutput
 	if err := json.Unmarshal([]byte(result.Text), &output); err != nil {
-		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_artifact_formatter", s.ai.Model, StrategyArtifactFormatterPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
+		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_artifact_formatter", s.ai.ModelName(), StrategyArtifactFormatterPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
 		return nil, fmt.Errorf("strategy artifact formatter json decode error: %w", err)
 	}
-	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_artifact_formatter", s.ai.Model, StrategyArtifactFormatterPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_artifact_formatter", s.ai.ModelName(), StrategyArtifactFormatterPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	return normalizeFormattedSynthesisDocuments(documents, output), nil
 }
 

@@ -58,6 +58,7 @@ jobs:
           DB_USER=
           DB_PASSWORD=
           DB_NAME=
+          APP_ENV=staging
           JWT_SECRET=
           CORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro,http://staging.reupgoals.pro
           OPENAI_API_KEY=
@@ -67,6 +68,10 @@ jobs:
           OPENAI_AUDITOR_COMPACT_THRESHOLD=120000
           ENABLE_AI_BENCHMARK=true
           OPENAI_PROXY_URL=direct
+          AI_RATE_LIMIT_PER_MINUTE=60
+          AI_DAILY_BUDGET_USD=0
+          AI_MONTHLY_BUDGET_USD=0
+          AI_JOB_WORKERS=2
           UNISENDER_API_KEY=
           UNISENDER_BASE_URL=https://api.unisender.com/ru/api
           UNISENDER_SENDER_EMAIL=noreply@reupgoals.pro
@@ -86,6 +91,11 @@ jobs:
           fi
           if ! grep -q '^OPENAI_PROXY_URL=' /etc/reup-goals-staging/backend.env; then
             printf '\nOPENAI_PROXY_URL=direct\n' >> /etc/reup-goals-staging/backend.env
+          fi
+          if grep -q '^APP_ENV=' /etc/reup-goals-staging/backend.env; then
+            sed -i 's/^APP_ENV=.*/APP_ENV=staging/' /etc/reup-goals-staging/backend.env
+          else
+            printf '\nAPP_ENV=staging\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^OPENAI_AUDITOR_MODEL=' /etc/reup-goals-staging/backend.env; then
             sed -i 's/^OPENAI_AUDITOR_MODEL=.*/OPENAI_AUDITOR_MODEL=gpt-5.4/' /etc/reup-goals-staging/backend.env
@@ -178,6 +188,17 @@ jobs:
 
           systemctl restart reup-goals-staging.service
           systemctl status reup-goals-staging.service --no-pager
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              journalctl -u reup-goals-staging.service -n 100 --no-pager
+              exit 1
+            fi
+            sleep 1
+          done
 
           certbot --nginx --non-interactive --agree-tos --register-unsafely-without-email \
             -d api-staging.reupgoals.pro --redirect || true

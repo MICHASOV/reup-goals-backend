@@ -144,10 +144,10 @@ func (h *Handler) ModelBenchmark(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) runModelBenchmark(ctx context.Context, model string, scenarioID string) modelBenchmarkResult {
 	input := benchmarkInput(scenarioID)
 	rawInput, _ := json.Marshal(input)
-	client := ai.New(h.service.ai.APIKey, model, h.service.ai.ProxyURL).WithMaxOutputTokens(900)
+	client := h.service.ai.ForModel(model)
 
 	started := time.Now()
-	result, err := client.GenerateTextDetailed(ctx, businessAuditorPrompt, "Контекст для ответа в формате JSON:\n"+string(rawInput))
+	result, err := client.GenerateTextNative(ctx, businessAuditorPrompt, "Контекст для ответа в формате JSON:\n"+string(rawInput), ai.ResponseContextOptions{MaxOutputTokens: 900})
 	latencyMS := time.Since(started).Milliseconds()
 
 	output := modelBenchmarkResult{

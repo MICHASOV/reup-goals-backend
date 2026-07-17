@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
@@ -18,12 +19,12 @@ type FacilitatorService struct {
 	store            *Store
 	memoryStore      *strategicmemory.Store
 	memoryService    *strategicmemory.Service
-	ai               *ai.OpenAIClient
+	ai               ai.Provider
 	compactThreshold int
 	readiness        *ReadinessService
 }
 
-func NewFacilitatorService(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *FacilitatorService {
+func NewFacilitatorService(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *FacilitatorService {
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
 	}
@@ -31,7 +32,7 @@ func NewFacilitatorService(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThresh
 	return &FacilitatorService{
 		store:            NewStore(dbx),
 		memoryStore:      memoryStore,
-		memoryService:    strategicmemory.NewService(memoryStore, aiClient, compactThreshold),
+		memoryService:    strategicmemory.NewService(memoryStore, aiClient, compactThreshold, managers...),
 		ai:               aiClient,
 		compactThreshold: compactThreshold,
 	}
@@ -136,7 +137,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		return StrategyFacilitatorMessageResponse{}, err
 	}
 	if err := s.memoryService.QueueFactsFromStrategy(ctx, workspaceID, userID, userSourceID, message); err != nil {
-		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facts_to_knowledge_base", s.ai.Model, StrategyFacilitatorPromptVersion, 0, 0, 0, "failed", err.Error())
+		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facts_to_knowledge_base", s.ai.ModelName(), StrategyFacilitatorPromptVersion, 0, 0, 0, "failed", err.Error())
 	}
 
 	state, err := s.State(ctx, workspaceID, userID)
@@ -156,7 +157,8 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	}
 
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(ctx, strategyFacilitatorPrompt, input, ai.ResponseContextOptions{
+	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "strategy_facilitator_openai_native", StrategyFacilitatorPromptVersion)
+	result, err := s.ai.GenerateJSONNative(aiCtx, strategyFacilitatorPrompt, input, ai.ResponseContextOptions{
 		PreviousResponseID:   session.PreviousResponseID,
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
@@ -169,7 +171,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, "")
 			usedPreviousResponseID = ""
 			started = time.Now()
-			result, err = s.ai.GenerateJSONNative(ctx, strategyFacilitatorPrompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
+			result, err = s.ai.GenerateJSONNative(aiCtx, strategyFacilitatorPrompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
 				VectorStoreIDs:       vectorStoreIDs,
 				CompactThreshold:     session.CompactThreshold,
 				PromptCacheKey:       session.PromptCacheKey,
@@ -178,18 +180,18 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			duration = time.Since(started).Milliseconds()
 		}
 		if err != nil {
-			s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_openai_native", s.ai.Model, StrategyFacilitatorPromptVersion, duration, 0, 0, "failed", err.Error())
+			s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_openai_native", s.ai.ModelName(), StrategyFacilitatorPromptVersion, duration, 0, 0, "failed", err.Error())
 			return s.fallbackResponse(ctx, workspaceID, userSourceID, state), nil
 		}
 	}
 
 	modelOutput, parseErr := parseStrategyFacilitatorOutput(result.Text)
 	if parseErr != nil {
-		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_output_parse", s.ai.Model, StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
+		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_output_parse", s.ai.ModelName(), StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
 		_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, "")
 		usedPreviousResponseID = ""
 		started = time.Now()
-		result, err = s.ai.GenerateJSONNative(ctx, strategyFacilitatorPrompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
+		result, err = s.ai.GenerateJSONNative(aiCtx, strategyFacilitatorPrompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
 			VectorStoreIDs:       vectorStoreIDs,
 			CompactThreshold:     session.CompactThreshold,
 			PromptCacheKey:       session.PromptCacheKey,
@@ -206,11 +208,11 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			} else if parseErr != nil {
 				errorText = parseErr.Error()
 			}
-			s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_output_retry", s.ai.Model, StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
+			s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_output_retry", s.ai.ModelName(), StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
 			return s.fallbackResponse(ctx, workspaceID, userSourceID, state), nil
 		}
 	}
-	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_openai_native", s.ai.Model, StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_openai_native", s.ai.ModelName(), StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	if strings.TrimSpace(result.ResponseID) != "" {
 		_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, result.ResponseID)
 	}

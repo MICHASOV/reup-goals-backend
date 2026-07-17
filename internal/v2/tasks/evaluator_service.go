@@ -23,12 +23,12 @@ type TaskEvaluatorService struct {
 	store   *Store
 	context *taskContextBuilder
 	memory  *strategicmemory.Store
-	ai      *ai.OpenAIClient
+	ai      ai.Provider
 	wake    chan struct{}
 	slots   chan struct{}
 }
 
-func NewTaskEvaluatorService(dbx *sql.DB, aiClient *ai.OpenAIClient) *TaskEvaluatorService {
+func NewTaskEvaluatorService(dbx *sql.DB, aiClient ai.Provider) *TaskEvaluatorService {
 	return &TaskEvaluatorService{
 		store: NewStore(dbx), context: newTaskContextBuilder(dbx),
 		memory: strategicmemory.NewStore(dbx), ai: aiClient, wake: make(chan struct{}, 1),
@@ -124,25 +124,26 @@ func (s *TaskEvaluatorService) execute(ctx context.Context, job TaskEvaluationJo
 		return ErrForbidden
 	}
 	rawInput, _ := json.Marshal(map[string]any{"task": target, "context": pack})
+	aiCtx := ai.WithScenario(ctx, job.WorkspaceID, 0, "task_evaluator_v2", taskEvaluatorPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(ctx, taskEvaluatorPrompt, string(rawInput), ai.ResponseContextOptions{
+	result, err := s.ai.GenerateJSONNative(aiCtx, taskEvaluatorPrompt, string(rawInput), ai.ResponseContextOptions{
 		PromptCacheKey:  fmt.Sprintf("reupgoals-task-evaluator-workspace-%d-v2", job.WorkspaceID),
 		MaxOutputTokens: 4000, RequestTimeout: taskEvaluationTimeout,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.memory.LogAIRunWithUsage(ctx, job.WorkspaceID, "task_evaluator_v2", s.ai.Model, taskEvaluatorPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.memory.LogAIRunWithUsage(ctx, job.WorkspaceID, "task_evaluator_v2", s.ai.ModelName(), taskEvaluatorPromptVersion, duration, 0, 0, "failed", err.Error())
 		return err
 	}
 	output, err := parseTaskEvaluatorOutput(result.Text)
 	if err != nil {
-		s.memory.LogAIRunWithUsage(ctx, job.WorkspaceID, "task_evaluator_v2", s.ai.Model, taskEvaluatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
+		s.memory.LogAIRunWithUsage(ctx, job.WorkspaceID, "task_evaluator_v2", s.ai.ModelName(), taskEvaluatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
 		return err
 	}
 	score := CalculateTaskPriority(output)
 	tier := PriorityTier(score)
 	if err := s.store.SaveTaskEvaluation(
-		ctx, job, s.ai.Model, output, score, tier, fingerprint,
+		ctx, job, s.ai.ModelName(), output, score, tier, fingerprint,
 		result.Usage.InputTokens, result.Usage.OutputTokens, duration,
 	); err != nil {
 		return err
@@ -150,7 +151,7 @@ func (s *TaskEvaluatorService) execute(ctx context.Context, job TaskEvaluationJo
 	if err := s.store.CompleteTaskEvaluationJob(ctx, job.ID); err != nil {
 		return err
 	}
-	s.memory.LogAIRunWithUsage(ctx, job.WorkspaceID, "task_evaluator_v2", s.ai.Model, taskEvaluatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.memory.LogAIRunWithUsage(ctx, job.WorkspaceID, "task_evaluator_v2", s.ai.ModelName(), taskEvaluatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	return nil
 }
 

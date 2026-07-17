@@ -27,6 +27,21 @@ type qualityAuditInputDocument struct {
 }
 
 func (s *Service) queueQualityAudit(workspaceID int, changedDocumentTypes []string, trigger string) {
+	if s.jobs != nil {
+		notBefore := time.Now().UTC()
+		dedupeKey := ""
+		if trigger == "documents_updated" {
+			dedupeKey = "automatic"
+			notBefore = notBefore.Add(90 * time.Second)
+		}
+		_, err := s.jobs.Enqueue(context.Background(), workspaceID, jobTypeKnowledgeQualityAudit, dedupeKey,
+			qualityAuditJobPayload{ChangedDocumentTypes: normalizeDocumentTypes(changedDocumentTypes), Trigger: trigger},
+			4, notBefore)
+		if err != nil {
+			log.Printf("[WARN] strategic quality audit enqueue failed workspace_id=%d trigger=%s: %v", workspaceID, trigger, err)
+		}
+		return
+	}
 	if trigger == "documents_updated" && !s.reserveAutoQualityAudit(workspaceID) {
 		log.Printf("[INFO] strategic quality audit skipped by throttle workspace_id=%d trigger=%s", workspaceID, trigger)
 		return
@@ -81,8 +96,9 @@ func (s *Service) RunQualityAudit(ctx context.Context, workspaceID int, changedD
 	}
 	rawInput, _ := json.Marshal(input)
 
+	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "knowledge_base_quality_auditor", StrategicMemoryPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(ctx, knowledgeBaseQualityAuditorPrompt, string(rawInput), ai.ResponseContextOptions{
+	result, err := s.ai.GenerateJSONNative(aiCtx, knowledgeBaseQualityAuditorPrompt, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDsFromSession(session),
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-quality-auditor-workspace-%d-v1", workspaceID),
@@ -91,10 +107,10 @@ func (s *Service) RunQualityAudit(ctx context.Context, workspaceID int, changedD
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_quality_auditor", s.ai.Model, StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_quality_auditor", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
 		return QualityReport{}, err
 	}
-	s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_quality_auditor", s.ai.Model, StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_quality_auditor", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 
 	var report QualityReport
 	if err := json.Unmarshal([]byte(result.Text), &report); err != nil {

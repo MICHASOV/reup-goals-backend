@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/jobs"
 )
 
 const (
@@ -78,6 +79,49 @@ type materializationOptions struct {
 	FactsOnly             bool
 }
 
+const (
+	jobTypeMaterializeBusinessContext = "knowledge_base.materialize"
+	jobTypeKnowledgeQualityAudit      = "knowledge_base.quality_audit"
+)
+
+type materializationJobPayload struct {
+	SourceID         int                    `json:"source_id"`
+	UserMessage      string                 `json:"user_message"`
+	AssistantMessage string                 `json:"assistant_message"`
+	Options          materializationOptions `json:"options"`
+}
+
+type qualityAuditJobPayload struct {
+	ChangedDocumentTypes []string `json:"changed_document_types"`
+	Trigger              string   `json:"trigger"`
+}
+
+func (s *Service) registerJobHandlers() {
+	s.jobs.Register(jobTypeMaterializeBusinessContext, func(ctx context.Context, job jobs.Job) error {
+		if job.WorkspaceID == nil {
+			return fmt.Errorf("materialization job has no workspace")
+		}
+		var payload materializationJobPayload
+		if err := json.Unmarshal(job.Payload, &payload); err != nil {
+			return err
+		}
+		return s.materializeBusinessContextWithOptions(
+			ctx, *job.WorkspaceID, payload.SourceID, payload.UserMessage, payload.AssistantMessage, payload.Options,
+		)
+	})
+	s.jobs.Register(jobTypeKnowledgeQualityAudit, func(ctx context.Context, job jobs.Job) error {
+		if job.WorkspaceID == nil {
+			return fmt.Errorf("quality audit job has no workspace")
+		}
+		var payload qualityAuditJobPayload
+		if err := json.Unmarshal(job.Payload, &payload); err != nil {
+			return err
+		}
+		_, err := s.RunQualityAudit(ctx, *job.WorkspaceID, payload.ChangedDocumentTypes, payload.Trigger)
+		return err
+	})
+}
+
 func (s *Service) queueBusinessContextMaterialization(workspaceID int, sourceID int, userMessage string, assistantMessage string) {
 	s.queueBusinessContextMaterializationWithOptions(workspaceID, sourceID, userMessage, assistantMessage, materializationOptions{
 		SourceType: SourceTypeUserMessage,
@@ -125,6 +169,16 @@ func (s *Service) queueBusinessContextMaterializationWithOptions(
 	assistantMessage string,
 	options materializationOptions,
 ) {
+	if s.jobs != nil {
+		_, err := s.jobs.Enqueue(context.Background(), workspaceID, jobTypeMaterializeBusinessContext,
+			fmt.Sprintf("source:%d", sourceID), materializationJobPayload{
+				SourceID: sourceID, UserMessage: userMessage, AssistantMessage: assistantMessage, Options: options,
+			}, 5, time.Now().UTC())
+		if err != nil {
+			log.Printf("[WARN] strategic memory materialization enqueue failed workspace_id=%d: %v", workspaceID, err)
+		}
+		return
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), materializerTimeout)
 		defer cancel()
@@ -251,8 +305,9 @@ func (s *Service) extractBusinessContext(
 	}
 	rawInput, _ := json.Marshal(input)
 
+	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "business_context_materializer", StrategicMemoryPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(ctx, businessContextMaterializerPrompt, string(rawInput), ai.ResponseContextOptions{
+	result, err := s.ai.GenerateJSONNative(aiCtx, businessContextMaterializerPrompt, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDsFromSession(session),
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-materializer-workspace-%d-v1", workspaceID),
@@ -261,10 +316,10 @@ func (s *Service) extractBusinessContext(
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_context_materializer", s.ai.Model, StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_context_materializer", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
 		return materializerOutput{}, err
 	}
-	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_context_materializer", s.ai.Model, StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_context_materializer", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 
 	var parsed materializerOutput
 	if err := json.Unmarshal([]byte(result.Text), &parsed); err != nil {
@@ -321,8 +376,9 @@ func (s *Service) designDocuments(
 	}
 	rawInput, _ := json.Marshal(input)
 
+	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "business_document_visual_designer", StrategicMemoryPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(ctx, documentVisualDesignerPrompt, string(rawInput), ai.ResponseContextOptions{
+	result, err := s.ai.GenerateJSONNative(aiCtx, documentVisualDesignerPrompt, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDsFromSession(session),
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-document-designer-workspace-%d-v1", workspaceID),
@@ -331,10 +387,10 @@ func (s *Service) designDocuments(
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_visual_designer", s.ai.Model, StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_visual_designer", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
 		return nil, err
 	}
-	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_visual_designer", s.ai.Model, StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_visual_designer", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 
 	var parsed documentDesignerOutput
 	if err := json.Unmarshal([]byte(result.Text), &parsed); err != nil {

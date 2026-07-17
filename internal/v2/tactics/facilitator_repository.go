@@ -12,30 +12,42 @@ import (
 )
 
 func (s *Store) CreateChatMessage(ctx context.Context, workspaceID int, userID *int, role string, content string, metadata any) (int, error) {
+	return s.CreateScopedChatMessage(ctx, workspaceID, userID, role, content, metadata, nil)
+}
+
+func (s *Store) CreateScopedChatMessage(ctx context.Context, workspaceID int, userID *int, role string, content string, metadata any, scope *TacticsMessageScope) (int, error) {
 	role = strings.TrimSpace(role)
 	if role != "assistant" && role != "user" {
 		role = "user"
 	}
+	scopeType, scopeID := tacticsScopeKey(scope)
 	var id int
 	err := s.dbx.QueryRowContext(ctx, `
-		INSERT INTO v2_tactics_chat_messages (workspace_id, user_id, role, content, metadata_json)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO v2_tactics_chat_messages (
+			workspace_id, user_id, role, content, metadata_json, scope_type, scope_id
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id
-	`, workspaceID, userID, role, strings.TrimSpace(content), tacticsJSON(metadata)).Scan(&id)
+	`, workspaceID, userID, role, strings.TrimSpace(content), tacticsJSON(metadata), scopeType, scopeID).Scan(&id)
 	return id, err
 }
 
 func (s *Store) ChatMessages(ctx context.Context, workspaceID int, limit int) ([]TacticsChatMessage, error) {
+	return s.ScopedChatMessages(ctx, workspaceID, nil, limit)
+}
+
+func (s *Store) ScopedChatMessages(ctx context.Context, workspaceID int, scope *TacticsMessageScope, limit int) ([]TacticsChatMessage, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 300
 	}
+	scopeType, scopeID := tacticsScopeKey(scope)
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, role, content, metadata_json, created_at
 		FROM v2_tactics_chat_messages
-		WHERE workspace_id=$1
+		WHERE workspace_id=$1 AND scope_type=$2 AND scope_id=$3
 		ORDER BY created_at DESC, id DESC
-		LIMIT $2
-	`, workspaceID, limit)
+		LIMIT $4
+	`, workspaceID, scopeType, scopeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -288,20 +300,25 @@ func (s *Store) RecordFacilitatorAssessment(ctx context.Context, workspaceID int
 }
 
 func (s *Store) OpenAITacticsSession(ctx context.Context, workspaceID int, compactThreshold int, fingerprint string) (TacticsOpenAISession, error) {
+	return s.OpenAITacticsScopeSession(ctx, workspaceID, nil, compactThreshold, fingerprint)
+}
+
+func (s *Store) OpenAITacticsScopeSession(ctx context.Context, workspaceID int, scope *TacticsMessageScope, compactThreshold int, fingerprint string) (TacticsOpenAISession, error) {
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
 	}
-	promptCacheKey := fmt.Sprintf("reupgoals-tactics-facilitator-workspace-%d-v1", workspaceID)
+	scopeType, scopeID := tacticsScopeKey(scope)
+	promptCacheKey := fmt.Sprintf("reupgoals-tactics-%d-%s-%d-v1", workspaceID, scopeType, scopeID)
 	var item TacticsOpenAISession
 	err := s.dbx.QueryRowContext(ctx, `
-		INSERT INTO v2_tactics_openai_sessions (
-			workspace_id, compact_threshold, prompt_cache_key, context_fingerprint
+		INSERT INTO v2_tactics_scope_sessions (
+			workspace_id, scope_type, scope_id, compact_threshold, prompt_cache_key, context_fingerprint
 		)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (workspace_id) DO UPDATE SET
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (workspace_id, scope_type, scope_id) DO UPDATE SET
 			previous_response_id=CASE
-				WHEN v2_tactics_openai_sessions.context_fingerprint <> EXCLUDED.context_fingerprint THEN ''
-				ELSE v2_tactics_openai_sessions.previous_response_id
+				WHEN v2_tactics_scope_sessions.context_fingerprint <> EXCLUDED.context_fingerprint THEN ''
+				ELSE v2_tactics_scope_sessions.previous_response_id
 			END,
 			compact_threshold=EXCLUDED.compact_threshold,
 			prompt_cache_key=EXCLUDED.prompt_cache_key,
@@ -309,7 +326,7 @@ func (s *Store) OpenAITacticsSession(ctx context.Context, workspaceID int, compa
 			updated_at=NOW()
 		RETURNING id, workspace_id, previous_response_id, compact_threshold,
 			prompt_cache_key, context_fingerprint, created_at, updated_at
-	`, workspaceID, compactThreshold, promptCacheKey, fingerprint).Scan(
+	`, workspaceID, scopeType, scopeID, compactThreshold, promptCacheKey, fingerprint).Scan(
 		&item.ID,
 		&item.WorkspaceID,
 		&item.PreviousResponseID,
@@ -323,17 +340,22 @@ func (s *Store) OpenAITacticsSession(ctx context.Context, workspaceID int, compa
 }
 
 func (s *Store) UpdateOpenAITacticsPreviousResponseID(ctx context.Context, workspaceID int, responseID string) error {
+	return s.UpdateOpenAITacticsScopePreviousResponseID(ctx, workspaceID, nil, responseID)
+}
+
+func (s *Store) UpdateOpenAITacticsScopePreviousResponseID(ctx context.Context, workspaceID int, scope *TacticsMessageScope, responseID string) error {
+	scopeType, scopeID := tacticsScopeKey(scope)
 	_, err := s.dbx.ExecContext(ctx, `
-		UPDATE v2_tactics_openai_sessions
-		SET previous_response_id=$2, updated_at=NOW()
-		WHERE workspace_id=$1
-	`, workspaceID, strings.TrimSpace(responseID))
+		UPDATE v2_tactics_scope_sessions
+		SET previous_response_id=$4, updated_at=NOW()
+		WHERE workspace_id=$1 AND scope_type=$2 AND scope_id=$3
+	`, workspaceID, scopeType, scopeID, strings.TrimSpace(responseID))
 	return err
 }
 
 func (s *Store) ResetOpenAITacticsSession(ctx context.Context, workspaceID int) error {
 	_, err := s.dbx.ExecContext(ctx, `
-		UPDATE v2_tactics_openai_sessions
+		UPDATE v2_tactics_scope_sessions
 		SET previous_response_id='', context_fingerprint='', updated_at=NOW()
 		WHERE workspace_id=$1
 	`, workspaceID)
@@ -420,8 +442,24 @@ func (s *Store) ScopeContext(ctx context.Context, workspaceID int, scope *Tactic
 		return item, err
 	case EntityProject:
 		return s.projectByID(ctx, workspaceID, scope.EntityID)
+	case EntityRisk:
+		return s.riskByID(ctx, workspaceID, scope.EntityID)
+	case EntityOpportunity:
+		return s.opportunityByID(ctx, workspaceID, scope.EntityID)
 	default:
 		return nil, fmt.Errorf("invalid_tactics_scope")
+	}
+}
+
+func tacticsScopeKey(scope *TacticsMessageScope) (string, int) {
+	if scope == nil || scope.EntityID <= 0 {
+		return EntityPlan, 0
+	}
+	switch strings.TrimSpace(scope.EntityType) {
+	case EntityWorkstream, EntityProject, EntityRisk, EntityOpportunity:
+		return strings.TrimSpace(scope.EntityType), scope.EntityID
+	default:
+		return EntityPlan, 0
 	}
 }
 

@@ -1745,6 +1745,181 @@ var migrations = []Migration{
 				);
 		`,
 	},
+	{
+		ID: "20260717_031_operational_foundation",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_background_jobs (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				job_type TEXT NOT NULL,
+				dedupe_key TEXT NOT NULL DEFAULT '',
+				payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				status TEXT NOT NULL DEFAULT 'queued',
+				attempts INTEGER NOT NULL DEFAULT 0,
+				max_attempts INTEGER NOT NULL DEFAULT 5,
+				not_before TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				locked_at TIMESTAMPTZ NULL,
+				locked_by TEXT NOT NULL DEFAULT '',
+				last_error TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				completed_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_background_jobs_due
+				ON v2_background_jobs (status, not_before, id);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_background_jobs_workspace
+				ON v2_background_jobs (workspace_id, created_at DESC);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_background_jobs_active_dedupe
+				ON v2_background_jobs (job_type, workspace_id, dedupe_key)
+				WHERE dedupe_key <> '' AND status='queued';
+
+			ALTER TABLE v2_ai_prompt_configs
+				ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft',
+				ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'openai',
+				ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS parent_version TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS activated_at TIMESTAMPTZ NULL,
+				ADD COLUMN IF NOT EXISTS activated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL;
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_ai_prompt_configs_one_active
+				ON v2_ai_prompt_configs (prompt_name)
+				WHERE status='active';
+
+			ALTER TABLE v2_ai_call_logs
+				ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'openai',
+				ADD COLUMN IF NOT EXISTS prompt_name TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS response_id TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS token_usage_total INTEGER NULL,
+				ADD COLUMN IF NOT EXISTS cached_input_tokens INTEGER NULL;
+
+			CREATE INDEX IF NOT EXISTS idx_v2_ai_call_logs_module_created
+				ON v2_ai_call_logs (ai_module, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_ai_usage_policies (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				requests_per_minute INTEGER NOT NULL DEFAULT 0,
+				daily_budget_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+				monthly_budget_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+				status TEXT NOT NULL DEFAULT 'active',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_ai_usage_policies_workspace
+				ON v2_ai_usage_policies ((COALESCE(workspace_id, 0)));
+
+			CREATE TABLE IF NOT EXISTS v2_http_request_logs (
+				id BIGSERIAL PRIMARY KEY,
+				request_id TEXT NOT NULL,
+				workspace_id INTEGER NULL REFERENCES workspaces(id) ON DELETE SET NULL,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				method TEXT NOT NULL,
+				path TEXT NOT NULL,
+				status_code INTEGER NOT NULL,
+				latency_ms BIGINT NOT NULL,
+				response_bytes BIGINT NOT NULL DEFAULT 0,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_http_request_logs_workspace_created
+				ON v2_http_request_logs (workspace_id, created_at DESC);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_http_request_logs_path_created
+				ON v2_http_request_logs (path, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_product_events (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NULL REFERENCES workspaces(id) ON DELETE SET NULL,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				event_name TEXT NOT NULL,
+				source TEXT NOT NULL DEFAULT 'api',
+				entity_type TEXT NOT NULL DEFAULT '',
+				entity_id INTEGER NULL,
+				properties_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_product_events_workspace_created
+				ON v2_product_events (workspace_id, created_at DESC);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_product_events_name_created
+				ON v2_product_events (event_name, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_system_warnings (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				warning_key TEXT NOT NULL,
+				severity TEXT NOT NULL DEFAULT 'warning',
+				title TEXT NOT NULL,
+				message TEXT NOT NULL DEFAULT '',
+				details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				status TEXT NOT NULL DEFAULT 'active',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				resolved_at TIMESTAMPTZ NULL
+			);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_system_warnings_active_key
+				ON v2_system_warnings (workspace_id, warning_key)
+				WHERE status='active';
+
+			ALTER TABLE v2_tactics_chat_messages
+				ADD COLUMN IF NOT EXISTS scope_type TEXT NOT NULL DEFAULT 'tactical_plan',
+				ADD COLUMN IF NOT EXISTS scope_id INTEGER NOT NULL DEFAULT 0;
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactics_chat_messages_scope
+				ON v2_tactics_chat_messages (workspace_id, scope_type, scope_id, created_at DESC, id DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_tactics_scope_sessions (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				scope_type TEXT NOT NULL,
+				scope_id INTEGER NOT NULL DEFAULT 0,
+				previous_response_id TEXT NOT NULL DEFAULT '',
+				compact_threshold INTEGER NOT NULL DEFAULT 120000,
+				prompt_cache_key TEXT NOT NULL DEFAULT '',
+				context_fingerprint TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id, scope_type, scope_id)
+			);
+		`,
+	},
+	{
+		ID: "20260717_032_remove_inactive_knowledge_pipeline",
+		SQL: `
+			INSERT INTO v2_tactics_scope_sessions (
+				workspace_id, scope_type, scope_id, previous_response_id, compact_threshold,
+				prompt_cache_key, context_fingerprint, created_at, updated_at
+			)
+			SELECT workspace_id, 'tactical_plan', 0, previous_response_id, compact_threshold,
+				prompt_cache_key, context_fingerprint, created_at, updated_at
+			FROM v2_tactics_openai_sessions
+			ON CONFLICT (workspace_id, scope_type, scope_id) DO NOTHING;
+
+			DROP TABLE IF EXISTS v2_tactics_openai_sessions;
+			DROP TABLE IF EXISTS v2_knowledge_intake_progress_events;
+			DROP TABLE IF EXISTS v2_knowledge_document_views;
+			DROP TABLE IF EXISTS v2_knowledge_document_readiness;
+			DROP TABLE IF EXISTS v2_knowledge_base_readiness;
+			DROP TABLE IF EXISTS v2_guidance_question_blocks;
+			DROP TABLE IF EXISTS v2_company_profiles;
+			DROP TABLE IF EXISTS v2_ignored_knowledge_items;
+			DROP TABLE IF EXISTS v2_proposed_document_conflicts;
+			DROP TABLE IF EXISTS v2_proposed_document_patches;
+			DROP TABLE IF EXISTS v2_proposed_knowledge_items;
+			DROP TABLE IF EXISTS v2_knowledge_intake_sessions;
+			DROP TABLE IF EXISTS v2_knowledge_document_entry_versions;
+			DROP TABLE IF EXISTS v2_knowledge_document_entries;
+			DROP TABLE IF EXISTS v2_knowledge_documents;
+			DROP TABLE IF EXISTS v2_knowledge_base_blocks;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

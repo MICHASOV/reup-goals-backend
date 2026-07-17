@@ -1,20 +1,43 @@
 package db
 
 import (
-    "database/sql"
-    _ "github.com/lib/pq"
+	"context"
+	"database/sql"
+	"time"
+
+	_ "github.com/lib/pq"
 )
 
-func Connect(connString string) (*sql.DB, error) {
-    db, err := sql.Open("postgres", connString)
-    if err != nil {
-        return nil, err
-    }
+type PoolOptions struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+}
 
-    err = db.Ping()
-    if err != nil {
-        return nil, err
-    }
+func Connect(connString string, options ...PoolOptions) (*sql.DB, error) {
+	database, err := sql.Open("postgres", connString)
+	if err != nil {
+		return nil, err
+	}
+	if len(options) > 0 {
+		pool := options[0]
+		if pool.MaxOpenConns > 0 {
+			database.SetMaxOpenConns(pool.MaxOpenConns)
+		}
+		if pool.MaxIdleConns >= 0 {
+			database.SetMaxIdleConns(pool.MaxIdleConns)
+		}
+		if pool.ConnMaxLifetime > 0 {
+			database.SetConnMaxLifetime(pool.ConnMaxLifetime)
+		}
+	}
 
-    return db, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err = database.PingContext(ctx); err != nil {
+		database.Close()
+		return nil, err
+	}
+
+	return database, nil
 }

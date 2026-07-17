@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
@@ -20,7 +21,7 @@ type FacilitatorService struct {
 	store            *Store
 	memoryStore      *strategicmemory.Store
 	memoryService    *strategicmemory.Service
-	ai               *ai.OpenAIClient
+	ai               ai.Provider
 	compactThreshold int
 	readiness        *TacticsReadinessService
 }
@@ -29,7 +30,7 @@ func (s *FacilitatorService) SetReadinessService(readiness *TacticsReadinessServ
 	s.readiness = readiness
 }
 
-func NewFacilitatorService(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *FacilitatorService {
+func NewFacilitatorService(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *FacilitatorService {
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
 	}
@@ -37,7 +38,7 @@ func NewFacilitatorService(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThresh
 	return &FacilitatorService{
 		store:            NewStore(dbx),
 		memoryStore:      memoryStore,
-		memoryService:    strategicmemory.NewService(memoryStore, aiClient, compactThreshold),
+		memoryService:    strategicmemory.NewService(memoryStore, aiClient, compactThreshold, managers...),
 		ai:               aiClient,
 		compactThreshold: compactThreshold,
 	}
@@ -101,8 +102,12 @@ func (s *FacilitatorService) State(ctx context.Context, workspaceID int, userID 
 	}, nil
 }
 
-func (s *FacilitatorService) History(ctx context.Context, workspaceID int) (TacticsFacilitatorHistoryState, error) {
-	messages, err := s.store.ChatMessages(ctx, workspaceID, 300)
+func (s *FacilitatorService) History(ctx context.Context, workspaceID int, scopes ...*TacticsMessageScope) (TacticsFacilitatorHistoryState, error) {
+	var scope *TacticsMessageScope
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	messages, err := s.store.ScopedChatMessages(ctx, workspaceID, scope, 300)
 	if err != nil {
 		return TacticsFacilitatorHistoryState{}, err
 	}
@@ -145,15 +150,19 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if state.Current.Course == nil {
 		return TacticsFacilitatorMessageResponse{}, fmt.Errorf("tactics_course_required")
 	}
+	state.RecentMessages, err = s.store.ScopedChatMessages(ctx, workspaceID, request.Scope, 100)
+	if err != nil {
+		return TacticsFacilitatorMessageResponse{}, err
+	}
 
 	scopeContext, err := s.store.ScopeContext(ctx, workspaceID, request.Scope)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
-	userMessageID, err := s.store.CreateChatMessage(ctx, workspaceID, &userID, "user", message, map[string]any{
+	userMessageID, err := s.store.CreateScopedChatMessage(ctx, workspaceID, &userID, "user", message, map[string]any{
 		"participant_role": normalizeParticipantRole(request.ParticipantRole),
 		"scope":            request.Scope,
-	})
+	}, request.Scope)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
@@ -164,7 +173,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	state.Session = sessionState
 
 	fingerprint := tacticsContextFingerprint(state)
-	openAISession, err := s.store.OpenAITacticsSession(ctx, workspaceID, s.compactThreshold, fingerprint)
+	openAISession, err := s.store.OpenAITacticsScopeSession(ctx, workspaceID, request.Scope, s.compactThreshold, fingerprint)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
@@ -175,8 +184,9 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		input = buildTacticsFreshInput(message, request, scopeContext, state)
 	}
 
+	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "tactics_facilitator_openai_native", TacticsFacilitatorPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(ctx, tacticsFacilitatorPrompt, input, ai.ResponseContextOptions{
+	result, err := s.ai.GenerateJSONNative(aiCtx, tacticsFacilitatorPrompt, input, ai.ResponseContextOptions{
 		PreviousResponseID:   openAISession.PreviousResponseID,
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     openAISession.CompactThreshold,
@@ -185,10 +195,10 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil && strings.TrimSpace(openAISession.PreviousResponseID) != "" {
-		_ = s.store.UpdateOpenAITacticsPreviousResponseID(ctx, workspaceID, "")
+		_ = s.store.UpdateOpenAITacticsScopePreviousResponseID(ctx, workspaceID, request.Scope, "")
 		usedPreviousResponseID = ""
 		started = time.Now()
-		result, err = s.ai.GenerateJSONNative(ctx, tacticsFacilitatorPrompt, buildTacticsFreshInput(message, request, scopeContext, state), ai.ResponseContextOptions{
+		result, err = s.ai.GenerateJSONNative(aiCtx, tacticsFacilitatorPrompt, buildTacticsFreshInput(message, request, scopeContext, state), ai.ResponseContextOptions{
 			VectorStoreIDs:       vectorStoreIDs,
 			CompactThreshold:     openAISession.CompactThreshold,
 			PromptCacheKey:       openAISession.PromptCacheKey,
@@ -198,22 +208,22 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	}
 	if err != nil {
 		s.logAIRun(ctx, workspaceID, duration, 0, 0, "failed", err.Error())
-		return s.fallbackResponse(ctx, workspaceID, userMessageID, state), nil
+		return s.fallbackResponse(ctx, workspaceID, userMessageID, state, request.Scope), nil
 	}
 
 	modelOutput, parseErr := parseTacticsFacilitatorOutput(result.Text)
 	if parseErr != nil {
-		_ = s.store.UpdateOpenAITacticsPreviousResponseID(ctx, workspaceID, "")
+		_ = s.store.UpdateOpenAITacticsScopePreviousResponseID(ctx, workspaceID, request.Scope, "")
 		s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
-		return s.fallbackResponse(ctx, workspaceID, userMessageID, state), nil
+		return s.fallbackResponse(ctx, workspaceID, userMessageID, state, request.Scope), nil
 	}
 	s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	if strings.TrimSpace(result.ResponseID) != "" {
-		_ = s.store.UpdateOpenAITacticsPreviousResponseID(ctx, workspaceID, result.ResponseID)
+		_ = s.store.UpdateOpenAITacticsScopePreviousResponseID(ctx, workspaceID, request.Scope, result.ResponseID)
 	}
 
 	assistantMessage := cleanTacticsAssistantMessage(modelOutput.Message)
-	assistantMessageID, err := s.store.CreateChatMessage(ctx, workspaceID, nil, "assistant", assistantMessage, map[string]any{
+	assistantMessageID, err := s.store.CreateScopedChatMessage(ctx, workspaceID, nil, "assistant", assistantMessage, map[string]any{
 		"prompt_version":        TacticsFacilitatorPromptVersion,
 		"user_source_id":        userMessageID,
 		"response_id":           result.ResponseID,
@@ -225,7 +235,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		"open_questions":        modelOutput.OpenQuestions,
 		"needs_strategy_review": modelOutput.NeedsStrategyReview,
 		"draft_changes":         modelOutput.DraftChanges,
-	})
+	}, request.Scope)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
@@ -251,7 +261,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			_, _ = s.readiness.QueueCandidate(ctx, sessionState, plan, false)
 		}
 	}
-	messages, err := s.store.ChatMessages(ctx, workspaceID, 100)
+	messages, err := s.store.ScopedChatMessages(ctx, workspaceID, request.Scope, 100)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
@@ -444,10 +454,10 @@ func (s *FacilitatorService) vectorStoreIDs(ctx context.Context, workspaceID int
 }
 
 func (s *FacilitatorService) logAIRun(ctx context.Context, workspaceID int, duration int64, inputTokens int, outputTokens int, status string, errorText string) {
-	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "tactics_facilitator_openai_native", s.ai.Model, TacticsFacilitatorPromptVersion, duration, inputTokens, outputTokens, status, errorText)
+	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "tactics_facilitator_openai_native", s.ai.ModelName(), TacticsFacilitatorPromptVersion, duration, inputTokens, outputTokens, status, errorText)
 }
 
-func (s *FacilitatorService) fallbackResponse(ctx context.Context, workspaceID int, userMessageID int, state TacticsFacilitatorState) TacticsFacilitatorMessageResponse {
+func (s *FacilitatorService) fallbackResponse(ctx context.Context, workspaceID int, userMessageID int, state TacticsFacilitatorState, scope *TacticsMessageScope) TacticsFacilitatorMessageResponse {
 	message := "Не получилось обработать ответ с первого раза. Давайте продолжим с последней точки: какое изменение в бизнесе вы сейчас считаете главным для реализации курса?"
 	output := tacticsFacilitatorModelOutput{
 		Message:       message,
@@ -455,13 +465,13 @@ func (s *FacilitatorService) fallbackResponse(ctx context.Context, workspaceID i
 		StatusReason:  "The AI response failed, so the tactical session remains in progress.",
 		OpenQuestions: state.Session.OpenQuestions,
 	}
-	_, _ = s.store.CreateChatMessage(ctx, workspaceID, nil, "assistant", message, map[string]any{
+	_, _ = s.store.CreateScopedChatMessage(ctx, workspaceID, nil, "assistant", message, map[string]any{
 		"prompt_version": TacticsFacilitatorPromptVersion,
 		"fallback":       true,
 		"user_source_id": userMessageID,
-	})
+	}, scope)
 	session, _ := s.store.RecordFacilitatorAssessment(ctx, workspaceID, userMessageID, output)
-	messages, _ := s.store.ChatMessages(ctx, workspaceID, 100)
+	messages, _ := s.store.ScopedChatMessages(ctx, workspaceID, scope, 100)
 	return TacticsFacilitatorMessageResponse{
 		WorkspaceID:      workspaceID,
 		AssistantMessage: message,

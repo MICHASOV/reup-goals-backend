@@ -12,6 +12,7 @@ import (
 	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/auth"
 	"reup-goals-backend/internal/v2/api"
+	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -22,9 +23,9 @@ type Handler struct {
 	readiness   *TacticsReadinessService
 }
 
-func NewHandler(dbx *sql.DB, aiClient *ai.OpenAIClient, compactThreshold int) *Handler {
+func NewHandler(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *Handler {
 	readiness := NewTacticsReadinessService(dbx, aiClient, compactThreshold)
-	facilitator := NewFacilitatorService(dbx, aiClient, compactThreshold)
+	facilitator := NewFacilitatorService(dbx, aiClient, compactThreshold, managers...)
 	facilitator.SetReadinessService(readiness)
 	readiness.StartWorker()
 	return &Handler{
@@ -129,7 +130,7 @@ func (h *Handler) facilitatorState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("view") == "history" {
-		state, err := h.facilitator.History(r.Context(), workspace.ID)
+		state, err := h.facilitator.History(r.Context(), workspace.ID, tacticsScopeFromQuery(r))
 		if err != nil {
 			api.WriteError(w, http.StatusInternalServerError, "tactics_facilitator_state_failed")
 			return
@@ -143,6 +144,15 @@ func (h *Handler) facilitatorState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, state)
+}
+
+func tacticsScopeFromQuery(r *http.Request) *TacticsMessageScope {
+	entityType := strings.TrimSpace(r.URL.Query().Get("scope_type"))
+	entityID, _ := strconv.Atoi(r.URL.Query().Get("scope_id"))
+	if entityType == "" || entityID <= 0 {
+		return nil
+	}
+	return &TacticsMessageScope{EntityType: entityType, EntityID: entityID}
 }
 
 func (h *Handler) facilitatorMessage(w http.ResponseWriter, r *http.Request) {

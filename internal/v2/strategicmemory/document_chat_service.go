@@ -97,8 +97,9 @@ func (s *Service) HandleDocumentChatMessage(
 		input = documentChatFreshInput(document, history, state, message)
 	}
 	usedPreviousResponseID := session.PreviousResponseID
+	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "business_document_chat", documentChatPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateTextNative(ctx, businessDocumentCollaboratorPrompt, input, ai.ResponseContextOptions{
+	result, err := s.ai.GenerateTextNative(aiCtx, businessDocumentCollaboratorPrompt, input, ai.ResponseContextOptions{
 		PreviousResponseID:   session.PreviousResponseID,
 		VectorStoreIDs:       vectorStoreIDsFromSession(globalSession),
 		CompactThreshold:     session.CompactThreshold,
@@ -112,7 +113,7 @@ func (s *Service) HandleDocumentChatMessage(
 		_ = s.store.UpdateDocumentChatPreviousResponseID(ctx, workspaceID, documentType, "")
 		usedPreviousResponseID = ""
 		started = time.Now()
-		result, err = s.ai.GenerateTextNative(ctx, businessDocumentCollaboratorPrompt, documentChatFreshInput(document, history, state, message), ai.ResponseContextOptions{
+		result, err = s.ai.GenerateTextNative(aiCtx, businessDocumentCollaboratorPrompt, documentChatFreshInput(document, history, state, message), ai.ResponseContextOptions{
 			VectorStoreIDs:       vectorStoreIDsFromSession(globalSession),
 			CompactThreshold:     session.CompactThreshold,
 			PromptCacheKey:       session.PromptCacheKey,
@@ -123,7 +124,7 @@ func (s *Service) HandleDocumentChatMessage(
 		duration = time.Since(started).Milliseconds()
 	}
 	if err != nil {
-		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_chat", s.ai.Model, documentChatPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_chat", s.ai.ModelName(), documentChatPromptVersion, duration, 0, 0, "failed", err.Error())
 		return DocumentChatMessageResponse{}, err
 	}
 
@@ -146,7 +147,7 @@ func (s *Service) HandleDocumentChatMessage(
 	if err != nil {
 		return DocumentChatMessageResponse{}, err
 	}
-	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_chat", s.ai.Model, documentChatPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_chat", s.ai.ModelName(), documentChatPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	s.queueDocumentContextMaterialization(workspaceID, sourceID, documentType, message, assistantText)
 
 	return DocumentChatMessageResponse{

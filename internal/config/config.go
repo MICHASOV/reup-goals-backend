@@ -5,14 +5,18 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
-	DBHost     string
-	DBPort     int
-	DBUser     string
-	DBPassword string
-	DBName     string
+	DBHost            string
+	DBPort            int
+	DBUser            string
+	DBPassword        string
+	DBName            string
+	DBMaxOpenConns    int
+	DBMaxIdleConns    int
+	DBConnMaxLifetime time.Duration
 
 	OpenAIKey                     string
 	OpenAIModel                   string
@@ -22,9 +26,18 @@ type Config struct {
 	OpenAIAuditorCompactThreshold int
 	OpenAIProxyURL                string
 	EnableAIBenchmark             bool
+	AIAdminKey                    string
+	AIRequestsPerMinute           int
+	AIDailyBudgetUSD              float64
+	AIMonthlyBudgetUSD            float64
+	AIJobWorkers                  int
 
 	JWTSecret          string
 	CORSAllowedOrigins []string
+	Environment        string
+	HTTPReadTimeout    time.Duration
+	HTTPWriteTimeout   time.Duration
+	HTTPIdleTimeout    time.Duration
 
 	UnisenderAPIKey           string
 	UnisenderBaseURL          string
@@ -71,9 +84,10 @@ func Load() *Config {
 		openAIProxyURL = "socks5://127.0.0.1:10808"
 	}
 
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		jwtSecret = "SUPER_SECRET_CHANGE_ME"
+	jwtSecret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	environment := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	if environment == "" {
+		environment = "development"
 	}
 
 	unisenderBaseURL := os.Getenv("UNISENDER_BASE_URL")
@@ -112,11 +126,14 @@ func Load() *Config {
 	cloudPaymentsTrialDays := parseIntEnv("CLOUDPAYMENTS_TRIAL_DAYS", 14)
 
 	return &Config{
-		DBHost:     os.Getenv("DB_HOST"),
-		DBPort:     port,
-		DBUser:     os.Getenv("DB_USER"),
-		DBPassword: os.Getenv("DB_PASSWORD"),
-		DBName:     os.Getenv("DB_NAME"),
+		DBHost:            os.Getenv("DB_HOST"),
+		DBPort:            port,
+		DBUser:            os.Getenv("DB_USER"),
+		DBPassword:        os.Getenv("DB_PASSWORD"),
+		DBName:            os.Getenv("DB_NAME"),
+		DBMaxOpenConns:    parseIntEnv("DB_MAX_OPEN_CONNS", 25),
+		DBMaxIdleConns:    parseIntEnv("DB_MAX_IDLE_CONNS", 10),
+		DBConnMaxLifetime: parseDurationEnv("DB_CONN_MAX_LIFETIME", 30*time.Minute),
 
 		OpenAIKey:                     os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:                   model,
@@ -126,9 +143,18 @@ func Load() *Config {
 		OpenAIAuditorCompactThreshold: auditorCompactThreshold,
 		OpenAIProxyURL:                openAIProxyURL,
 		EnableAIBenchmark:             parseBoolEnv("ENABLE_AI_BENCHMARK"),
+		AIAdminKey:                    strings.TrimSpace(os.Getenv("AI_ADMIN_KEY")),
+		AIRequestsPerMinute:           parseIntEnv("AI_RATE_LIMIT_PER_MINUTE", 60),
+		AIDailyBudgetUSD:              parseFloatEnv("AI_DAILY_BUDGET_USD", 0),
+		AIMonthlyBudgetUSD:            parseFloatEnv("AI_MONTHLY_BUDGET_USD", 0),
+		AIJobWorkers:                  parseIntEnv("AI_JOB_WORKERS", 2),
 
 		JWTSecret:          jwtSecret,
 		CORSAllowedOrigins: parseCSVEnv("CORS_ALLOWED_ORIGINS"),
+		Environment:        environment,
+		HTTPReadTimeout:    parseDurationEnv("HTTP_READ_TIMEOUT", 90*time.Second),
+		HTTPWriteTimeout:   parseDurationEnv("HTTP_WRITE_TIMEOUT", 6*time.Minute),
+		HTTPIdleTimeout:    parseDurationEnv("HTTP_IDLE_TIMEOUT", 90*time.Second),
 
 		UnisenderAPIKey:           os.Getenv("UNISENDER_API_KEY"),
 		UnisenderBaseURL:          unisenderBaseURL,
@@ -197,6 +223,40 @@ func parseFloatEnv(key string, fallback float64) float64 {
 func parseBoolEnv(key string) bool {
 	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
 	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func parseDurationEnv(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func (c *Config) Validate() error {
+	missing := make([]string, 0)
+	for key, value := range map[string]string{
+		"DB_HOST": c.DBHost, "DB_USER": c.DBUser, "DB_NAME": c.DBName,
+		"JWT_SECRET": c.JWTSecret, "OPENAI_API_KEY": c.OpenAIKey,
+	} {
+		if strings.TrimSpace(value) == "" {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
+	}
+	if len(c.JWTSecret) < 32 {
+		return fmt.Errorf("JWT_SECRET must contain at least 32 characters")
+	}
+	if (c.Environment == "production" || c.Environment == "staging") && len(c.CORSAllowedOrigins) == 0 {
+		return fmt.Errorf("CORS_ALLOWED_ORIGINS is required in %s", c.Environment)
+	}
+	return nil
 }
 
 func (c *Config) ConnString() string {
