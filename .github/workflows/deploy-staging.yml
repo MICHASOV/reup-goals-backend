@@ -71,7 +71,7 @@ jobs:
           DB_USER=
           DB_PASSWORD=
           DB_NAME=
-          DB_SSLMODE=disable
+          DB_SSLMODE=require
           APP_ENV=staging
           JWT_SECRET=
           CORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro
@@ -136,8 +136,10 @@ jobs:
           else
             printf '\nCORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro\n' >> /etc/reup-goals-staging/backend.env
           fi
-          if ! grep -q '^DB_SSLMODE=' /etc/reup-goals-staging/backend.env; then
-            printf '\nDB_SSLMODE=disable\n' >> /etc/reup-goals-staging/backend.env
+          if grep -q '^DB_SSLMODE=' /etc/reup-goals-staging/backend.env; then
+            sed -i 's/^DB_SSLMODE=.*/DB_SSLMODE=require/' /etc/reup-goals-staging/backend.env
+          else
+            printf '\nDB_SSLMODE=require\n' >> /etc/reup-goals-staging/backend.env
           fi
 
           if ! id reupgoals >/dev/null 2>&1; then
