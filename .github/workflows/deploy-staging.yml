@@ -1,5 +1,12 @@
 name: Deploy backend staging
 
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-staging
+  cancel-in-progress: false
+
 on:
   push:
     branches:
@@ -9,6 +16,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -100,6 +108,20 @@ jobs:
           CLOUDPAYMENTS_FIRST_PAYMENT_AMOUNT=1
           CLOUDPAYMENTS_CURRENCY=RUB
           CLOUDPAYMENTS_TRIAL_DAYS=14
+          BROWSER_AUTH_ONLY=true
+          PRIVACY_MODE=test
+          DATA_RESIDENCY_REGION=eu-de
+          PRIVACY_CONTACT_EMAIL=reupgoals@gmail.com
+          CROSS_BORDER_TRANSFER_REGISTERED=false
+          GDPR_TRANSFER_MECHANISM=
+          RETENTION_INTERVAL=24h
+          AUTH_CODE_RETENTION_DAYS=30
+          HTTP_REQUEST_LOG_RETENTION_DAYS=90
+          PRODUCT_EVENT_RETENTION_DAYS=365
+          AI_CALL_LOG_RETENTION_DAYS=180
+          BACKGROUND_JOB_RETENTION_DAYS=30
+          LEGAL_EVIDENCE_RETENTION_DAYS=1095
+          PRIVACY_REQUEST_RETENTION_DAYS=1095
           ENV
             chmod 600 /etc/reup-goals-staging/backend.env
           fi
@@ -141,6 +163,27 @@ jobs:
           else
             printf '\nDB_SSLMODE=require\n' >> /etc/reup-goals-staging/backend.env
           fi
+          for setting in \
+            'BROWSER_AUTH_ONLY=true' \
+            'PRIVACY_MODE=test' \
+            'DATA_RESIDENCY_REGION=eu-de' \
+            'PRIVACY_CONTACT_EMAIL=reupgoals@gmail.com' \
+            'CROSS_BORDER_TRANSFER_REGISTERED=false' \
+            'RETENTION_INTERVAL=24h' \
+            'AUTH_CODE_RETENTION_DAYS=30' \
+            'HTTP_REQUEST_LOG_RETENTION_DAYS=90' \
+            'PRODUCT_EVENT_RETENTION_DAYS=365' \
+            'AI_CALL_LOG_RETENTION_DAYS=180' \
+            'BACKGROUND_JOB_RETENTION_DAYS=30' \
+            'LEGAL_EVIDENCE_RETENTION_DAYS=1095' \
+            'PRIVACY_REQUEST_RETENTION_DAYS=1095'; do
+            key=${setting%%=*}
+            if grep -q "^${key}=" /etc/reup-goals-staging/backend.env; then
+              sed -i "s|^${key}=.*|${setting}|" /etc/reup-goals-staging/backend.env
+            else
+              printf '\n%s\n' "$setting" >> /etc/reup-goals-staging/backend.env
+            fi
+          done
 
           if ! id reupgoals >/dev/null 2>&1; then
             useradd --system --home /opt/reup-goals-staging --shell /usr/sbin/nologin reupgoals
@@ -172,6 +215,10 @@ jobs:
           ProtectKernelModules=true
           ProtectControlGroups=true
           RestrictSUIDSGID=true
+          UMask=0077
+          ProtectClock=true
+          ProtectHostname=true
+          RestrictNamespaces=true
           LockPersonality=true
           MemoryDenyWriteExecute=true
           RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

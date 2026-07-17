@@ -5,18 +5,20 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"reup-goals-backend/internal/legal"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
-func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, secureCookie bool) http.HandlerFunc {
+func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, secureCookie bool, browserAuthOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		var body struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
+			Email       string                  `json:"email"`
+			Password    string                  `json:"password"`
+			Acceptances []legal.AcceptanceInput `json:"acceptances"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -37,6 +39,11 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, sec
 			http.Error(w, "weak_password", http.StatusBadRequest)
 			return
 		}
+		acceptances, err := legal.ValidateRegistrationAcceptances(body.Acceptances)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
 
 		passwordHash, err := hashPassword(password)
 		if err != nil {
@@ -44,27 +51,47 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, sec
 			return
 		}
 
+		subjectKey, err := legal.NewSubjectKey()
+		if err != nil {
+			http.Error(w, "registration_failed", http.StatusInternalServerError)
+			return
+		}
+		tx, err := dbx.BeginTx(r.Context(), nil)
+		if err != nil {
+			http.Error(w, "registration_failed", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
 		var id int
-		err = dbx.QueryRow(`
-			INSERT INTO users (email, password)
-			VALUES ($1, $2)
+		err = tx.QueryRowContext(r.Context(), `
+			INSERT INTO users (email, password, privacy_subject_id)
+			VALUES ($1, $2, $3)
 			RETURNING id
-		`, email, passwordHash).Scan(&id)
+		`, email, passwordHash, subjectKey).Scan(&id)
 
 		if err != nil {
 			http.Error(w, "user_already_exists", http.StatusBadRequest)
 			return
 		}
+		if err := legal.StoreAcceptances(r.Context(), tx, id, subjectKey, acceptances, r.Header.Get("X-Request-ID")); err != nil {
+			http.Error(w, "legal_acceptance_store_failed", http.StatusInternalServerError)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "registration_failed", http.StatusInternalServerError)
+			return
+		}
 
 		workspaceStore := workspaces.NewStore(dbx)
 		if _, _, err := workspaceStore.GetOrCreateDefault(r.Context(), id); err != nil {
-			_, _ = dbx.Exec(`DELETE FROM users WHERE id=$1`, id)
+			cleanupFailedRegistration(dbx, id, subjectKey)
 			http.Error(w, "workspace_create_failed", http.StatusInternalServerError)
 			return
 		}
 
 		if err := createAndSendCode(dbx, emailService, email, id, codeTypeVerifyEmail); err != nil {
-			_, _ = dbx.Exec(`DELETE FROM users WHERE id=$1`, id)
+			cleanupFailedRegistration(dbx, id, subjectKey)
 			writeCodeError(w, err)
 			return
 		}
@@ -77,14 +104,30 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, sec
 		SetSessionCookie(w, token, secureCookie)
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"user_id": id,
-			"token":   token,
-		})
+		response := map[string]any{"user_id": id}
+		if !browserAuthOnly {
+			response["token"] = token
+		}
+		_ = json.NewEncoder(w).Encode(response)
 	}
 }
 
-func LoginHandler(dbx *sql.DB, secret []byte, secureCookie bool) http.HandlerFunc {
+func cleanupFailedRegistration(dbx *sql.DB, userID int, subjectKey string) {
+	tx, err := dbx.Begin()
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM legal_acceptances WHERE subject_key=$1`, subjectKey); err != nil {
+		return
+	}
+	if _, err := tx.Exec(`DELETE FROM users WHERE id=$1`, userID); err != nil {
+		return
+	}
+	_ = tx.Commit()
+}
+
+func LoginHandler(dbx *sql.DB, secret []byte, secureCookie bool, browserAuthOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
@@ -153,10 +196,11 @@ func LoginHandler(dbx *sql.DB, secret []byte, secureCookie bool) http.HandlerFun
 		SetSessionCookie(w, token, secureCookie)
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"user_id": id,
-			"token":   token,
-		})
+		response := map[string]any{"user_id": id}
+		if !browserAuthOnly {
+			response["token"] = token
+		}
+		_ = json.NewEncoder(w).Encode(response)
 	}
 }
 

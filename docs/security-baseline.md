@@ -1,5 +1,16 @@
 # REUP.goals Security Baseline
 
+Privacy and regional deployment controls are documented in:
+
+- `docs/privacy-compliance.md`;
+- `docs/data-map-and-retention.md`;
+- `docs/incident-response.md`;
+- `docs/deployment-regions.md`;
+- `docs/privacy-request-operations.md`;
+- `docs/backup-and-recovery.md`;
+- `compliance/`;
+- `deploy/production/`.
+
 Status: mandatory baseline for staging and production.
 
 ## 1. Protected data

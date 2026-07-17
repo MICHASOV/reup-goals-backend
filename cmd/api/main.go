@@ -17,6 +17,7 @@ import (
 	"reup-goals-backend/internal/db"
 	"reup-goals-backend/internal/goals"
 	"reup-goals-backend/internal/migrations"
+	"reup-goals-backend/internal/privacy"
 	"reup-goals-backend/internal/security"
 	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/tasks"
@@ -88,11 +89,22 @@ func main() {
 	tacticsHandler := tactics.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager)
 	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	operationsHandler := operations.NewHandler(database, jobManager)
+	privacyHandler := privacy.NewHandler(database)
 	operationsCollector := operations.NewCollector(database, jwtSecret)
 	operationsCollector.Start(rootCtx)
 	defer operationsCollector.Stop()
 	jobManager.Start(rootCtx, cfg.AIJobWorkers)
 	defer jobManager.Stop()
+	privacy.NewRetentionRunner(database, privacy.RetentionPolicy{
+		Interval:        cfg.RetentionInterval,
+		AuthCodes:       cfg.AuthCodeRetention,
+		HTTPRequestLogs: cfg.HTTPRequestLogRetention,
+		ProductEvents:   cfg.ProductEventRetention,
+		AICallLogs:      cfg.AICallLogRetention,
+		BackgroundJobs:  cfg.BackgroundJobRetention,
+		LegalEvidence:   cfg.LegalEvidenceRetention,
+		PrivacyRequests: cfg.PrivacyRequestRetention,
+	}).Start(rootCtx)
 
 	mux := http.NewServeMux()
 
@@ -108,14 +120,17 @@ func main() {
 	// -----------------------
 	// AUTH (public)
 	// -----------------------
-	mux.Handle("/auth/register", authLimiter.Wrap(auth.RegisterHandler(database, jwtSecret, emailService, secureCookie)))
-	mux.Handle("/auth/login", authLimiter.Wrap(auth.LoginHandler(database, jwtSecret, secureCookie)))
+	mux.Handle("/auth/register", authLimiter.Wrap(auth.RegisterHandler(database, jwtSecret, emailService, secureCookie, cfg.BrowserAuthOnly)))
+	mux.Handle("/auth/login", authLimiter.Wrap(auth.LoginHandler(database, jwtSecret, secureCookie, cfg.BrowserAuthOnly)))
 	mux.Handle("/auth/verify-email", authLimiter.Wrap(auth.VerifyEmailHandler(database)))
 	mux.Handle("/auth/resend-code", authLimiter.Wrap(auth.ResendCodeHandler(database, emailService)))
 	mux.Handle("/auth/forgot-password", authLimiter.Wrap(auth.ForgotPasswordHandler(database, emailService)))
 	mux.Handle("/auth/verify-reset-code", authLimiter.Wrap(auth.VerifyResetCodeHandler(database)))
 	mux.Handle("/auth/reset-password", authLimiter.Wrap(auth.ResetPasswordHandler(database)))
 	mux.Handle("/auth/me", mw.Wrap(auth.MeHandler(database)))
+	mux.HandleFunc("/api/v2/privacy/legal-documents", privacyHandler.Documents)
+	mux.Handle("/api/v2/privacy/acceptances", v2api.RequireAuth(database, jwtSecret, privacyHandler.Acceptances))
+	mux.Handle("/api/v2/privacy/requests", v2api.RequireAuth(database, jwtSecret, privacyHandler.Requests))
 
 	// -----------------------
 	// SUBSCRIPTIONS

@@ -1920,6 +1920,66 @@ var migrations = []Migration{
 			DROP TABLE IF EXISTS v2_knowledge_base_blocks;
 		`,
 	},
+	{
+		ID: "20260718_033_privacy_foundation",
+		SQL: `
+			ALTER TABLE users
+				ADD COLUMN IF NOT EXISTS privacy_subject_id TEXT NULL;
+
+			UPDATE users
+			SET privacy_subject_id=md5(random()::text || clock_timestamp()::text || id::text)
+			WHERE privacy_subject_id IS NULL;
+
+			ALTER TABLE users
+				ALTER COLUMN privacy_subject_id SET NOT NULL;
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privacy_subject_id
+				ON users (privacy_subject_id)
+				WHERE privacy_subject_id IS NOT NULL;
+
+			CREATE TABLE IF NOT EXISTS legal_acceptances (
+				id BIGSERIAL PRIMARY KEY,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				subject_key TEXT NOT NULL,
+				document_type TEXT NOT NULL,
+				document_version TEXT NOT NULL,
+				accepted BOOLEAN NOT NULL,
+				legal_basis TEXT NOT NULL,
+				source TEXT NOT NULL,
+				request_id TEXT NOT NULL DEFAULT '',
+				recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				withdrawn_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_legal_acceptances_user_document
+				ON legal_acceptances (user_id, document_type, recorded_at DESC);
+
+			CREATE INDEX IF NOT EXISTS idx_legal_acceptances_subject
+				ON legal_acceptances (subject_key, recorded_at DESC);
+
+			CREATE TABLE IF NOT EXISTS privacy_requests (
+				id BIGSERIAL PRIMARY KEY,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				workspace_id INTEGER NULL REFERENCES workspaces(id) ON DELETE SET NULL,
+				subject_key TEXT NOT NULL,
+				request_type TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'received',
+				details TEXT NOT NULL DEFAULT '',
+				resolution_summary TEXT NOT NULL DEFAULT '',
+				request_id TEXT NOT NULL DEFAULT '',
+				received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				due_at TIMESTAMPTZ NOT NULL,
+				completed_at TIMESTAMPTZ NULL,
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_privacy_requests_user_received
+				ON privacy_requests (user_id, received_at DESC);
+
+			CREATE INDEX IF NOT EXISTS idx_privacy_requests_status_due
+				ON privacy_requests (status, due_at);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

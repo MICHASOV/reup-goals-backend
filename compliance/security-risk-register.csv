@@ -1,0 +1,8 @@
+risk,assets,likelihood,impact,current_controls,required_action,owner,status,target_date,last_review
+Wrong-region production launch,All personal and business data,Medium,Critical,Production config residency gate,Select and verify Russian primary region,,open,,
+Unapproved cross-border AI transfer,Messages files audio,High,Critical,Production transfer attestation and context minimization,Complete notifications contracts and transfer assessment,,open,,
+Workspace authorization defect,Business content,Medium,Critical,Workspace-bound handlers and tests,Complete cross-workspace regression suite for every new endpoint,,ongoing,,
+Credential compromise,Database AI email and billing,Medium,Critical,Secret-only environment and hardened systemd,Adopt regional secret manager rotation and break-glass process,,open,,
+Unfulfilled privacy request,Personal data,Medium,High,Authenticated request registry and due dates,Assign owner alerts and fulfilment workflow,,open,,
+Backup cannot be restored or delete propagates incorrectly,All persistent data,Medium,Critical,Provider backup requirement,Run and record quarterly restore drills,,open,,
+Sensitive data entered into standard AI flow,Special-category and confidential data,Medium,High,Public warning and minimized context,Add in-product upload warning and approved restricted mode before supporting it,,open,,

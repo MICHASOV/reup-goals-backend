@@ -35,12 +35,26 @@ type Config struct {
 	AIMonthlyBudgetUSD            float64
 	AIJobWorkers                  int
 
-	JWTSecret          string
-	CORSAllowedOrigins []string
-	Environment        string
-	HTTPReadTimeout    time.Duration
-	HTTPWriteTimeout   time.Duration
-	HTTPIdleTimeout    time.Duration
+	JWTSecret                     string
+	CORSAllowedOrigins            []string
+	Environment                   string
+	HTTPReadTimeout               time.Duration
+	HTTPWriteTimeout              time.Duration
+	HTTPIdleTimeout               time.Duration
+	BrowserAuthOnly               bool
+	PrivacyMode                   string
+	DataResidencyRegion           string
+	CrossBorderTransferRegistered bool
+	GDPRTransferMechanism         string
+	PrivacyContactEmail           string
+	RetentionInterval             time.Duration
+	AuthCodeRetention             time.Duration
+	HTTPRequestLogRetention       time.Duration
+	ProductEventRetention         time.Duration
+	AICallLogRetention            time.Duration
+	BackgroundJobRetention        time.Duration
+	LegalEvidenceRetention        time.Duration
+	PrivacyRequestRetention       time.Duration
 
 	UnisenderAPIKey           string
 	UnisenderBaseURL          string
@@ -91,6 +105,10 @@ func Load() *Config {
 	environment := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
 	if environment == "" {
 		environment = "development"
+	}
+	privacyMode := strings.ToLower(strings.TrimSpace(os.Getenv("PRIVACY_MODE")))
+	if privacyMode == "" {
+		privacyMode = "development"
 	}
 
 	unisenderBaseURL := os.Getenv("UNISENDER_BASE_URL")
@@ -158,12 +176,26 @@ func Load() *Config {
 		AIMonthlyBudgetUSD:            parseFloatEnv("AI_MONTHLY_BUDGET_USD", 0),
 		AIJobWorkers:                  parseIntEnv("AI_JOB_WORKERS", 2),
 
-		JWTSecret:          jwtSecret,
-		CORSAllowedOrigins: parseCSVEnv("CORS_ALLOWED_ORIGINS"),
-		Environment:        environment,
-		HTTPReadTimeout:    parseDurationEnv("HTTP_READ_TIMEOUT", 90*time.Second),
-		HTTPWriteTimeout:   parseDurationEnv("HTTP_WRITE_TIMEOUT", 6*time.Minute),
-		HTTPIdleTimeout:    parseDurationEnv("HTTP_IDLE_TIMEOUT", 90*time.Second),
+		JWTSecret:                     jwtSecret,
+		CORSAllowedOrigins:            parseCSVEnv("CORS_ALLOWED_ORIGINS"),
+		Environment:                   environment,
+		HTTPReadTimeout:               parseDurationEnv("HTTP_READ_TIMEOUT", 90*time.Second),
+		HTTPWriteTimeout:              parseDurationEnv("HTTP_WRITE_TIMEOUT", 6*time.Minute),
+		HTTPIdleTimeout:               parseDurationEnv("HTTP_IDLE_TIMEOUT", 90*time.Second),
+		BrowserAuthOnly:               parseBoolEnv("BROWSER_AUTH_ONLY"),
+		PrivacyMode:                   privacyMode,
+		DataResidencyRegion:           strings.ToLower(strings.TrimSpace(os.Getenv("DATA_RESIDENCY_REGION"))),
+		CrossBorderTransferRegistered: parseBoolEnv("CROSS_BORDER_TRANSFER_REGISTERED"),
+		GDPRTransferMechanism:         strings.ToLower(strings.TrimSpace(os.Getenv("GDPR_TRANSFER_MECHANISM"))),
+		PrivacyContactEmail:           strings.TrimSpace(os.Getenv("PRIVACY_CONTACT_EMAIL")),
+		RetentionInterval:             parseDurationEnv("RETENTION_INTERVAL", 24*time.Hour),
+		AuthCodeRetention:             daysEnv("AUTH_CODE_RETENTION_DAYS", 30),
+		HTTPRequestLogRetention:       daysEnv("HTTP_REQUEST_LOG_RETENTION_DAYS", 90),
+		ProductEventRetention:         daysEnv("PRODUCT_EVENT_RETENTION_DAYS", 365),
+		AICallLogRetention:            daysEnv("AI_CALL_LOG_RETENTION_DAYS", 180),
+		BackgroundJobRetention:        daysEnv("BACKGROUND_JOB_RETENTION_DAYS", 30),
+		LegalEvidenceRetention:        daysEnv("LEGAL_EVIDENCE_RETENTION_DAYS", 1095),
+		PrivacyRequestRetention:       daysEnv("PRIVACY_REQUEST_RETENTION_DAYS", 1095),
 
 		UnisenderAPIKey:           os.Getenv("UNISENDER_API_KEY"),
 		UnisenderBaseURL:          unisenderBaseURL,
@@ -246,6 +278,14 @@ func parseDurationEnv(key string, fallback time.Duration) time.Duration {
 	return parsed
 }
 
+func daysEnv(key string, fallback int) time.Duration {
+	days := parseIntEnv(key, fallback)
+	if days <= 0 {
+		days = fallback
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
 func (c *Config) Validate() error {
 	missing := make([]string, 0)
 	for key, value := range map[string]string{
@@ -268,6 +308,9 @@ func (c *Config) Validate() error {
 	if c.DBSSLMode != "disable" && c.DBSSLMode != "require" && c.DBSSLMode != "verify-ca" && c.DBSSLMode != "verify-full" {
 		return fmt.Errorf("DB_SSLMODE must be disable, require, verify-ca, or verify-full")
 	}
+	if !validPrivacyMode(c.PrivacyMode) {
+		return fmt.Errorf("PRIVACY_MODE must be development, test, gdpr, ru_152fz, or dual")
+	}
 	if c.Environment == "production" || c.Environment == "staging" {
 		if strings.TrimSpace(c.DBPassword) == "" {
 			return fmt.Errorf("DB_PASSWORD is required in %s", c.Environment)
@@ -283,11 +326,42 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("CORS origin %q must be an explicit HTTPS origin in %s", origin, c.Environment)
 			}
 		}
+		if strings.TrimSpace(c.DataResidencyRegion) == "" {
+			return fmt.Errorf("DATA_RESIDENCY_REGION is required in %s", c.Environment)
+		}
+	}
+	if c.Environment == "production" {
+		if c.PrivacyMode == "development" || c.PrivacyMode == "test" {
+			return fmt.Errorf("production requires an explicit GDPR, ru_152fz, or dual PRIVACY_MODE")
+		}
+		if strings.TrimSpace(c.PrivacyContactEmail) == "" {
+			return fmt.Errorf("PRIVACY_CONTACT_EMAIL is required in production")
+		}
+		if c.PrivacyMode == "ru_152fz" || c.PrivacyMode == "dual" {
+			if !strings.HasPrefix(c.DataResidencyRegion, "ru-") {
+				return fmt.Errorf("Russian personal-data mode requires a ru-* primary DATA_RESIDENCY_REGION")
+			}
+			if !c.CrossBorderTransferRegistered {
+				return fmt.Errorf("CROSS_BORDER_TRANSFER_REGISTERED must be true before external AI processing in Russian personal-data mode")
+			}
+		}
+		if (c.PrivacyMode == "gdpr" || c.PrivacyMode == "dual") && strings.TrimSpace(c.GDPRTransferMechanism) == "" {
+			return fmt.Errorf("GDPR_TRANSFER_MECHANISM is required for production external processing")
+		}
 	}
 	if (strings.TrimSpace(c.CloudPaymentsPublicID) == "") != (strings.TrimSpace(c.CloudPaymentsAPISecret) == "") {
 		return fmt.Errorf("CLOUDPAYMENTS_PUBLIC_ID and CLOUDPAYMENTS_API_SECRET must be configured together")
 	}
 	return nil
+}
+
+func validPrivacyMode(value string) bool {
+	switch value {
+	case "development", "test", "gdpr", "ru_152fz", "dual":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Config) ConnString() string {

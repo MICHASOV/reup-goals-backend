@@ -111,7 +111,7 @@ func (c *Collector) Middleware(next http.Handler) http.Handler {
 			RequestID: requestID, Method: r.Method, Path: normalizedPath(r.URL.Path),
 			StatusCode: recorder.status, LatencyMS: latency, ResponseBytes: recorder.bytes,
 		}
-		if userID, ok := bearerUserID(c.secret, r.Header.Get("Authorization")); ok {
+		if userID, ok := requestUserID(c.secret, r); ok && recorder.status != http.StatusUnauthorized {
 			record.UserID = &userID
 		}
 		select {
@@ -182,11 +182,12 @@ func newRequestID() string {
 	return hex.EncodeToString(raw)
 }
 
-func bearerUserID(secret []byte, header string) (int, bool) {
-	if !strings.HasPrefix(header, "Bearer ") {
+func requestUserID(secret []byte, r *http.Request) (int, bool) {
+	token, ok := auth.TokenFromRequest(r)
+	if !ok {
 		return 0, false
 	}
-	userID, err := auth.ParseToken(secret, strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")))
+	userID, err := auth.ParseToken(secret, token)
 	return userID, err == nil
 }
 

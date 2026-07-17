@@ -1,0 +1,6 @@
+provider,service,data_categories,countries,primary_or_transfer,contract_status,ru_notification_status,gdpr_mechanism,retention_deletion_verified,owner,status,last_review
+OpenAI,AI and transcription,Minimized business content and audio,To be confirmed,Cross-border,review_required,required_before_ru_production,To be confirmed,no,,blocked,
+Unisender,Service email and optional marketing,Email and delivery metadata,To be confirmed,Processor or cross-border to confirm,review_required,to_be_assessed,To be confirmed,no,,draft,
+CloudPayments,Billing and receipts,Contact and payment metadata,To be confirmed,Processor,review_required,to_be_assessed,To be confirmed,no,,draft,
+Russian hosting provider,Production compute database storage backups logs,Account and business content,Russia,Primary,not_selected,not_applicable,not_applicable,no,,blocked,
+Hetzner,Staging compute and database,Synthetic test data only,Germany,Test only,review_required,not_for_real_ru_data,not_applicable,no,,test_only,
