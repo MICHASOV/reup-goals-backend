@@ -29,6 +29,7 @@ import (
 	"reup-goals-backend/internal/v2/course"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/operations"
+	"reup-goals-backend/internal/v2/profile"
 	"reup-goals-backend/internal/v2/strategicmemory"
 	"reup-goals-backend/internal/v2/strategy"
 	"reup-goals-backend/internal/v2/tactics"
@@ -90,6 +91,7 @@ func main() {
 	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
 	operationsHandler := operations.NewHandler(database, jobManager)
 	privacyHandler := privacy.NewHandler(database)
+	profileHandler := profile.NewHandler(database, cfg, emailService, cloudPayments)
 	operationsCollector := operations.NewCollector(database, jwtSecret)
 	operationsCollector.Start(rootCtx)
 	defer operationsCollector.Stop()
@@ -131,6 +133,8 @@ func main() {
 	mux.HandleFunc("/api/v2/privacy/legal-documents", privacyHandler.Documents)
 	mux.Handle("/api/v2/privacy/acceptances", v2api.RequireAuth(database, jwtSecret, privacyHandler.Acceptances))
 	mux.Handle("/api/v2/privacy/requests", v2api.RequireAuth(database, jwtSecret, privacyHandler.Requests))
+	mux.Handle("/api/v2/profile", v2api.RequireAuth(database, jwtSecret, profileHandler.Profile))
+	mux.Handle("/api/v2/profile/", v2api.RequireAuth(database, jwtSecret, profileHandler.Profile))
 
 	// -----------------------
 	// SUBSCRIPTIONS

@@ -79,7 +79,26 @@ func (s *EmailService) SendPasswordResetCode(email, code string) error {
 	)
 }
 
+func (s *EmailService) SendServiceEmail(email, subject, body string) error {
+	return s.sendEmail(email, subject, body)
+}
+
+func (s *EmailService) SendServiceEmailAttachment(email, subject, body, filename string, content []byte) error {
+	if len(content) == 0 || len(content) > 750*1024 {
+		return errors.New("email attachment size is invalid")
+	}
+	filename = safeAttachmentFilename(filename)
+	if filename == "" {
+		return errors.New("email attachment filename is invalid")
+	}
+	return s.sendEmailWithAttachments(email, subject, body, map[string][]byte{filename: content})
+}
+
 func (s *EmailService) sendEmail(email, subject, body string) error {
+	return s.sendEmailWithAttachments(email, subject, body, nil)
+}
+
+func (s *EmailService) sendEmailWithAttachments(email, subject, body string, attachments map[string][]byte) error {
 	if err := s.validateConfig(); err != nil {
 		return err
 	}
@@ -99,6 +118,9 @@ func (s *EmailService) sendEmail(email, subject, body string) error {
 	values.Set("list_id", listID)
 	values.Set("lang", "ru")
 	values.Set("error_checking", "1")
+	for filename, content := range attachments {
+		values.Set("attachments["+filename+"]", string(content))
+	}
 
 	var response unisenderResponse
 	if err := s.post("sendEmail", values, &response); err != nil {
@@ -113,6 +135,18 @@ func (s *EmailService) sendEmail(email, subject, body string) error {
 	}
 
 	return nil
+}
+
+func safeAttachmentFilename(value string) string {
+	value = strings.TrimSpace(value)
+	var result strings.Builder
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '.' || character == '-' || character == '_' {
+			result.WriteRune(character)
+		}
+	}
+	return result.String()
 }
 
 func (s *EmailService) validateConfig() error {

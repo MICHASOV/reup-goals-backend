@@ -109,6 +109,11 @@ jobs:
           CLOUDPAYMENTS_CURRENCY=RUB
           CLOUDPAYMENTS_TRIAL_DAYS=14
           BROWSER_AUTH_ONLY=true
+          FRONTEND_BASE_URL=https://staging.reupgoals.pro
+          APP_VERSION="REUP.goals v2"
+          SUPPORT_EMAIL=reupgoals@gmail.com
+          DOCUMENTATION_URL=
+          CHANGELOG_URL=
           PRIVACY_MODE=test
           DATA_RESIDENCY_REGION=eu-de
           PRIVACY_CONTACT_EMAIL=reupgoals@gmail.com
@@ -165,6 +170,9 @@ jobs:
           fi
           for setting in \
             'BROWSER_AUTH_ONLY=true' \
+            'FRONTEND_BASE_URL=https://staging.reupgoals.pro' \
+            'APP_VERSION=REUP.goals v2' \
+            'SUPPORT_EMAIL=reupgoals@gmail.com' \
             'PRIVACY_MODE=test' \
             'DATA_RESIDENCY_REGION=eu-de' \
             'PRIVACY_CONTACT_EMAIL=reupgoals@gmail.com' \

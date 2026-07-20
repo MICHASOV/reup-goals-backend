@@ -1980,6 +1980,139 @@ var migrations = []Migration{
 				ON privacy_requests (status, due_at);
 		`,
 	},
+	{
+		ID: "20260720_034_profile_workspace_billing",
+		SQL: `
+			ALTER TABLE users
+				ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS avatar_url TEXT NOT NULL DEFAULT '';
+
+			ALTER TABLE subscriptions
+				ADD COLUMN IF NOT EXISTS workspace_id INTEGER NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS payment_provider TEXT NOT NULL DEFAULT 'cloudpayments';
+
+			UPDATE subscriptions subscription
+			SET workspace_id=(
+				SELECT workspace.id
+				FROM workspaces workspace
+				WHERE workspace.owner_user_id=subscription.user_id AND workspace.status='active'
+				ORDER BY workspace.created_at ASC
+				LIMIT 1
+			)
+			WHERE subscription.workspace_id IS NULL;
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_workspace
+				ON subscriptions (workspace_id)
+				WHERE workspace_id IS NOT NULL;
+
+			CREATE TABLE IF NOT EXISTS user_profile_settings (
+				user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+				interface_language TEXT NOT NULL DEFAULT 'ru',
+				theme TEXT NOT NULL DEFAULT 'dark',
+				date_format TEXT NOT NULL DEFAULT 'DD.MM.YYYY',
+				ai_language TEXT NOT NULL DEFAULT 'ru',
+				email_notifications BOOLEAN NOT NULL DEFAULT TRUE,
+				in_product_notifications BOOLEAN NOT NULL DEFAULT TRUE,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE TABLE IF NOT EXISTS workspace_invitations (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				email TEXT NOT NULL,
+				role TEXT NOT NULL DEFAULT 'member',
+				status TEXT NOT NULL DEFAULT 'pending',
+				invited_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				accepted_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				token_hash TEXT NOT NULL,
+				expires_at TIMESTAMPTZ NOT NULL,
+				accepted_at TIMESTAMPTZ NULL,
+				cancelled_at TIMESTAMPTZ NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_workspace_invitations_workspace
+				ON workspace_invitations (workspace_id, status, created_at DESC);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_invitations_pending_email
+				ON workspace_invitations (workspace_id, lower(email))
+				WHERE status='pending';
+
+			CREATE TABLE IF NOT EXISTS workspace_billing_organizations (
+				workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+				full_name TEXT NOT NULL,
+				inn TEXT NOT NULL,
+				kpp TEXT NOT NULL DEFAULT '',
+				registration_number TEXT NOT NULL,
+				legal_address TEXT NOT NULL,
+				accounting_email TEXT NOT NULL,
+				contact_person TEXT NOT NULL,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE TABLE IF NOT EXISTS workspace_billing_invoices (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				number TEXT NOT NULL UNIQUE,
+				amount NUMERIC(12,2) NOT NULL,
+				currency TEXT NOT NULL DEFAULT 'RUB',
+				status TEXT NOT NULL DEFAULT 'waiting',
+				organization_snapshot JSONB NOT NULL,
+				recipient_email TEXT NOT NULL,
+				issued_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				due_at TIMESTAMPTZ NOT NULL,
+				paid_at TIMESTAMPTZ NULL,
+				cancelled_at TIMESTAMPTZ NULL,
+				emailed_at TIMESTAMPTZ NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_workspace_billing_invoices_workspace
+				ON workspace_billing_invoices (workspace_id, issued_at DESC);
+
+			CREATE TABLE IF NOT EXISTS workspace_billing_documents (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				invoice_id BIGINT NULL REFERENCES workspace_billing_invoices(id) ON DELETE CASCADE,
+				kind TEXT NOT NULL,
+				title TEXT NOT NULL,
+				file_name TEXT NOT NULL,
+				mime_type TEXT NOT NULL DEFAULT 'application/pdf',
+				content BYTEA NOT NULL,
+				period_start DATE NULL,
+				period_end DATE NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_workspace_billing_documents_workspace
+				ON workspace_billing_documents (workspace_id, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS workspace_billing_payments (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				invoice_id BIGINT NULL REFERENCES workspace_billing_invoices(id) ON DELETE SET NULL,
+				provider TEXT NOT NULL,
+				external_id TEXT NOT NULL DEFAULT '',
+				method TEXT NOT NULL,
+				amount NUMERIC(12,2) NOT NULL,
+				currency TEXT NOT NULL DEFAULT 'RUB',
+				status TEXT NOT NULL,
+				paid_at TIMESTAMPTZ NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_workspace_billing_payments_workspace
+				ON workspace_billing_payments (workspace_id, created_at DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

@@ -310,14 +310,20 @@ func (h *Handler) upsertSubscription(uid int, status string, cpSubscriptionID st
 	var id int
 	err := h.dbx.QueryRow(`
 		INSERT INTO subscriptions (
-			user_id, cloudpayments_subscription_id, cloudpayments_token, status, plan_name,
+			user_id, workspace_id, cloudpayments_subscription_id, cloudpayments_token, status, plan_name,
 			amount, currency, trial_started_at, trial_ends_at, current_period_start,
 			current_period_end, next_payment_at, grace_until, cancelled_at, last_payment_at,
-			last_failed_at, failed_attempts
+			last_failed_at, failed_attempts, payment_method, payment_provider
 		)
-		VALUES ($1, nullif($2,''), nullif($3,''), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-			CASE WHEN $4 = 'past_due' THEN 1 ELSE 0 END)
+		VALUES (
+			$1,
+			(SELECT id FROM workspaces WHERE owner_user_id=$1 AND status='active' ORDER BY created_at ASC LIMIT 1),
+			nullif($2,''), nullif($3,''), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+			CASE WHEN $4 = 'past_due' THEN 1 ELSE 0 END,
+			'card', 'cloudpayments'
+		)
 		ON CONFLICT (user_id) DO UPDATE SET
+			workspace_id=COALESCE(subscriptions.workspace_id, EXCLUDED.workspace_id),
 			cloudpayments_subscription_id=COALESCE(nullif(EXCLUDED.cloudpayments_subscription_id,''), subscriptions.cloudpayments_subscription_id),
 			cloudpayments_token=COALESCE(nullif(EXCLUDED.cloudpayments_token,''), subscriptions.cloudpayments_token),
 			status=EXCLUDED.status,
@@ -338,6 +344,8 @@ func (h *Handler) upsertSubscription(uid int, status string, cpSubscriptionID st
 				WHEN EXCLUDED.status IN ('active', 'trial_active') THEN 0
 				ELSE subscriptions.failed_attempts
 			END,
+			payment_method='card',
+			payment_provider='cloudpayments',
 			updated_at=NOW()
 		RETURNING id
 	`, uid, cpSubscriptionID, token, status, h.cp.PlanName(), amount, currency, trialStartedAt, trialEndsAt, currentPeriodStart, currentPeriodEnd, nextPaymentAt, graceUntil, cancelledAt, lastPaymentAt, lastFailedAt).Scan(&id)

@@ -84,7 +84,7 @@ func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	subscription, err := h.subscription(uid)
+	subscription, err := h.subscription(workspace.ID, workspace.OwnerUserID)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "subscription_lookup_failed")
 		return
@@ -120,7 +120,7 @@ func (h *Handler) userEmail(uid int) (string, error) {
 	return email, err
 }
 
-func (h *Handler) subscription(uid int) (subscriptionResponse, error) {
+func (h *Handler) subscription(workspaceID int, ownerUserID int) (subscriptionResponse, error) {
 	var row struct {
 		Status     string
 		GraceUntil sql.NullTime
@@ -129,8 +129,10 @@ func (h *Handler) subscription(uid int) (subscriptionResponse, error) {
 	err := h.dbx.QueryRow(`
 		SELECT status, grace_until
 		FROM subscriptions
-		WHERE user_id=$1
-	`, uid).Scan(&row.Status, &row.GraceUntil)
+		WHERE workspace_id=$1 OR (workspace_id IS NULL AND user_id=$2)
+		ORDER BY CASE WHEN workspace_id=$1 THEN 0 ELSE 1 END, updated_at DESC
+		LIMIT 1
+	`, workspaceID, ownerUserID).Scan(&row.Status, &row.GraceUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return subscriptionResponse{
 			Status:       "active",

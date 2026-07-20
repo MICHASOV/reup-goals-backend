@@ -1,0 +1,143 @@
+package profile
+
+import "time"
+
+const (
+	roleOwner  = "owner"
+	roleMember = "member"
+
+	invitationPending   = "pending"
+	invitationAccepted  = "accepted"
+	invitationExpired   = "expired"
+	invitationCancelled = "cancelled"
+)
+
+type Overview struct {
+	Account      Account             `json:"account"`
+	Workspace    WorkspaceSummary    `json:"workspace"`
+	Membership   MembershipSummary   `json:"membership"`
+	Subscription SubscriptionSummary `json:"subscription"`
+	Capabilities Capabilities        `json:"capabilities"`
+}
+
+type Account struct {
+	ID        int    `json:"id"`
+	Email     string `json:"email"`
+	Name      string `json:"name"`
+	AvatarURL string `json:"avatar_url"`
+}
+
+type WorkspaceSummary struct {
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Status      string `json:"status"`
+	MemberCount int    `json:"member_count"`
+}
+
+type MembershipSummary struct {
+	Role   string `json:"role"`
+	Status string `json:"status"`
+}
+
+type Capabilities struct {
+	ManageWorkspace    bool `json:"manage_workspace"`
+	ManageMembers      bool `json:"manage_members"`
+	ManageSubscription bool `json:"manage_subscription"`
+	DeleteWorkspace    bool `json:"delete_workspace"`
+}
+
+type SubscriptionSummary struct {
+	Plan              string     `json:"plan"`
+	Status            string     `json:"status"`
+	Amount            float64    `json:"amount"`
+	Currency          string     `json:"currency"`
+	PaymentMethod     string     `json:"payment_method"`
+	PaymentProvider   string     `json:"payment_provider"`
+	PeriodEnd         *time.Time `json:"period_end"`
+	NextRenewal       *time.Time `json:"next_renewal"`
+	GraceUntil        *time.Time `json:"grace_until"`
+	Access            bool       `json:"access"`
+	DisplayStatus     string     `json:"display_status"`
+	CheckoutAvailable bool       `json:"checkout_available"`
+}
+
+type Member struct {
+	ID           int64      `json:"id"`
+	Kind         string     `json:"kind"`
+	UserID       *int       `json:"user_id,omitempty"`
+	Name         string     `json:"name"`
+	Email        string     `json:"email"`
+	AvatarURL    string     `json:"avatar_url"`
+	Role         string     `json:"role"`
+	Status       string     `json:"status"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	CanBeRemoved bool       `json:"can_be_removed"`
+}
+
+type Settings struct {
+	InterfaceLanguage      string `json:"interface_language"`
+	Theme                  string `json:"theme"`
+	DateFormat             string `json:"date_format"`
+	AILanguage             string `json:"ai_language"`
+	EmailNotifications     bool   `json:"email_notifications"`
+	InProductNotifications bool   `json:"in_product_notifications"`
+}
+
+type BillingOrganization struct {
+	FullName           string `json:"full_name"`
+	INN                string `json:"inn"`
+	KPP                string `json:"kpp"`
+	RegistrationNumber string `json:"registration_number"`
+	LegalAddress       string `json:"legal_address"`
+	AccountingEmail    string `json:"accounting_email"`
+	ContactPerson      string `json:"contact_person"`
+}
+
+type Invoice struct {
+	ID             int64      `json:"id"`
+	Number         string     `json:"number"`
+	Amount         float64    `json:"amount"`
+	Currency       string     `json:"currency"`
+	Status         string     `json:"status"`
+	RecipientEmail string     `json:"recipient_email"`
+	IssuedAt       time.Time  `json:"issued_at"`
+	DueAt          time.Time  `json:"due_at"`
+	PaidAt         *time.Time `json:"paid_at,omitempty"`
+	EmailedAt      *time.Time `json:"emailed_at,omitempty"`
+	DocumentID     *int64     `json:"document_id,omitempty"`
+}
+
+type BillingDocument struct {
+	ID          int64      `json:"id"`
+	InvoiceID   *int64     `json:"invoice_id,omitempty"`
+	Kind        string     `json:"kind"`
+	Title       string     `json:"title"`
+	FileName    string     `json:"file_name"`
+	MimeType    string     `json:"mime_type"`
+	PeriodStart *time.Time `json:"period_start,omitempty"`
+	PeriodEnd   *time.Time `json:"period_end,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+type Payment struct {
+	ID        int64      `json:"id"`
+	InvoiceID *int64     `json:"invoice_id,omitempty"`
+	Provider  string     `json:"provider"`
+	Method    string     `json:"method"`
+	Amount    float64    `json:"amount"`
+	Currency  string     `json:"currency"`
+	Status    string     `json:"status"`
+	PaidAt    *time.Time `json:"paid_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+type About struct {
+	Version          string `json:"version"`
+	ChangelogURL     string `json:"changelog_url"`
+	DocumentationURL string `json:"documentation_url"`
+	SupportEmail     string `json:"support_email"`
+	BugReportURL     string `json:"bug_report_url"`
+	IdeaURL          string `json:"idea_url"`
+}

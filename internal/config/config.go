@@ -72,6 +72,13 @@ type Config struct {
 	CloudPaymentsFirstPaymentAmount float64
 	CloudPaymentsCurrency           string
 	CloudPaymentsTrialDays          int
+
+	TopPaymentsCheckoutURL string
+	FrontendBaseURL        string
+	AppVersion             string
+	SupportEmail           string
+	DocumentationURL       string
+	ChangelogURL           string
 }
 
 func Load() *Config {
@@ -146,6 +153,18 @@ func Load() *Config {
 	}
 
 	cloudPaymentsTrialDays := parseIntEnv("CLOUDPAYMENTS_TRIAL_DAYS", 14)
+	frontendBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("FRONTEND_BASE_URL")), "/")
+	if frontendBaseURL == "" {
+		frontendBaseURL = "http://localhost:3000"
+	}
+	appVersion := strings.TrimSpace(os.Getenv("APP_VERSION"))
+	if appVersion == "" {
+		appVersion = "REUP.goals v2"
+	}
+	supportEmail := strings.TrimSpace(os.Getenv("SUPPORT_EMAIL"))
+	if supportEmail == "" {
+		supportEmail = "support@reupgoals.pro"
+	}
 
 	dbSSLMode := strings.ToLower(strings.TrimSpace(os.Getenv("DB_SSLMODE")))
 	if dbSSLMode == "" {
@@ -214,6 +233,13 @@ func Load() *Config {
 		CloudPaymentsFirstPaymentAmount: cloudPaymentsFirstPaymentAmount,
 		CloudPaymentsCurrency:           cloudPaymentsCurrency,
 		CloudPaymentsTrialDays:          cloudPaymentsTrialDays,
+
+		TopPaymentsCheckoutURL: strings.TrimSpace(os.Getenv("TOPPAYMENTS_CHECKOUT_URL")),
+		FrontendBaseURL:        frontendBaseURL,
+		AppVersion:             appVersion,
+		SupportEmail:           supportEmail,
+		DocumentationURL:       strings.TrimSpace(os.Getenv("DOCUMENTATION_URL")),
+		ChangelogURL:           strings.TrimSpace(os.Getenv("CHANGELOG_URL")),
 	}
 }
 

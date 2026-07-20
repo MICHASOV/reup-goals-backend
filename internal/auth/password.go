@@ -1,15 +1,43 @@
 package auth
 
 import (
+	"context"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 )
+
+var ErrCurrentPasswordInvalid = errors.New("current_password_invalid")
+
+func ChangePassword(ctx context.Context, dbx *sql.DB, userID int, currentPassword, newPassword string) error {
+	currentPassword = normalizeSecret(currentPassword)
+	newPassword = normalizeSecret(newPassword)
+	if len(newPassword) < 12 || len(newPassword) > 1024 {
+		return errWeakPassword
+	}
+
+	var storedPassword string
+	if err := dbx.QueryRowContext(ctx, `SELECT password FROM users WHERE id=$1`, userID).Scan(&storedPassword); err != nil {
+		return err
+	}
+	if !passwordMatches(storedPassword, currentPassword) {
+		return ErrCurrentPasswordInvalid
+	}
+
+	passwordHash, err := hashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	_, err = dbx.ExecContext(ctx, `UPDATE users SET password=$1, auth_version=auth_version+1 WHERE id=$2`, passwordHash, userID)
+	return err
+}
 
 func hashPassword(password string) (string, error) {
 	const (
