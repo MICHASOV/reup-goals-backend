@@ -41,7 +41,7 @@ func main() {
 		log.Fatal("Configuration error: ", err)
 	}
 	jwtSecret := []byte(cfg.JWTSecret)
-	secureCookie := cfg.Environment == "production" || cfg.Environment == "staging"
+	secureCookie := cfg.SecureCookies || cfg.Environment == "production" || cfg.Environment == "staging"
 
 	database, err := db.Connect(cfg.ConnString(), db.PoolOptions{
 		MaxOpenConns: cfg.DBMaxOpenConns, MaxIdleConns: cfg.DBMaxIdleConns, ConnMaxLifetime: cfg.DBConnMaxLifetime,

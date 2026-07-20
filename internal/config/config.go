@@ -42,6 +42,7 @@ type Config struct {
 	HTTPWriteTimeout              time.Duration
 	HTTPIdleTimeout               time.Duration
 	BrowserAuthOnly               bool
+	SecureCookies                 bool
 	PrivacyMode                   string
 	DataResidencyRegion           string
 	CrossBorderTransferRegistered bool
@@ -183,6 +184,7 @@ func Load() *Config {
 		HTTPWriteTimeout:              parseDurationEnv("HTTP_WRITE_TIMEOUT", 6*time.Minute),
 		HTTPIdleTimeout:               parseDurationEnv("HTTP_IDLE_TIMEOUT", 90*time.Second),
 		BrowserAuthOnly:               parseBoolEnv("BROWSER_AUTH_ONLY"),
+		SecureCookies:                 parseBoolEnv("COOKIE_SECURE"),
 		PrivacyMode:                   privacyMode,
 		DataResidencyRegion:           strings.ToLower(strings.TrimSpace(os.Getenv("DATA_RESIDENCY_REGION"))),
 		CrossBorderTransferRegistered: parseBoolEnv("CROSS_BORDER_TRANSFER_REGISTERED"),

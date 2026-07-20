@@ -90,3 +90,11 @@ func TestValidateProductionPrivacyControls(t *testing.T) {
 		t.Fatalf("expected valid dual-region config, got %v", err)
 	}
 }
+
+func TestLoadSecureCookieOverride(t *testing.T) {
+	t.Setenv("COOKIE_SECURE", "true")
+	config := Load()
+	if !config.SecureCookies {
+		t.Fatal("expected COOKIE_SECURE to enable secure session cookies")
+	}
+}
