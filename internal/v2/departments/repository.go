@@ -461,7 +461,7 @@ func (s *Store) documents(ctx context.Context, workspaceID int, entityType strin
 		FROM v2_entity_document_links link
 		JOIN strategic_documents document ON document.id=link.document_id AND document.workspace_id=link.workspace_id
 		WHERE link.workspace_id=$1 AND link.entity_type=$2 AND link.entity_id=$3
-		ORDER BY document.updated_at DESC, document.id DESC
+		ORDER BY document.generated_at DESC, document.id DESC
 	`, workspaceID, entityType, entityID)
 	if err != nil {
 		return nil, err
