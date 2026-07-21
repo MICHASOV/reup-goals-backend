@@ -109,7 +109,7 @@ func (c *OpenAIClient) buildHTTPClient() (*http.Client, error) {
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 75 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
 	}
 
 	return &http.Client{Transport: transport}, nil
@@ -125,7 +125,7 @@ func defaultOpenAITransport() *http.Transport {
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 75 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
 	}
 }
 
