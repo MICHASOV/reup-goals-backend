@@ -164,7 +164,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	rawTurnInput, _ := json.Marshal(turnInput)
 	input := string(rawTurnInput)
 	vectorStoreIDs := vectorStoreIDsFromSession(session)
-	if s.contextIndex != nil {
+	if s.contextIndex != nil && hasStructuredKnowledgeContext(state) {
 		indexedIDs, indexErr := s.contextIndex.Available(ctx, workspaceID)
 		if indexErr == nil && len(indexedIDs) > 0 {
 			vectorStoreIDs = indexedIDs
@@ -273,6 +273,10 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		OpenAIResponseID:     result.ResponseID,
 		Pipeline:             finalState.Pipeline,
 	}, nil
+}
+
+func hasStructuredKnowledgeContext(state StateResponse) bool {
+	return state.Snapshot != nil || len(state.Claims) > 0 || len(state.Documents) > 0 || state.QualityReport != nil
 }
 
 func (s *Service) UploadFile(ctx context.Context, workspaceID int, userID int, filename string, contentType string, sizeBytes int64, file io.Reader) (FileUploadResponse, error) {

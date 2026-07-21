@@ -360,6 +360,12 @@ The knowledge base is sufficient to move into strategy work only when:
 - there are no critical_blockers;
 - the basic business profile is complete enough.
 
+A critical_blocker means that a useful strategic session cannot yet be conducted because the business itself, its stage, its evidence status, its central tension, or its constraints are not understandable, or because unresolved contradictions make the available context unusable.
+
+Do not classify a known business uncertainty as a critical_blocker merely because the company has not resolved it yet. In particular, for an early-stage business, the absence of paying customers, validated demand, retention data, final unit economics, or a completed legal and payment setup is normally a limitation or a strategic research question, not a blocker to strategy work. These gaps may be exactly what the strategy must organize and validate. They become critical blockers only when their current status is unknown or the available context is too vague to define an appropriate validation direction.
+
+Judge readiness for a strategic session at the company's current stage. Do not judge whether the company is already ready to scale, launch publicly, or execute a mature growth strategy.
+
 The basic business profile requires:
 1. product_or_service - what the company sells or intends to sell is understandable;
 2. customer_or_segment - the target customer or working customer hypothesis is understandable;
@@ -368,7 +374,7 @@ The basic business profile requires:
 5. main_problem - the main current problem, bottleneck, or strategic tension is understandable;
 6. key_constraints - the key constraints are documented: money, team, time, technology, sales, operations, or other relevant limits.
 
-Do not require perfect information before strategy work can begin. For an early-stage business, it is acceptable that revenue, retention, CAC, or unit economics are missing if the absence is clearly documented and the strategy should focus on validation.
+Do not require perfect information before strategy work can begin. For an early-stage business, it is acceptable that revenue, retention, CAC, validated willingness to pay, or unit economics are missing if the absence is clearly documented and the strategy should focus on validation. A readiness score of at least 60 with a complete basic profile should normally allow strategy work unless a genuine blocker, as defined above, remains.
 
 If the score is at least 60 but the basic profile is incomplete, can_start_strategy must be false and missing_gate_items must list the missing gate items.
 

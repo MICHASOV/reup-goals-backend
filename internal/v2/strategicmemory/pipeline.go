@@ -219,8 +219,14 @@ func (s *Service) extractKnowledgeSourceChunk(ctx context.Context, workspaceID i
 		"existing_agenda":   limitAgendaForContext(agenda, 120),
 		"existing_snapshot": snapshot,
 	}
+	vectorStoreIDs, indexed := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
+	if indexed {
+		delete(input, "existing_claims")
+		delete(input, "existing_agenda")
+		delete(input, "existing_snapshot")
+		input["current_workspace_context"] = "Use file_search to compare the new sources with current claims, open questions, and the latest snapshot. Extract only new or changed information and avoid duplicates."
+	}
 	rawInput, _ := json.Marshal(input)
-	vectorStoreIDs, _ := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
 	workerAI := s.ai.ForModel(knowledgeExtractionModel)
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "knowledge_base_deferred_extractor", StrategicMemoryPromptVersion)
 	started := time.Now()
@@ -285,8 +291,15 @@ func (s *Service) compileKnowledgeDocuments(ctx context.Context, workspaceID int
 		"quality_report":        report,
 		"uploaded_file_catalog": state.Files,
 	}
+	vectorStoreIDs, indexed := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
+	if indexed {
+		delete(input, "knowledge_claims")
+		delete(input, "research_agenda")
+		delete(input, "current_snapshot")
+		delete(input, "current_documents")
+		input["current_workspace_context"] = "Use file_search as the source of truth for all current claims, sources, open questions, contradictions, and existing documents."
+	}
 	rawInput, _ := json.Marshal(input)
-	vectorStoreIDs, _ := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
 	workerAI := s.ai.ForModel(knowledgeDocumentModel)
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "knowledge_base_document_compiler", StrategicMemoryPromptVersion)
 	started := time.Now()
