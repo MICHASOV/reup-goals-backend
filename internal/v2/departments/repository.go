@@ -345,8 +345,7 @@ func (s *Store) SetResponsibility(ctx context.Context, workspaceID int, input Re
 	if err := validateDepartments(ctx, tx, workspaceID, ids); err != nil {
 		return ResponsibilityView{}, err
 	}
-	table, column := responsibilityTable(input.EntityType)
-	if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE workspace_id=$1 AND "+column+"=$2", workspaceID, input.EntityID); err != nil {
+	if err := clearResponsibility(ctx, tx, workspaceID, input.EntityType, input.EntityID); err != nil {
 		return ResponsibilityView{}, err
 	}
 	for _, id := range ids {
@@ -354,7 +353,7 @@ func (s *Store) SetResponsibility(ctx context.Context, workspaceID int, input Re
 		if id == input.LeadDepartmentID {
 			role = ResponsibilityLead
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO "+table+" (workspace_id, "+column+", department_id, role) VALUES ($1, $2, $3, $4)", workspaceID, input.EntityID, id, role); err != nil {
+		if err := insertResponsibility(ctx, tx, workspaceID, input.EntityType, input.EntityID, id, role); err != nil {
 			return ResponsibilityView{}, err
 		}
 	}
@@ -557,11 +556,28 @@ func validateEntity(ctx context.Context, tx *sql.Tx, workspaceID int, entityType
 	return nil
 }
 
-func responsibilityTable(entityType string) (string, string) {
+func clearResponsibility(ctx context.Context, tx *sql.Tx, workspaceID int, entityType string, entityID int) error {
 	if entityType == EntityProject {
-		return "v2_project_departments", "project_id"
+		_, err := tx.ExecContext(ctx, `DELETE FROM v2_project_departments WHERE workspace_id=$1 AND project_id=$2`, workspaceID, entityID)
+		return err
 	}
-	return "v2_workstream_departments", "workstream_id"
+	_, err := tx.ExecContext(ctx, `DELETE FROM v2_workstream_departments WHERE workspace_id=$1 AND workstream_id=$2`, workspaceID, entityID)
+	return err
+}
+
+func insertResponsibility(ctx context.Context, tx *sql.Tx, workspaceID int, entityType string, entityID int, departmentID int, role string) error {
+	if entityType == EntityProject {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO v2_project_departments (workspace_id, project_id, department_id, role)
+			VALUES ($1, $2, $3, $4)
+		`, workspaceID, entityID, departmentID, role)
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO v2_workstream_departments (workspace_id, workstream_id, department_id, role)
+		VALUES ($1, $2, $3, $4)
+	`, workspaceID, entityID, departmentID, role)
+	return err
 }
 
 func normalizeKPIs(items []KPI) []KPI {
