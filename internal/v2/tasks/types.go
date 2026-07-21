@@ -236,6 +236,7 @@ type TaskInput struct {
 	SecondaryWorkstreamIDs []int   `json:"secondary_workstream_ids"`
 	PriorityOrder          *int    `json:"priority_order"`
 	OwnerUserID            *int    `json:"owner_user_id"`
+	ClearOwner             bool    `json:"clear_owner"`
 	DueDate                *string `json:"due_date"`
 	SourceType             *string `json:"source_type"`
 	SourceID               *int    `json:"source_id"`

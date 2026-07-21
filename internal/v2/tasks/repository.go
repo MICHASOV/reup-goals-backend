@@ -444,7 +444,9 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 		departmentID = *input.DepartmentID
 	}
 	ownerUserID := current.OwnerUserID
-	if input.OwnerUserID != nil {
+	if input.ClearOwner {
+		ownerUserID = nil
+	} else if input.OwnerUserID != nil {
 		ownerUserID = input.OwnerUserID
 	}
 	dueDate := current.DueDate
