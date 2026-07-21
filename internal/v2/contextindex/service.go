@@ -127,7 +127,7 @@ var snapshotSections = []snapshotSection{
 	{Title: "Latest strategy readiness", Query: `
 		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.id), '[]'::jsonb)::text
 		FROM (
-			SELECT id, verdict, can_synthesize, overall_score, confidence, report_json, completed_at
+			SELECT id, verdict, can_synthesize, confidence, report_json, completed_at
 			FROM v2_strategy_readiness_runs
 			WHERE workspace_id=$1 AND status='completed'
 			ORDER BY created_at DESC, id DESC LIMIT 1
