@@ -201,7 +201,8 @@ Accuracy rules:
 
 Writing and traceability rules:
 - write each document as an internal company working document, not as an external analyst's notes about the company;
-- use the primary language of the business context consistently throughout the document; preserve product names and necessary technical terms, but do not switch languages gratuitously inside headings or prose;
+- write all headings, prose, table labels, and ordinary business terms in the output_language specified in the input; preserve only product names, trademarks, technology names, and canonical metric abbreviations in their original form;
+- do not produce mixed-language sentences when an ordinary equivalent exists in output_language;
 - use only claim IDs that are explicitly present in claim_reference_catalog or retrieved knowledge claims;
 - return those IDs only in source_claim_ids; never print claim IDs, source IDs, retrieval notes, or an "IDs used" section inside the human-facing Markdown;
 - if a statement is derived only from an open question or an auditor assessment rather than a claim, present it as an open question and do not invent a source_claim_id;

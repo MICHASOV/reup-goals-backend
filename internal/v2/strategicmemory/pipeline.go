@@ -19,7 +19,7 @@ const (
 	knowledgeCompilerMaxOutputTokens   = 24000
 	knowledgeSourceChunkRunes          = 120000
 	knowledgeCandidateTimeout          = 9 * time.Minute
-	knowledgeDocumentPromptVersion     = "knowledge_document_compiler_v1_1"
+	knowledgeDocumentPromptVersion     = "knowledge_document_compiler_v1_2"
 )
 
 type knowledgeCandidateJobPayload struct {
@@ -284,6 +284,7 @@ func (s *Service) compileKnowledgeDocuments(ctx context.Context, workspaceID int
 	input := map[string]any{
 		"workspace_id":            workspaceID,
 		"compilation_mode":        "full",
+		"output_language":         "Russian",
 		"document_catalog":        strategicDocumentCatalog(),
 		"knowledge_claims":        claims,
 		"research_agenda":         agenda,
@@ -307,7 +308,7 @@ func (s *Service) compileKnowledgeDocuments(ctx context.Context, workspaceID int
 	started := time.Now()
 	result, err := workerAI.GenerateJSONNative(aiCtx, documentVisualDesignerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDs,
-		PromptCacheKey:       fmt.Sprintf("reupgoals-knowledge-compiler-workspace-%d-v3", workspaceID),
+		PromptCacheKey:       fmt.Sprintf("reupgoals-knowledge-compiler-workspace-%d-v4", workspaceID),
 		MaxFileSearchResults: 15,
 		MaxOutputTokens:      knowledgeCompilerMaxOutputTokens,
 		RequestTimeout:       4 * time.Minute,
