@@ -1121,16 +1121,20 @@ func (s *Store) LogAIRun(ctx context.Context, workspaceID int, scenario string, 
 }
 
 func (s *Store) LogAIRunWithUsage(ctx context.Context, workspaceID int, scenario string, model string, promptVersion string, durationMs int64, inputTokens int, outputTokens int, status string, errorText string) {
-	_, _ = s.dbx.ExecContext(ctx, `
+	var runID int64
+	if err := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO strategic_ai_runs (
 			workspace_id, scenario, model, prompt_version, input_tokens,
 			output_tokens, duration_ms, status, error
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, workspaceID, scenario, model, promptVersion, inputTokens, outputTokens, durationMs, status, errorText)
+		RETURNING id
+	`, workspaceID, scenario, model, promptVersion, inputTokens, outputTokens, durationMs, status, errorText).Scan(&runID); err != nil {
+		return
+	}
 
 	usage := ai.Usage{InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens}
-	_, _ = s.dbx.ExecContext(ctx, `
+	if _, err := s.dbx.ExecContext(ctx, `
 		INSERT INTO v2_ai_call_logs (
 			workspace_id, ai_module, prompt_name, prompt_version, provider, model,
 			status, error, latency_ms, token_usage_input, token_usage_output,
@@ -1143,7 +1147,13 @@ func (s *Store) LogAIRunWithUsage(ctx context.Context, workspaceID int, scenario
 				AND created_at > NOW() - INTERVAL '30 seconds'
 		)
 	`, workspaceID, scenario, promptVersion, model, durationMs, inputTokens, outputTokens,
-		inputTokens+outputTokens, status, errorText, ai.EstimateCost(model, usage))
+		inputTokens+outputTokens, status, errorText, ai.EstimateCost(model, usage)); err != nil {
+		_, _ = s.dbx.ExecContext(ctx, `
+			UPDATE strategic_ai_runs
+			SET error=CASE WHEN error='' THEN $2 ELSE error || '; ' || $2 END
+			WHERE id=$1
+		`, runID, "cost_log_failed: "+err.Error())
+	}
 }
 
 func (s *Store) ListAIRuns(ctx context.Context, workspaceID int, limit int) ([]AIRun, error) {
