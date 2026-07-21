@@ -28,6 +28,7 @@ import (
 	"reup-goals-backend/internal/v2/bootstrap"
 	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/course"
+	"reup-goals-backend/internal/v2/departments"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/operations"
 	"reup-goals-backend/internal/v2/profile"
@@ -86,6 +87,7 @@ func main() {
 	aiPlatformHandler := aiplatform.NewHandler(database, cfg.AIAdminKey)
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
+	departmentHandler := departments.NewHandler(database)
 	workspaceContextIndex := contextindex.New(database, auditorAIClient)
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
 	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
@@ -155,6 +157,9 @@ func main() {
 	// V2 FOUNDATION
 	// -----------------------
 	mux.Handle("/api/v2/bootstrap", v2api.RequireAuth(database, jwtSecret, bootstrapHandler.Bootstrap))
+	mux.Handle("/api/v2/departments", v2api.RequireAuth(database, jwtSecret, departmentHandler.Departments))
+	mux.Handle("/api/v2/departments/", v2api.RequireAuth(database, jwtSecret, departmentHandler.Departments))
+	mux.Handle("/api/v2/responsibilities", v2api.RequireAuth(database, jwtSecret, departmentHandler.Responsibilities))
 	mux.Handle("/api/v2/audio/transcriptions", v2api.RequireAuth(database, jwtSecret, audioHandler.Transcriptions))
 	mux.Handle("/api/v2/ai-actions", v2api.RequireAuth(database, jwtSecret, aiActionsHandler.Actions))
 	mux.Handle("/api/v2/ai-actions/", v2api.RequireAuth(database, jwtSecret, aiActionsHandler.Actions))

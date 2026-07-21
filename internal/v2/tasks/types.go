@@ -127,6 +127,7 @@ type Task struct {
 	CourseID               int             `json:"course_id"`
 	TacticalPlanID         int             `json:"tactical_plan_id"`
 	WorkstreamID           int             `json:"workstream_id"`
+	DepartmentID           int             `json:"department_id"`
 	ProjectID              *int            `json:"project_id"`
 	RiskID                 *int            `json:"risk_id"`
 	OpportunityID          *int            `json:"opportunity_id"`
@@ -214,6 +215,7 @@ type WorkstreamResponse struct {
 
 type TaskInput struct {
 	WorkstreamID           int     `json:"workstream_id"`
+	DepartmentID           *int    `json:"department_id"`
 	ProjectID              *int    `json:"project_id"`
 	ClearProject           bool    `json:"clear_project"`
 	RiskID                 *int    `json:"risk_id"`

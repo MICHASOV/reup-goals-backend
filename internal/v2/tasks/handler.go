@@ -199,6 +199,9 @@ func (h *Handler) tasks(w http.ResponseWriter, r *http.Request, workspaceID int,
 		if workstreamID, ok := intQuery(r, "workstream_id"); ok {
 			filter.WorkstreamID = &workstreamID
 		}
+		if departmentID, ok := intQuery(r, "department_id"); ok {
+			filter.DepartmentID = &departmentID
+		}
 		if projectID, ok := intQuery(r, "project_id"); ok {
 			filter.ProjectID = &projectID
 		}

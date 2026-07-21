@@ -2213,6 +2213,184 @@ var migrations = []Migration{
 			ON CONFLICT (workspace_id) DO NOTHING;
 		`,
 	},
+	{
+		ID: "20260721_037_departments_and_responsibility",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_departments (
+				id SERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				name TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				responsibility TEXT NOT NULL DEFAULT '',
+				manager_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				kpis_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				status TEXT NOT NULL DEFAULT 'active',
+				sort_order INTEGER NOT NULL DEFAULT 0,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				archived_at TIMESTAMPTZ NULL,
+				CHECK (status IN ('active', 'archived'))
+			);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_departments_workspace_name
+				ON v2_departments (workspace_id, lower(name))
+				WHERE archived_at IS NULL;
+			CREATE INDEX IF NOT EXISTS idx_v2_departments_workspace
+				ON v2_departments (workspace_id, status, sort_order, id);
+
+			CREATE TABLE IF NOT EXISTS v2_department_members (
+				department_id INTEGER NOT NULL REFERENCES v2_departments(id) ON DELETE CASCADE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				role TEXT NOT NULL DEFAULT 'member',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (department_id, user_id),
+				CHECK (role IN ('manager', 'member'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_v2_department_members_workspace
+				ON v2_department_members (workspace_id, user_id);
+
+			CREATE TABLE IF NOT EXISTS v2_workstream_departments (
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				workstream_id INTEGER NOT NULL REFERENCES v2_tactical_workstreams(id) ON DELETE CASCADE,
+				department_id INTEGER NOT NULL REFERENCES v2_departments(id) ON DELETE CASCADE,
+				role TEXT NOT NULL DEFAULT 'participant',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (workstream_id, department_id),
+				CHECK (role IN ('lead', 'participant'))
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_workstream_departments_lead
+				ON v2_workstream_departments (workstream_id)
+				WHERE role='lead';
+
+			CREATE TABLE IF NOT EXISTS v2_project_departments (
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				project_id INTEGER NOT NULL REFERENCES v2_tactical_projects(id) ON DELETE CASCADE,
+				department_id INTEGER NOT NULL REFERENCES v2_departments(id) ON DELETE CASCADE,
+				role TEXT NOT NULL DEFAULT 'participant',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (project_id, department_id),
+				CHECK (role IN ('lead', 'participant'))
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_project_departments_lead
+				ON v2_project_departments (project_id)
+				WHERE role='lead';
+
+			CREATE TABLE IF NOT EXISTS v2_entity_document_links (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				entity_type TEXT NOT NULL,
+				entity_id INTEGER NOT NULL,
+				document_id INTEGER NOT NULL REFERENCES strategic_documents(id) ON DELETE CASCADE,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE (workspace_id, entity_type, entity_id, document_id),
+				CHECK (entity_type IN ('department', 'workstream', 'project'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_v2_entity_document_links_entity
+				ON v2_entity_document_links (workspace_id, entity_type, entity_id);
+
+			ALTER TABLE v2_tasks
+				ADD COLUMN IF NOT EXISTS department_id INTEGER NULL REFERENCES v2_departments(id) ON DELETE RESTRICT;
+			CREATE INDEX IF NOT EXISTS idx_v2_tasks_department
+				ON v2_tasks (workspace_id, department_id, status, updated_at DESC);
+
+			INSERT INTO v2_departments (
+				workspace_id, name, description, responsibility, manager_user_id, status, sort_order, created_by
+			)
+			SELECT workspace.id, 'Компания', 'Общая команда workspace',
+				'Ответственность по умолчанию до создания функциональных отделов.',
+				workspace.owner_user_id, 'active', 0, workspace.owner_user_id
+			FROM workspaces workspace
+			WHERE workspace.archived_at IS NULL
+			ON CONFLICT DO NOTHING;
+
+			INSERT INTO v2_department_members (department_id, workspace_id, user_id, role)
+			SELECT department.id, department.workspace_id, workspace.owner_user_id, 'manager'
+			FROM v2_departments department
+			JOIN workspaces workspace ON workspace.id=department.workspace_id
+			WHERE department.archived_at IS NULL
+			ON CONFLICT (department_id, user_id) DO NOTHING;
+
+			UPDATE v2_tasks task
+			SET department_id=(
+				SELECT candidate.id
+				FROM v2_departments candidate
+				WHERE candidate.workspace_id=task.workspace_id AND candidate.archived_at IS NULL
+				ORDER BY candidate.sort_order ASC, candidate.id ASC
+				LIMIT 1
+			)
+			WHERE task.department_id IS NULL;
+
+			INSERT INTO v2_workstream_departments (workspace_id, workstream_id, department_id, role)
+			SELECT workstream.workspace_id, workstream.id, department.id, 'lead'
+			FROM v2_tactical_workstreams workstream
+			JOIN LATERAL (
+				SELECT id
+				FROM v2_departments candidate
+				WHERE candidate.workspace_id=workstream.workspace_id AND candidate.archived_at IS NULL
+				ORDER BY candidate.sort_order ASC, candidate.id ASC
+				LIMIT 1
+			) department ON true
+			WHERE workstream.archived_at IS NULL
+			ON CONFLICT (workstream_id, department_id) DO NOTHING;
+
+			INSERT INTO v2_project_departments (workspace_id, project_id, department_id, role)
+			SELECT project.workspace_id, project.id, department.id, 'lead'
+			FROM v2_tactical_projects project
+			JOIN LATERAL (
+				SELECT id
+				FROM v2_departments candidate
+				WHERE candidate.workspace_id=project.workspace_id AND candidate.archived_at IS NULL
+				ORDER BY candidate.sort_order ASC, candidate.id ASC
+				LIMIT 1
+			) department ON true
+			WHERE project.archived_at IS NULL
+			ON CONFLICT (project_id, department_id) DO NOTHING;
+
+			CREATE OR REPLACE FUNCTION v2_attach_default_workstream_department()
+			RETURNS TRIGGER AS $$
+			BEGIN
+				INSERT INTO v2_workstream_departments (workspace_id, workstream_id, department_id, role)
+				SELECT NEW.workspace_id, NEW.id, department.id, 'lead'
+				FROM v2_departments department
+				WHERE department.workspace_id=NEW.workspace_id AND department.archived_at IS NULL
+				ORDER BY department.sort_order ASC, department.id ASC
+				LIMIT 1
+				ON CONFLICT (workstream_id, department_id) DO NOTHING;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+
+			DROP TRIGGER IF EXISTS trg_v2_workstream_default_department ON v2_tactical_workstreams;
+			CREATE TRIGGER trg_v2_workstream_default_department
+			AFTER INSERT ON v2_tactical_workstreams
+			FOR EACH ROW EXECUTE FUNCTION v2_attach_default_workstream_department();
+
+			CREATE OR REPLACE FUNCTION v2_attach_default_project_department()
+			RETURNS TRIGGER AS $$
+			BEGIN
+				INSERT INTO v2_project_departments (workspace_id, project_id, department_id, role)
+				SELECT NEW.workspace_id, NEW.id, department.id, 'lead'
+				FROM v2_departments department
+				WHERE department.workspace_id=NEW.workspace_id AND department.archived_at IS NULL
+				ORDER BY department.sort_order ASC, department.id ASC
+				LIMIT 1
+				ON CONFLICT (project_id, department_id) DO NOTHING;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+
+			DROP TRIGGER IF EXISTS trg_v2_project_default_department ON v2_tactical_projects;
+			CREATE TRIGGER trg_v2_project_default_department
+			AFTER INSERT ON v2_tactical_projects
+			FOR EACH ROW EXECUTE FUNCTION v2_attach_default_project_department();
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

@@ -30,6 +30,7 @@ const (
 	EntityPlan        = "tactical_plan"
 	EntityWorkstream  = "workstream"
 	EntityProject     = "project"
+	EntityDepartment  = "department"
 	EntityRisk        = "risk"
 	EntityOpportunity = "opportunity"
 

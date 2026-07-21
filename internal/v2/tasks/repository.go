@@ -119,6 +119,7 @@ func (s *Store) Workstream(ctx context.Context, workspaceID int, workstreamID in
 type ListFilter struct {
 	Status          *string
 	WorkstreamID    *int
+	DepartmentID    *int
 	ProjectID       *int
 	Query           string
 	IncludeArchived bool
@@ -138,7 +139,7 @@ func (s *Store) List(ctx context.Context, workspaceID int, filter ListFilter) ([
 	}
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT
-			id, workspace_id, course_id, tactical_plan_id, workstream_id, project_id, risk_id,
+			id, workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
@@ -154,14 +155,15 @@ func (s *Store) List(ctx context.Context, workspaceID int, filter ListFilter) ([
 		WHERE task.workspace_id=$1
 			AND ($2::TEXT IS NULL OR status=$2)
 			AND ($3::INTEGER IS NULL OR workstream_id=$3)
-			AND ($4::INTEGER IS NULL OR project_id=$4)
-			AND ($5::BOOLEAN = TRUE OR archived_at IS NULL)
-			AND ($6::TEXT = '' OR title ILIKE '%' || $6 || '%' OR description ILIKE '%' || $6 || '%'
-				OR expected_result ILIKE '%' || $6 || '%' OR success_criteria ILIKE '%' || $6 || '%' OR why_now ILIKE '%' || $6 || '%')
+			AND ($4::INTEGER IS NULL OR department_id=$4)
+			AND ($5::INTEGER IS NULL OR project_id=$5)
+			AND ($6::BOOLEAN = TRUE OR archived_at IS NULL)
+			AND ($7::TEXT = '' OR title ILIKE '%' || $7 || '%' OR description ILIKE '%' || $7 || '%'
+				OR expected_result ILIKE '%' || $7 || '%' OR success_criteria ILIKE '%' || $7 || '%' OR why_now ILIKE '%' || $7 || '%')
 		ORDER BY COALESCE(task.manual_priority_score, latest_evaluation.priority_score, 0) DESC,
 			COALESCE(task.priority_order, 9999), task.updated_at DESC, task.id DESC
-		LIMIT $7 OFFSET $8
-	`, workspaceID, nullableString(filter.Status), nullableInt(filter.WorkstreamID), nullableInt(filter.ProjectID), filter.IncludeArchived, strings.TrimSpace(filter.Query), filter.Limit, filter.Offset)
+		LIMIT $8 OFFSET $9
+	`, workspaceID, nullableString(filter.Status), nullableInt(filter.WorkstreamID), nullableInt(filter.DepartmentID), nullableInt(filter.ProjectID), filter.IncludeArchived, strings.TrimSpace(filter.Query), filter.Limit, filter.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -207,11 +209,12 @@ func (s *Store) Count(ctx context.Context, workspaceID int, filter ListFilter) (
 		WHERE workspace_id=$1
 			AND ($2::TEXT IS NULL OR status=$2)
 			AND ($3::INTEGER IS NULL OR workstream_id=$3)
-			AND ($4::INTEGER IS NULL OR project_id=$4)
-			AND ($5::BOOLEAN = TRUE OR archived_at IS NULL)
-			AND ($6::TEXT = '' OR title ILIKE '%' || $6 || '%' OR description ILIKE '%' || $6 || '%'
-				OR expected_result ILIKE '%' || $6 || '%' OR success_criteria ILIKE '%' || $6 || '%' OR why_now ILIKE '%' || $6 || '%')
-	`, workspaceID, nullableString(filter.Status), nullableInt(filter.WorkstreamID), nullableInt(filter.ProjectID), filter.IncludeArchived, strings.TrimSpace(filter.Query)).Scan(&count)
+			AND ($4::INTEGER IS NULL OR department_id=$4)
+			AND ($5::INTEGER IS NULL OR project_id=$5)
+			AND ($6::BOOLEAN = TRUE OR archived_at IS NULL)
+			AND ($7::TEXT = '' OR title ILIKE '%' || $7 || '%' OR description ILIKE '%' || $7 || '%'
+				OR expected_result ILIKE '%' || $7 || '%' OR success_criteria ILIKE '%' || $7 || '%' OR why_now ILIKE '%' || $7 || '%')
+	`, workspaceID, nullableString(filter.Status), nullableInt(filter.WorkstreamID), nullableInt(filter.DepartmentID), nullableInt(filter.ProjectID), filter.IncludeArchived, strings.TrimSpace(filter.Query)).Scan(&count)
 	return count, err
 }
 
@@ -228,7 +231,7 @@ func (s *Store) archiveCompletedTasks(ctx context.Context, workspaceID int) erro
 func (s *Store) Get(ctx context.Context, workspaceID int, taskID int) (Task, error) {
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT
-			id, workspace_id, course_id, tactical_plan_id, workstream_id, project_id, risk_id,
+			id, workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
@@ -290,6 +293,10 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 	if err := s.validateOwner(ctx, workspaceID, input.OwnerUserID); err != nil {
 		return Task{}, err
 	}
+	departmentID, err := s.resolveDepartment(ctx, workspaceID, input.DepartmentID, workstream.ID, input.ProjectID)
+	if err != nil {
+		return Task{}, err
+	}
 	secondaryWorkstreamIDs, err := s.validateSecondaryWorkstreams(ctx, workspaceID, ctxData.Plan.ID, workstream.ID, input.SecondaryWorkstreamIDs)
 	if err != nil {
 		return Task{}, err
@@ -305,24 +312,24 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 
 	row := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_tasks (
-			workspace_id, course_id, tactical_plan_id, workstream_id, project_id, risk_id,
+			workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, owner_user_id, due_date, source_type, source_id, created_by, updated_by,
 			started_at, completed_at, archived_at
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::DATE, $19, $20, $21, $21,
-			CASE WHEN $13=$22 THEN NOW() ELSE NULL END,
-			CASE WHEN $13=$23 THEN NOW() ELSE NULL END,
-			CASE WHEN $13=$24 THEN NOW() ELSE NULL END
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::DATE, $20, $21, $22, $22,
+			CASE WHEN $14=$23 THEN NOW() ELSE NULL END,
+			CASE WHEN $14=$24 THEN NOW() ELSE NULL END,
+			CASE WHEN $14=$25 THEN NOW() ELSE NULL END
 		)
 		RETURNING
-			id, workspace_id, course_id, tactical_plan_id, workstream_id, project_id, risk_id,
+			id, workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
 			updated_at, started_at, completed_at, archived_at
-	`, workspaceID, ctxData.Course.ID, ctxData.Plan.ID, workstream.ID, nullableInt(input.ProjectID),
+	`, workspaceID, ctxData.Course.ID, ctxData.Plan.ID, workstream.ID, departmentID, nullableInt(input.ProjectID),
 		nullableInt(input.RiskID), nullableInt(input.OpportunityID), strings.TrimSpace(*input.Title),
 		valueOrEmpty(input.Description), valueOrEmpty(input.ExpectedResult), valueOrEmpty(input.SuccessCriteria),
 		valueOrEmpty(input.WhyNow), status, blocked, backlogCategory, nullableInt(input.PriorityOrder), nullableInt(input.OwnerUserID),
@@ -392,6 +399,10 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 	} else if input.ProjectID != nil {
 		projectID = input.ProjectID
 	}
+	departmentID := current.DepartmentID
+	if input.DepartmentID != nil {
+		departmentID = *input.DepartmentID
+	}
 	ownerUserID := current.OwnerUserID
 	if input.OwnerUserID != nil {
 		ownerUserID = input.OwnerUserID
@@ -420,6 +431,9 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 	if err := s.validateOwner(ctx, workspaceID, ownerUserID); err != nil {
 		return Task{}, err
 	}
+	if _, err := s.resolveDepartment(ctx, workspaceID, &departmentID, workstream.ID, projectID); err != nil {
+		return Task{}, err
+	}
 	secondaryWorkstreamIDs := current.SecondaryWorkstreamIDs
 	if input.SecondaryWorkstreamIDs != nil {
 		secondaryWorkstreamIDs, err = s.validateSecondaryWorkstreams(ctx, workspaceID, current.TacticalPlanID, workstream.ID, input.SecondaryWorkstreamIDs)
@@ -438,18 +452,19 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 			blocked=$6,
 			backlog_category=$7,
 			project_id=$8,
-			owner_user_id=$9,
-			due_date=$10::DATE,
-			updated_by=$11,
+			department_id=$9,
+			owner_user_id=$10,
+			due_date=$11::DATE,
+			updated_by=$12,
 			updated_at=NOW()
-		WHERE id=$12 AND workspace_id=$13
+		WHERE id=$13 AND workspace_id=$14
 		RETURNING
-			id, workspace_id, course_id, tactical_plan_id, workstream_id, project_id, risk_id,
+			id, workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
 			updated_at, started_at, completed_at, archived_at
-	`, title, description, expectedResult, successCriteria, whyNow, blocked, backlogCategory, nullableInt(projectID), nullableInt(ownerUserID), nullableString(dueDate), userID, taskID, workspaceID)
+	`, title, description, expectedResult, successCriteria, whyNow, blocked, backlogCategory, nullableInt(projectID), departmentID, nullableInt(ownerUserID), nullableString(dueDate), userID, taskID, workspaceID)
 
 	task, err := scanTask(row)
 	if err != nil {
@@ -489,6 +504,53 @@ func (s *Store) validateOwner(ctx context.Context, workspaceID int, ownerUserID 
 	return nil
 }
 
+func (s *Store) resolveDepartment(ctx context.Context, workspaceID int, requested *int, workstreamID int, projectID *int) (int, error) {
+	if requested != nil {
+		if *requested <= 0 {
+			return 0, ErrForbidden
+		}
+		var exists bool
+		if err := s.dbx.QueryRowContext(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM v2_departments
+				WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
+			)
+		`, *requested, workspaceID).Scan(&exists); err != nil {
+			return 0, err
+		}
+		if !exists {
+			return 0, ErrForbidden
+		}
+		return *requested, nil
+	}
+
+	var departmentID int
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT candidate.department_id
+		FROM (
+			SELECT link.department_id, 0 AS priority
+			FROM v2_project_departments link
+			WHERE $2::INTEGER IS NOT NULL AND link.workspace_id=$1 AND link.project_id=$2 AND link.role='lead'
+			UNION ALL
+			SELECT link.department_id, 1 AS priority
+			FROM v2_workstream_departments link
+			WHERE link.workspace_id=$1 AND link.workstream_id=$3 AND link.role='lead'
+			UNION ALL
+			SELECT department.id, 2 AS priority
+			FROM v2_departments department
+			WHERE department.workspace_id=$1 AND department.archived_at IS NULL
+		) candidate
+		JOIN v2_departments department ON department.id=candidate.department_id
+		WHERE department.workspace_id=$1 AND department.archived_at IS NULL
+		ORDER BY candidate.priority, department.sort_order, department.id
+		LIMIT 1
+	`, workspaceID, nullableInt(projectID), workstreamID).Scan(&departmentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrForbidden
+	}
+	return departmentID, err
+}
+
 func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, taskID int, status string, priorityOrder *int) (Task, error) {
 	status = strings.TrimSpace(status)
 	if !ValidStatus(status) {
@@ -511,7 +573,7 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 			updated_at=NOW()
 		WHERE id=$7 AND workspace_id=$8
 		RETURNING
-			id, workspace_id, course_id, tactical_plan_id, workstream_id, project_id, risk_id,
+			id, workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
@@ -545,7 +607,7 @@ func (s *Store) SetManualPriority(ctx context.Context, workspaceID int, userID i
 			updated_at=NOW()
 		WHERE id=$4 AND workspace_id=$5
 		RETURNING
-			id, workspace_id, course_id, tactical_plan_id, workstream_id, project_id, risk_id,
+			id, workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
@@ -952,6 +1014,7 @@ type scanner interface {
 
 func scanTask(scanner scanner) (Task, error) {
 	var task Task
+	var departmentID sql.NullInt64
 	var projectID sql.NullInt64
 	var riskID sql.NullInt64
 	var opportunityID sql.NullInt64
@@ -969,13 +1032,16 @@ func scanTask(scanner scanner) (Task, error) {
 
 	err := scanner.Scan(
 		&task.ID, &task.WorkspaceID, &task.CourseID, &task.TacticalPlanID, &task.WorkstreamID,
-		&projectID, &riskID, &opportunityID, &task.Title, &task.Description, &task.ExpectedResult,
+		&departmentID, &projectID, &riskID, &opportunityID, &task.Title, &task.Description, &task.ExpectedResult,
 		&task.SuccessCriteria, &task.WhyNow, &task.Status, &task.Blocked, &task.BacklogCategory, &priorityOrder, &manualPriorityScore,
 		&manualPriorityTier, &ownerUserID, &dueDate, &task.SourceType, &sourceID, &createdBy,
 		&updatedBy, &task.CreatedAt, &task.UpdatedAt, &startedAt, &completedAt, &archivedAt,
 	)
 	if err != nil {
 		return Task{}, err
+	}
+	if departmentID.Valid {
+		task.DepartmentID = int(departmentID.Int64)
 	}
 
 	task.ProjectID = intPtr(projectID)

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"reup-goals-backend/internal/v2/aiactions"
+	"reup-goals-backend/internal/v2/departments"
 )
 
 func (s *Store) CreateChatMessage(ctx context.Context, workspaceID int, userID *int, role string, content string, metadata any) (int, error) {
@@ -449,6 +450,8 @@ func (s *Store) ScopeContext(ctx context.Context, workspaceID int, scope *Tactic
 		return item, err
 	case EntityProject:
 		return s.projectByID(ctx, workspaceID, scope.EntityID)
+	case EntityDepartment:
+		return departments.NewStore(s.dbx).Get(ctx, workspaceID, scope.EntityID)
 	case EntityRisk:
 		return s.riskByID(ctx, workspaceID, scope.EntityID)
 	case EntityOpportunity:
@@ -463,7 +466,7 @@ func tacticsScopeKey(scope *TacticsMessageScope) (string, int) {
 		return EntityPlan, 0
 	}
 	switch strings.TrimSpace(scope.EntityType) {
-	case EntityWorkstream, EntityProject, EntityRisk, EntityOpportunity:
+	case EntityWorkstream, EntityProject, EntityDepartment, EntityRisk, EntityOpportunity:
 		return strings.TrimSpace(scope.EntityType), scope.EntityID
 	default:
 		return EntityPlan, 0
