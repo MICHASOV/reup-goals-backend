@@ -118,6 +118,18 @@ func TestParseStrategyFacilitatorOutputRejectsReplacementCharacters(t *testing.T
 	}
 }
 
+func TestParseStrategyFacilitatorOutputRejectsSerializedMessage(t *testing.T) {
+	_, err := parseStrategyFacilitatorOutput(`{
+		"message":"{\"next_question\":\"Что проверяем?\"}",
+		"session_status":"continue",
+		"status_reason":"",
+		"remaining_uncertainties":[]
+	}`)
+	if err == nil {
+		t.Fatal("serialized JSON must not reach the strategy chat")
+	}
+}
+
 func TestMessagesThroughIDExcludesNewerTurns(t *testing.T) {
 	messages := []StrategyChatMessage{{ID: 10}, {ID: 11}, {ID: 12}}
 	filtered := messagesThroughID(messages, 11)

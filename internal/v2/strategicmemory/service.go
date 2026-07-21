@@ -205,16 +205,32 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 			return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
 		}
 	}
-	var turn auditorTurnOutput
-	if err := json.Unmarshal([]byte(result.Text), &turn); err != nil || strings.TrimSpace(turn.Reply) == "" {
-		parseErr := err
-		if parseErr == nil {
-			parseErr = fmt.Errorf("business auditor response has empty reply")
-		} else {
-			parseErr = fmt.Errorf("business auditor response decode failed: %w", parseErr)
-		}
+	turn, parseErr := parseAuditorTurn(result.Text)
+	if parseErr != nil {
 		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
-		return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
+		started = time.Now()
+		result, err = s.ai.GenerateJSONNative(aiCtx, businessAuditorPrompt+contextindex.RetrievalInstructions, "Repair your previous response. Return valid JSON matching the required output contract. The reply field must contain natural user-facing prose, never JSON or a serialized object. Preserve the intended meaning and do not ask the user to repeat anything.", ai.ResponseContextOptions{
+			UseConversation:      true,
+			ConversationID:       result.ConversationID,
+			VectorStoreIDs:       vectorStoreIDs,
+			CompactThreshold:     session.CompactThreshold,
+			PromptCacheKey:       session.PromptCacheKey,
+			MaxFileSearchResults: 4,
+		})
+		duration = time.Since(started).Milliseconds()
+		if err == nil {
+			turn, parseErr = parseAuditorTurn(result.Text)
+		}
+		if err != nil || parseErr != nil {
+			errorText := "business auditor response repair failed"
+			if err != nil {
+				errorText = err.Error()
+			} else if parseErr != nil {
+				errorText = parseErr.Error()
+			}
+			s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
+			return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
+		}
 	}
 	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != session.ConversationID {
@@ -273,6 +289,21 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		OpenAIResponseID:     result.ResponseID,
 		Pipeline:             finalState.Pipeline,
 	}, nil
+}
+
+func parseAuditorTurn(raw string) (auditorTurnOutput, error) {
+	var turn auditorTurnOutput
+	if err := json.Unmarshal([]byte(raw), &turn); err != nil {
+		return auditorTurnOutput{}, fmt.Errorf("business auditor response decode failed: %w", err)
+	}
+	turn.Reply = strings.TrimSpace(turn.Reply)
+	if turn.Reply == "" {
+		return auditorTurnOutput{}, fmt.Errorf("business auditor response has empty reply")
+	}
+	if ai.LooksLikeJSONObject(turn.Reply) {
+		return auditorTurnOutput{}, fmt.Errorf("business auditor serialized a structured payload into reply")
+	}
+	return turn, nil
 }
 
 func hasStructuredKnowledgeContext(state StateResponse) bool {

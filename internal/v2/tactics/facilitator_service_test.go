@@ -69,6 +69,20 @@ func TestParseTacticsFacilitatorOutputRejectsEmptyMessage(t *testing.T) {
 	}
 }
 
+func TestParseTacticsFacilitatorOutputRejectsSerializedMessage(t *testing.T) {
+	_, err := parseTacticsFacilitatorOutput(`{
+		"message":"{\"next_move\":\"Создать проект\"}",
+		"session_status":"in_progress",
+		"current_focus":{},
+		"decisions_detected":[],
+		"open_questions":[],
+		"needs_strategy_review":false
+	}`)
+	if err == nil {
+		t.Fatal("serialized JSON must not reach the tactics chat")
+	}
+}
+
 func TestNormalizeTacticsStatusFallsBackToInProgress(t *testing.T) {
 	if got := normalizeTacticsStatus("unknown"); got != FacilitatorStatusInProgress {
 		t.Fatalf("unexpected fallback status: %s", got)

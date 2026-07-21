@@ -234,7 +234,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if parseErr != nil {
 		s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
 		started = time.Now()
-		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, "Your previous response could not be parsed as the required JSON object. Return the same intended answer again as valid JSON matching the required output contract. Do not ask the user to repeat anything.", ai.ResponseContextOptions{
+		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, "Repair your previous response. Return valid JSON matching the required output contract. The message field must contain natural user-facing prose, never JSON or a serialized object. Preserve the intended meaning and do not ask the user to repeat anything.", ai.ResponseContextOptions{
 			UseConversation:      true,
 			ConversationID:       result.ConversationID,
 			VectorStoreIDs:       vectorStoreIDs,
@@ -395,6 +395,9 @@ func parseTacticsFacilitatorOutput(raw string) (tacticsFacilitatorModelOutput, e
 	output.Message = cleanTacticsAssistantMessage(output.Message)
 	if output.Message == "" {
 		return tacticsFacilitatorModelOutput{}, fmt.Errorf("tactics facilitator returned empty message")
+	}
+	if ai.LooksLikeJSONObject(output.Message) {
+		return tacticsFacilitatorModelOutput{}, fmt.Errorf("tactics facilitator serialized a structured payload into message")
 	}
 	if !utf8.ValidString(output.Message) || strings.ContainsRune(output.Message, '\uFFFD') {
 		return tacticsFacilitatorModelOutput{}, fmt.Errorf("tactics facilitator returned invalid UTF-8")

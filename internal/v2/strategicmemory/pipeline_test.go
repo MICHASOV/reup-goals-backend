@@ -137,3 +137,14 @@ func TestAuditorTurnOutputContract(t *testing.T) {
 		t.Fatalf("structured turn contract failed: %+v, %v", turn, err)
 	}
 }
+
+func TestParseAuditorTurnRejectsSerializedReply(t *testing.T) {
+	_, err := parseAuditorTurn(`{
+		"reply":"{\"next_question\":\"Кто клиент?\"}",
+		"audit_candidate":false,
+		"candidate_reason":""
+	}`)
+	if err == nil {
+		t.Fatal("serialized JSON must not reach the knowledge chat")
+	}
+}

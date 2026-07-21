@@ -61,6 +61,16 @@ func TestParseBrainstormOutputKeepsOnlyValidScopedActions(t *testing.T) {
 	_ = unknownTaskID
 }
 
+func TestParseBrainstormOutputRejectsSerializedMessage(t *testing.T) {
+	_, err := parseBrainstormOutput(`{
+		"message":"{\"next_question\":\"Какой результат?\"}",
+		"task_actions":[]
+	}`, taskContextPack{})
+	if err == nil {
+		t.Fatal("serialized JSON must not reach the task chat")
+	}
+}
+
 func TestTaskPriorityUsesFiveTiersAndCapsRemoveRecommendation(t *testing.T) {
 	high := taskEvaluatorModelOutput{
 		StrategicRelevance: 95, CourseAlignment: 95, TacticalAlignment: 95,

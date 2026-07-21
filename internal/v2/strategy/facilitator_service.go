@@ -212,7 +212,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if parseErr != nil {
 		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_output_parse", s.ai.ModelName(), StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
 		started = time.Now()
-		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, "Your previous response could not be parsed as the required JSON object. Return the same intended answer again as valid JSON matching the required output contract. Do not ask the user to repeat anything.", ai.ResponseContextOptions{
+		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, "Repair your previous response. Return valid JSON matching the required output contract. The message field must contain natural user-facing prose, never JSON or a serialized object. Preserve the intended meaning and do not ask the user to repeat anything.", ai.ResponseContextOptions{
 			UseConversation:      true,
 			ConversationID:       result.ConversationID,
 			VectorStoreIDs:       vectorStoreIDs,
@@ -386,6 +386,9 @@ func parseStrategyFacilitatorOutput(raw string) (strategyFacilitatorModelOutput,
 	output.Message = cleanAssistantMessage(output.Message)
 	if output.Message == "" {
 		return strategyFacilitatorModelOutput{}, fmt.Errorf("strategy facilitator returned empty message")
+	}
+	if ai.LooksLikeJSONObject(output.Message) {
+		return strategyFacilitatorModelOutput{}, fmt.Errorf("strategy facilitator serialized a structured payload into message")
 	}
 	if strings.ContainsRune(output.Message, '\uFFFD') {
 		return strategyFacilitatorModelOutput{}, fmt.Errorf("strategy facilitator returned invalid UTF-8 replacement characters")

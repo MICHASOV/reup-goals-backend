@@ -134,7 +134,7 @@ func (s *BrainstormService) HandleMessage(
 	if err != nil {
 		s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_brainstorm", s.ai.ModelName(), taskBrainstormPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
 		started = time.Now()
-		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, "Your previous response could not be parsed as the required JSON object. Return the same intended answer again as valid JSON matching the required output contract. Do not ask the user to repeat anything.", ai.ResponseContextOptions{
+		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, "Repair your previous response. Return valid JSON matching the required output contract. The message field must contain natural user-facing prose, never JSON or a serialized object. Preserve the intended meaning and do not ask the user to repeat anything.", ai.ResponseContextOptions{
 			UseConversation: true, ConversationID: result.ConversationID, VectorStoreIDs: vectorStoreIDs,
 			CompactThreshold: session.CompactThreshold, PromptCacheKey: session.PromptCacheKey,
 			MaxFileSearchResults: 6, MaxOutputTokens: 8000, RequestTimeout: 2 * time.Minute,
@@ -355,6 +355,9 @@ func parseBrainstormOutput(raw string, pack taskContextPack) (brainstormModelOut
 	output.Message = strings.TrimSpace(output.Message)
 	if output.Message == "" {
 		return brainstormModelOutput{}, fmt.Errorf("empty_brainstorm_message")
+	}
+	if ai.LooksLikeJSONObject(output.Message) {
+		return brainstormModelOutput{}, fmt.Errorf("task brainstorm serialized a structured payload into message")
 	}
 	existingTasks := map[int]bool{}
 	for _, task := range pack.ExistingTasks {

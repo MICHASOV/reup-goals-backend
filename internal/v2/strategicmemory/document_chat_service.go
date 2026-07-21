@@ -138,6 +138,28 @@ func (s *Service) HandleDocumentChatMessage(
 		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_chat", s.ai.ModelName(), documentChatPromptVersion, duration, 0, 0, "failed", err.Error())
 		return DocumentChatMessageResponse{}, err
 	}
+	if ai.LooksLikeJSONObject(result.Text) {
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_chat", s.ai.ModelName(), documentChatPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", "document chat returned a serialized object")
+		started = time.Now()
+		result, err = s.ai.GenerateTextNative(aiCtx, businessDocumentCollaboratorPrompt+contextindex.RetrievalInstructions, "Rewrite your previous answer as natural user-facing prose. Do not return JSON or a serialized object. Preserve the intended meaning and do not ask the user to repeat anything.", ai.ResponseContextOptions{
+			UseConversation:      true,
+			ConversationID:       result.ConversationID,
+			VectorStoreIDs:       vectorStoreIDs,
+			CompactThreshold:     session.CompactThreshold,
+			PromptCacheKey:       session.PromptCacheKey,
+			MaxFileSearchResults: 6,
+			MaxOutputTokens:      6000,
+			RequestTimeout:       2 * time.Minute,
+		})
+		duration = time.Since(started).Milliseconds()
+		if err != nil || ai.LooksLikeJSONObject(result.Text) {
+			if err == nil {
+				err = fmt.Errorf("document chat returned a serialized object after repair")
+			}
+			s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_chat", s.ai.ModelName(), documentChatPromptVersion, duration, 0, 0, "failed", err.Error())
+			return DocumentChatMessageResponse{}, err
+		}
+	}
 
 	assistantText := cleanAssistantMessage(result.Text)
 	if assistantText == "" {
