@@ -28,6 +28,26 @@ type qualityAuditInputDocument struct {
 	MarkdownSize int    `json:"markdown_size"`
 }
 
+type qualityAuditInputClaim struct {
+	ID            int             `json:"id"`
+	ClaimText     string          `json:"claim_text"`
+	ClaimType     string          `json:"claim_type"`
+	TopicKey      string          `json:"topic_key"`
+	EvidenceLevel string          `json:"evidence_level"`
+	Confidence    string          `json:"confidence"`
+	SourceIDs     json.RawMessage `json:"source_ids,omitempty"`
+	Status        string          `json:"status"`
+}
+
+type qualityAuditInputAgendaItem struct {
+	ID           int    `json:"id"`
+	TopicKey     string `json:"topic_key"`
+	QuestionGoal string `json:"question_goal"`
+	WhyItMatters string `json:"why_it_matters"`
+	Status       string `json:"status"`
+	Priority     string `json:"priority"`
+}
+
 func (s *Service) queueQualityAudit(workspaceID int, changedDocumentTypes []string, trigger string) {
 	if s.jobs != nil {
 		notBefore := time.Now().UTC()
@@ -113,13 +133,13 @@ func (s *Service) evaluateQualityAudit(ctx context.Context, workspaceID int, cha
 		"changed_document_types":   changedDocumentTypes,
 		"document_catalog":         strategicDocumentCatalog(),
 		"documents":                documentsForQualityAuditContext(state.Documents),
-		"claims":                   claims,
-		"research_agenda":          agenda,
+		"claims":                   claimsForQualityAuditContext(claims),
+		"research_agenda":          agendaForQualityAuditContext(agenda),
 		"snapshot":                 state.Snapshot,
 		"quality_formula_contract": qualityFormulaContract(),
 	}
 	vectorStoreIDs, indexed := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
-	if indexed {
+	if indexed && trigger != "interview_candidate" {
 		delete(input, "documents")
 		delete(input, "claims")
 		delete(input, "research_agenda")
@@ -153,6 +173,29 @@ func (s *Service) evaluateQualityAudit(ctx context.Context, workspaceID int, cha
 	report.WorkspaceID = workspaceID
 	report.ChangedDocumentTypes = changedDocumentTypes
 	return finalizeQualityReport(report), nil
+}
+
+func claimsForQualityAuditContext(claims []Claim) []qualityAuditInputClaim {
+	result := make([]qualityAuditInputClaim, 0, len(claims))
+	for _, claim := range claims {
+		result = append(result, qualityAuditInputClaim{
+			ID: claim.ID, ClaimText: claim.ClaimText, ClaimType: claim.ClaimType,
+			TopicKey: claim.TopicKey, EvidenceLevel: claim.EvidenceLevel,
+			Confidence: claim.Confidence, SourceIDs: claim.SourceIDs, Status: claim.Status,
+		})
+	}
+	return result
+}
+
+func agendaForQualityAuditContext(agenda []ResearchAgendaItem) []qualityAuditInputAgendaItem {
+	result := make([]qualityAuditInputAgendaItem, 0, len(agenda))
+	for _, item := range agenda {
+		result = append(result, qualityAuditInputAgendaItem{
+			ID: item.ID, TopicKey: item.TopicKey, QuestionGoal: item.QuestionGoal,
+			WhyItMatters: item.WhyItMatters, Status: item.Status, Priority: item.Priority,
+		})
+	}
+	return result
 }
 
 func (s *Service) saveQualityReport(ctx context.Context, workspaceID int, report QualityReport) (QualityReport, error) {
