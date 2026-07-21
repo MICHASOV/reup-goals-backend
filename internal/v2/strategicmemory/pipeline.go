@@ -70,7 +70,7 @@ func (s *Service) queueKnowledgeCandidate(
 	}
 	if s.jobs != nil {
 		_, err = s.jobs.Enqueue(ctx, workspaceID, jobTypeKnowledgeCandidate,
-			fmt.Sprintf("revision:%d", payload.Revision), payload, 5, time.Now().UTC())
+			fmt.Sprintf("revision:%d", payload.Revision), payload, 3, time.Now().UTC())
 		if err != nil {
 			_ = s.store.SupersedeKnowledgeCandidate(ctx, workspaceID, payload.Revision)
 			return state, err

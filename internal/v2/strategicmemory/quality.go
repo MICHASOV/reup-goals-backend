@@ -136,6 +136,7 @@ func (s *Service) evaluateQualityAudit(ctx context.Context, workspaceID int, cha
 		PromptCacheKey:       fmt.Sprintf("reupgoals-quality-auditor-workspace-%d-v1", workspaceID),
 		MaxFileSearchResults: 8,
 		MaxOutputTokens:      qualityAuditMaxOutputTokens,
+		RequestTimeout:       qualityAuditTimeout,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
