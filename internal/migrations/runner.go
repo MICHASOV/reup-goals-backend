@@ -2457,6 +2457,18 @@ var migrations = []Migration{
 				CHECK (hypothesis_outcome IN ('', 'confirmed', 'disproved', 'unclear', 'not_applicable'));
 		`,
 	},
+	{
+		ID: "20260722_040_task_lifecycle_consistency",
+		SQL: `
+			UPDATE v2_tasks
+			SET completed_at=NULL
+			WHERE status NOT IN ('done', 'archived') AND completed_at IS NOT NULL;
+
+			UPDATE v2_tasks
+			SET archived_at=NULL
+			WHERE status <> 'archived' AND archived_at IS NOT NULL;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

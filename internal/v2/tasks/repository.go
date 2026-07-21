@@ -516,8 +516,8 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 			next_step=$18,
 			updated_by=$19,
 			started_at=CASE WHEN $13=$22 THEN COALESCE(started_at, NOW()) ELSE started_at END,
-			completed_at=CASE WHEN $13=$23 THEN COALESCE(completed_at, NOW()) ELSE NULL END,
-			archived_at=CASE WHEN $13=$24 THEN COALESCE(archived_at, NOW()) ELSE NULL END,
+			completed_at=CASE WHEN $13=$23 THEN CASE WHEN $25=$23 THEN COALESCE(completed_at, NOW()) ELSE NOW() END ELSE NULL END,
+			archived_at=CASE WHEN $13=$24 THEN CASE WHEN $25=$24 THEN COALESCE(archived_at, NOW()) ELSE NOW() END ELSE NULL END,
 			updated_at=NOW()
 		WHERE id=$20 AND workspace_id=$21
 		RETURNING
@@ -529,7 +529,7 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step
 	`, title, description, expectedResult, successCriteria, whyNow, blocked, backlogCategory, nullableInt(projectID), departmentID, workstreamID, nullableInt(ownerUserID), nullableString(dueDate),
 		status, completionResult, completionEvidence, completionLearning, hypothesisOutcome, nextStep, userID, taskID, workspaceID,
-		StatusInProgress, StatusDone, StatusArchived)
+		StatusInProgress, StatusDone, StatusArchived, current.Status)
 
 	task, err := scanTask(row)
 	if err != nil {
@@ -621,7 +621,8 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 	if !ValidStatus(status) {
 		return Task{}, ErrForbidden
 	}
-	if _, err := s.Get(ctx, workspaceID, taskID); errors.Is(err, sql.ErrNoRows) {
+	current, err := s.Get(ctx, workspaceID, taskID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, ErrForbidden
 	} else if err != nil {
 		return Task{}, err
@@ -633,8 +634,8 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 			priority_order=COALESCE($2, priority_order),
 			updated_by=$3,
 			started_at=CASE WHEN $1=$4 THEN COALESCE(started_at, NOW()) ELSE started_at END,
-			completed_at=CASE WHEN $1=$5 THEN COALESCE(completed_at, NOW()) ELSE NULL END,
-			archived_at=CASE WHEN $1=$6 THEN COALESCE(archived_at, NOW()) ELSE NULL END,
+			completed_at=CASE WHEN $1=$5 THEN CASE WHEN $9=$5 THEN COALESCE(completed_at, NOW()) ELSE NOW() END ELSE NULL END,
+			archived_at=CASE WHEN $1=$6 THEN CASE WHEN $9=$6 THEN COALESCE(archived_at, NOW()) ELSE NOW() END ELSE NULL END,
 			updated_at=NOW()
 		WHERE id=$7 AND workspace_id=$8
 		RETURNING
@@ -644,7 +645,7 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
 			updated_at, started_at, completed_at, archived_at,
 			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step
-	`, status, nullableInt(priorityOrder), userID, StatusInProgress, StatusDone, StatusArchived, taskID, workspaceID)
+	`, status, nullableInt(priorityOrder), userID, StatusInProgress, StatusDone, StatusArchived, taskID, workspaceID, current.Status)
 
 	task, err := scanTask(row)
 	if err != nil {
@@ -1267,7 +1268,7 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 				tasks[i].PrioritySource = "ai"
 			}
 		}
-		if status := jobStatuses[tasks[i].ID]; status != "" && status != EvaluationReady {
+		if status := jobStatuses[tasks[i].ID]; tasks[i].Evaluation == nil && status != "" && status != EvaluationReady {
 			tasks[i].EvaluationStatus = status
 		}
 	}
