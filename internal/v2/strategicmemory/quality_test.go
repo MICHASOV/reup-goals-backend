@@ -18,3 +18,12 @@ func TestReserveAutoQualityAuditThrottlesRepeatedRuns(t *testing.T) {
 		t.Fatal("a different workspace should have an independent reservation")
 	}
 }
+
+func TestCompletedManualQualityAuditThrottlesAutomaticRun(t *testing.T) {
+	service := &Service{qualityAuditReservedAt: map[int]time.Time{}}
+
+	service.markQualityAuditCompleted(42)
+	if service.reserveAutoQualityAudit(42) {
+		t.Fatal("automatic audit should be throttled after a completed manual audit")
+	}
+}

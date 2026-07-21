@@ -83,6 +83,7 @@ type materializationOptions struct {
 const (
 	jobTypeMaterializeBusinessContext = "knowledge_base.materialize"
 	jobTypeKnowledgeQualityAudit      = "knowledge_base.quality_audit"
+	knowledgeWorkerModel              = "gpt-4.1"
 )
 
 type materializationJobPayload struct {
@@ -319,8 +320,9 @@ func (s *Service) extractBusinessContext(
 	rawInput, _ := json.Marshal(input)
 
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "business_context_materializer", StrategicMemoryPromptVersion)
+	workerAI := s.ai.ForModel(knowledgeWorkerModel)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(aiCtx, businessContextMaterializerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
+	result, err := workerAI.GenerateJSONNative(aiCtx, businessContextMaterializerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-materializer-workspace-%d-v1", workspaceID),
@@ -329,10 +331,10 @@ func (s *Service) extractBusinessContext(
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_context_materializer", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_context_materializer", workerAI.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
 		return materializerOutput{}, err
 	}
-	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_context_materializer", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_context_materializer", workerAI.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 
 	var parsed materializerOutput
 	if err := json.Unmarshal([]byte(result.Text), &parsed); err != nil {
@@ -395,8 +397,9 @@ func (s *Service) designDocuments(
 	rawInput, _ := json.Marshal(input)
 
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "business_document_visual_designer", StrategicMemoryPromptVersion)
+	workerAI := s.ai.ForModel(knowledgeWorkerModel)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(aiCtx, documentVisualDesignerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
+	result, err := workerAI.GenerateJSONNative(aiCtx, documentVisualDesignerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-document-designer-workspace-%d-v1", workspaceID),
@@ -405,10 +408,10 @@ func (s *Service) designDocuments(
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_visual_designer", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_visual_designer", workerAI.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
 		return nil, err
 	}
-	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_visual_designer", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_visual_designer", workerAI.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 
 	var parsed documentDesignerOutput
 	if err := json.Unmarshal([]byte(result.Text), &parsed); err != nil {
