@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
 )
 
@@ -267,6 +268,9 @@ func (s *Service) materializeBusinessContextWithOptions(
 		agendaUpdated,
 		documentsUpdated,
 	)
+	if s.contextIndex != nil {
+		s.contextIndex.RefreshAsync(workspaceID)
+	}
 	return nil
 }
 
@@ -303,12 +307,17 @@ func (s *Service) extractBusinessContext(
 			"files":                 state.Files,
 		},
 	}
+	vectorStoreIDs, indexed := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
+	if indexed {
+		delete(input, "current_memory")
+		input["current_workspace_context"] = "Use file_search to compare the new source with the current knowledge base and avoid duplicates."
+	}
 	rawInput, _ := json.Marshal(input)
 
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "business_context_materializer", StrategicMemoryPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(aiCtx, businessContextMaterializerPrompt, string(rawInput), ai.ResponseContextOptions{
-		VectorStoreIDs:       vectorStoreIDsFromSession(session),
+	result, err := s.ai.GenerateJSONNative(aiCtx, businessContextMaterializerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
+		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-materializer-workspace-%d-v1", workspaceID),
 		MaxFileSearchResults: 8,
@@ -374,12 +383,17 @@ func (s *Service) designDocuments(
 		"open_questions":          materialized.OpenQuestions,
 		"contradictions":          materialized.Contradictions,
 	}
+	vectorStoreIDs, indexed := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
+	if indexed {
+		delete(input, "current_documents")
+		input["current_workspace_context"] = "Use file_search to read the current versions of affected documents before updating them."
+	}
 	rawInput, _ := json.Marshal(input)
 
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "business_document_visual_designer", StrategicMemoryPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(aiCtx, documentVisualDesignerPrompt, string(rawInput), ai.ResponseContextOptions{
-		VectorStoreIDs:       vectorStoreIDsFromSession(session),
+	result, err := s.ai.GenerateJSONNative(aiCtx, documentVisualDesignerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
+		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-document-designer-workspace-%d-v1", workspaceID),
 		MaxFileSearchResults: 8,

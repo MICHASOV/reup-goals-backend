@@ -51,6 +51,14 @@ type ResourceCleaner interface {
 	DeleteVectorStore(context.Context, string) error
 }
 
+type VectorStoreFileCleaner interface {
+	DeleteVectorStoreFile(context.Context, string, string) error
+}
+
+type ConversationCleaner interface {
+	DeleteConversation(context.Context, string) error
+}
+
 type callMetadataKey struct{}
 
 func WithCallMetadata(ctx context.Context, metadata CallMetadata) context.Context {

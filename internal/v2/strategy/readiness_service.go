@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
@@ -25,6 +26,11 @@ type ReadinessService struct {
 	ai               ai.Provider
 	compactThreshold int
 	wake             chan struct{}
+	contextIndex     *contextindex.Service
+}
+
+func (s *ReadinessService) SetContextIndex(index *contextindex.Service) {
+	s.contextIndex = index
 }
 
 func NewReadinessService(
@@ -186,6 +192,17 @@ func (s *ReadinessService) execute(ctx context.Context, run StrategyReadinessRun
 		"reason":                  state.StatusReason,
 		"remaining_uncertainties": state.RemainingUncertainties,
 	}
+	vectorStoreIDs := synthesisVectorStoreIDs(session)
+	if s.contextIndex != nil {
+		indexedIDs, indexErr := s.contextIndex.Ensure(ctx, run.WorkspaceID)
+		if indexErr == nil && len(indexedIDs) > 0 {
+			vectorStoreIDs = indexedIDs
+			delete(input, "knowledge_base_documents")
+			delete(input, "knowledge_base_quality")
+			delete(input, "uploaded_files")
+			input["current_workspace_context"] = "Use file_search for the complete current Knowledge Base, uploaded files, strategy, course, tactics, and tasks."
+		}
+	}
 	rawInput, err := json.Marshal(input)
 	if err != nil {
 		return err
@@ -193,8 +210,8 @@ func (s *ReadinessService) execute(ctx context.Context, run StrategyReadinessRun
 
 	started := time.Now()
 	aiCtx := ai.WithScenario(ctx, run.WorkspaceID, 0, "strategy_readiness_auditor", StrategyReadinessPromptVersion)
-	result, err := s.ai.GenerateJSONNative(aiCtx, strategyReadinessPrompt, string(rawInput), ai.ResponseContextOptions{
-		VectorStoreIDs:       synthesisVectorStoreIDs(session),
+	result, err := s.ai.GenerateJSONNative(aiCtx, strategyReadinessPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
+		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-strategy-readiness-workspace-%d-v1", run.WorkspaceID),
 		MaxFileSearchResults: 20,
@@ -218,6 +235,9 @@ func (s *ReadinessService) execute(ctx context.Context, run StrategyReadinessRun
 		return err
 	}
 	s.memoryStore.LogAIRunWithUsage(ctx, run.WorkspaceID, "strategy_readiness_auditor", s.ai.ModelName(), StrategyReadinessPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	if s.contextIndex != nil {
+		s.contextIndex.RefreshAsync(run.WorkspaceID)
+	}
 
 	return nil
 }

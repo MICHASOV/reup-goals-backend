@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/contextindex"
 )
 
 const (
@@ -94,12 +95,20 @@ func (s *Service) RunQualityAudit(ctx context.Context, workspaceID int, changedD
 		"snapshot":                 state.Snapshot,
 		"quality_formula_contract": qualityFormulaContract(),
 	}
+	vectorStoreIDs, indexed := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
+	if indexed {
+		delete(input, "documents")
+		delete(input, "claims")
+		delete(input, "research_agenda")
+		delete(input, "snapshot")
+		input["current_workspace_context"] = "Use file_search to inspect all current knowledge documents, claims, open questions, and contradictions."
+	}
 	rawInput, _ := json.Marshal(input)
 
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "knowledge_base_quality_auditor", StrategicMemoryPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(aiCtx, knowledgeBaseQualityAuditorPrompt, string(rawInput), ai.ResponseContextOptions{
-		VectorStoreIDs:       vectorStoreIDsFromSession(session),
+	result, err := s.ai.GenerateJSONNative(aiCtx, knowledgeBaseQualityAuditorPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
+		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-quality-auditor-workspace-%d-v1", workspaceID),
 		MaxFileSearchResults: 8,
@@ -120,7 +129,11 @@ func (s *Service) RunQualityAudit(ctx context.Context, workspaceID int, changedD
 	report.ChangedDocumentTypes = changedDocumentTypes
 	report = finalizeQualityReport(report)
 
-	return s.store.SaveQualityReport(ctx, workspaceID, report)
+	saved, err := s.store.SaveQualityReport(ctx, workspaceID, report)
+	if err == nil && s.contextIndex != nil {
+		s.contextIndex.RefreshAsync(workspaceID)
+	}
+	return saved, err
 }
 
 func finalizeQualityReport(report QualityReport) QualityReport {

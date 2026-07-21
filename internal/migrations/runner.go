@@ -2113,6 +2113,38 @@ var migrations = []Migration{
 				ON workspace_billing_payments (workspace_id, created_at DESC);
 		`,
 	},
+	{
+		ID: "20260721_035_openai_conversations_and_workspace_context",
+		SQL: `
+			ALTER TABLE strategic_openai_sessions
+				ADD COLUMN IF NOT EXISTS conversation_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE v2_strategy_openai_sessions
+				ADD COLUMN IF NOT EXISTS conversation_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE strategic_document_chat_sessions
+				ADD COLUMN IF NOT EXISTS conversation_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE v2_tactics_scope_sessions
+				ADD COLUMN IF NOT EXISTS conversation_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE v2_task_brainstorm_sessions
+				ADD COLUMN IF NOT EXISTS conversation_id TEXT NOT NULL DEFAULT '';
+
+			CREATE TABLE IF NOT EXISTS v2_ai_workspace_context_files (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				content_hash TEXT NOT NULL,
+				openai_file_id TEXT NOT NULL,
+				vector_store_id TEXT NOT NULL,
+				vector_store_file_id TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'processing',
+				error TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE(workspace_id, content_hash)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_ai_workspace_context_active
+				ON v2_ai_workspace_context_files (workspace_id, status, updated_at DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

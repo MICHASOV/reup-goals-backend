@@ -316,19 +316,16 @@ func (s *Store) OpenAITacticsScopeSession(ctx context.Context, workspaceID int, 
 		)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (workspace_id, scope_type, scope_id) DO UPDATE SET
-			previous_response_id=CASE
-				WHEN v2_tactics_scope_sessions.context_fingerprint <> EXCLUDED.context_fingerprint THEN ''
-				ELSE v2_tactics_scope_sessions.previous_response_id
-			END,
 			compact_threshold=EXCLUDED.compact_threshold,
 			prompt_cache_key=EXCLUDED.prompt_cache_key,
 			context_fingerprint=EXCLUDED.context_fingerprint,
 			updated_at=NOW()
-		RETURNING id, workspace_id, previous_response_id, compact_threshold,
+		RETURNING id, workspace_id, conversation_id, previous_response_id, compact_threshold,
 			prompt_cache_key, context_fingerprint, created_at, updated_at
 	`, workspaceID, scopeType, scopeID, compactThreshold, promptCacheKey, fingerprint).Scan(
 		&item.ID,
 		&item.WorkspaceID,
+		&item.ConversationID,
 		&item.PreviousResponseID,
 		&item.CompactThreshold,
 		&item.PromptCacheKey,
@@ -337,6 +334,16 @@ func (s *Store) OpenAITacticsScopeSession(ctx context.Context, workspaceID int, 
 		&item.UpdatedAt,
 	)
 	return item, err
+}
+
+func (s *Store) UpdateOpenAITacticsScopeConversationID(ctx context.Context, workspaceID int, scope *TacticsMessageScope, conversationID string) error {
+	scopeType, scopeID := tacticsScopeKey(scope)
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_tactics_scope_sessions
+		SET conversation_id=$4, previous_response_id='', updated_at=NOW()
+		WHERE workspace_id=$1 AND scope_type=$2 AND scope_id=$3
+	`, workspaceID, scopeType, scopeID, strings.TrimSpace(conversationID))
+	return err
 }
 
 func (s *Store) UpdateOpenAITacticsPreviousResponseID(ctx context.Context, workspaceID int, responseID string) error {
@@ -356,7 +363,7 @@ func (s *Store) UpdateOpenAITacticsScopePreviousResponseID(ctx context.Context, 
 func (s *Store) ResetOpenAITacticsSession(ctx context.Context, workspaceID int) error {
 	_, err := s.dbx.ExecContext(ctx, `
 		UPDATE v2_tactics_scope_sessions
-		SET previous_response_id='', context_fingerprint='', updated_at=NOW()
+		SET context_fingerprint='', updated_at=NOW()
 		WHERE workspace_id=$1
 	`, workspaceID)
 	return err

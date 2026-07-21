@@ -443,6 +443,7 @@ func synthesisDocumentCatalogJSON() json.RawMessage {
 type StrategyOpenAISession struct {
 	ID                 int       `json:"id"`
 	WorkspaceID        int       `json:"workspace_id"`
+	ConversationID     string    `json:"conversation_id,omitempty"`
 	PreviousResponseID string    `json:"previous_response_id,omitempty"`
 	CompactThreshold   int       `json:"compact_threshold"`
 	PromptCacheKey     string    `json:"prompt_cache_key,omitempty"`

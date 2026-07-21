@@ -180,6 +180,9 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 		response.AppliedIndices = append(response.AppliedIndices, index)
 		response.AppliedChanges = append(response.AppliedChanges, item)
 	}
+	if len(response.AppliedChanges) > 0 && s.contextIndex != nil {
+		s.contextIndex.RefreshAsync(workspaceID)
+	}
 	return response, nil
 }
 

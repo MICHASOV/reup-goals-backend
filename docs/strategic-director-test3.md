@@ -8,7 +8,8 @@ Strategic Director prompt instead of a rigid multi-step JSON pipeline.
 The main product bet:
 
 - the model should feel like a live strategic director, not a form;
-- backend prepares only useful context and stores conversation history;
+- OpenAI Conversations preserve dialogue history while PostgreSQL remains the product record;
+- stable workspace data is retrieved from a current Vector Store snapshot;
 - the model decides how to answer naturally;
 - structured memory extraction can be moved to a separate background layer later.
 
@@ -27,29 +28,22 @@ Frontend contract stays compatible:
 
 ## What Backend Does
 
-For every user message:
+For a new dialogue:
 
-1. Save the raw user message.
-2. Load current state:
-   - recent dialogue;
-   - existing snapshot;
-   - existing claims;
-   - existing documents;
-   - existing research agenda;
-   - existing communication profile;
-   - existing dialogue focus.
-3. Retrieve a small set of relevant older messages using lightweight keyword
-   search.
-4. Build one context pack for the model:
-   - latest user message;
-   - recent dialogue;
-   - relevant older dialogue snippets;
-   - existing business memory;
-   - product goal.
-5. Call OpenAI with one Strategic Director prompt and ask for a normal Russian
-   user-facing answer.
-6. Save the assistant reply as raw dialogue history.
-7. Return the reply to frontend.
+1. Resolve the active prompt version and create an OpenAI Conversation.
+2. Store the resolved prompt once as a developer message.
+3. Attach the workspace Vector Store through `file_search`.
+
+For every normal turn:
+
+1. Save the user message in PostgreSQL.
+2. Send the latest user message to the existing OpenAI Conversation.
+3. Let the model retrieve current structured workspace data with `file_search`.
+4. Save the assistant reply in PostgreSQL and return it to the frontend.
+5. Materialize facts and refresh the workspace context snapshot in the background.
+
+Existing pre-migration response chains receive one compatibility bootstrap and
+then continue through the same durable Conversation flow.
 
 ## What Backend Does Not Do Yet
 
@@ -58,9 +52,9 @@ This iteration intentionally does not:
 - force model output into JSON;
 - update claims/documents/snapshot synchronously from the visible chat call;
 - build strategy;
-- implement full vector store retrieval;
-- implement file upload ingestion;
-- implement background memory compaction.
+- expose OpenAI storage identifiers to the frontend;
+- treat the Vector Store as the primary product database;
+- run paid provider smoke tests when the staging OpenAI project has no balance.
 
 These are separate next layers if this test proves the dialogue quality.
 
@@ -88,4 +82,3 @@ background memory writer:
 - update compact business memory;
 - update documents;
 - index raw messages/files for retrieval.
-

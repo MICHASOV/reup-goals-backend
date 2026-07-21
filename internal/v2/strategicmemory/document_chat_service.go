@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/contextindex"
 )
 
 const documentChatPromptVersion = "business_document_collaborator_v1"
@@ -93,15 +94,22 @@ func (s *Service) HandleDocumentChatMessage(
 	}
 
 	input := documentChatTurnInput(message)
-	if strings.TrimSpace(session.PreviousResponseID) == "" {
+	if strings.TrimSpace(session.ConversationID) == "" && strings.TrimSpace(session.PreviousResponseID) != "" {
 		input = documentChatFreshInput(document, history, state, message)
 	}
-	usedPreviousResponseID := session.PreviousResponseID
+	vectorStoreIDs := vectorStoreIDsFromSession(globalSession)
+	if s.contextIndex != nil {
+		indexedIDs, indexErr := s.contextIndex.Available(ctx, workspaceID)
+		if indexErr == nil && len(indexedIDs) > 0 {
+			vectorStoreIDs = indexedIDs
+		}
+	}
 	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "business_document_chat", documentChatPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateTextNative(aiCtx, businessDocumentCollaboratorPrompt, input, ai.ResponseContextOptions{
-		PreviousResponseID:   session.PreviousResponseID,
-		VectorStoreIDs:       vectorStoreIDsFromSession(globalSession),
+	result, err := s.ai.GenerateTextNative(aiCtx, businessDocumentCollaboratorPrompt+contextindex.RetrievalInstructions, input, ai.ResponseContextOptions{
+		UseConversation:      true,
+		ConversationID:       session.ConversationID,
+		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       session.PromptCacheKey,
 		MaxFileSearchResults: 6,
@@ -109,12 +117,12 @@ func (s *Service) HandleDocumentChatMessage(
 		RequestTimeout:       2 * time.Minute,
 	})
 	duration := time.Since(started).Milliseconds()
-	if err != nil && strings.TrimSpace(session.PreviousResponseID) != "" {
-		_ = s.store.UpdateDocumentChatPreviousResponseID(ctx, workspaceID, documentType, "")
-		usedPreviousResponseID = ""
+	if err != nil && strings.TrimSpace(session.ConversationID) != "" && ai.IsConversationStateError(err) {
+		_ = s.store.UpdateDocumentChatConversationID(ctx, workspaceID, documentType, "")
 		started = time.Now()
-		result, err = s.ai.GenerateTextNative(aiCtx, businessDocumentCollaboratorPrompt, documentChatFreshInput(document, history, state, message), ai.ResponseContextOptions{
-			VectorStoreIDs:       vectorStoreIDsFromSession(globalSession),
+		result, err = s.ai.GenerateTextNative(aiCtx, businessDocumentCollaboratorPrompt+contextindex.RetrievalInstructions, documentChatFreshInput(document, history, state, message), ai.ResponseContextOptions{
+			UseConversation:      true,
+			VectorStoreIDs:       vectorStoreIDs,
 			CompactThreshold:     session.CompactThreshold,
 			PromptCacheKey:       session.PromptCacheKey,
 			MaxFileSearchResults: 6,
@@ -132,16 +140,16 @@ func (s *Service) HandleDocumentChatMessage(
 	if assistantText == "" {
 		assistantText = "Не получилось сформулировать ответ. Попробуйте уточнить сообщение."
 	}
-	if strings.TrimSpace(result.ResponseID) != "" {
-		_ = s.store.UpdateDocumentChatPreviousResponseID(ctx, workspaceID, documentType, result.ResponseID)
+	if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != session.ConversationID {
+		_ = s.store.UpdateDocumentChatConversationID(ctx, workspaceID, documentType, result.ConversationID)
 	}
 	assistantMessage, err := s.store.CreateDocumentChatMessage(
 		ctx, workspaceID, documentType, nil, "assistant", assistantText, map[string]any{
-			"prompt_version":       documentChatPromptVersion,
-			"response_id":          result.ResponseID,
-			"previous_response_id": usedPreviousResponseID,
-			"context_fingerprint":  fingerprint,
-			"source_id":            sourceID,
+			"prompt_version":      documentChatPromptVersion,
+			"response_id":         result.ResponseID,
+			"conversation_id":     result.ConversationID,
+			"context_fingerprint": fingerprint,
+			"source_id":           sourceID,
 		},
 	)
 	if err != nil {

@@ -148,13 +148,6 @@ func (s *Store) CreateNextVersion(ctx context.Context, workspaceID int, userID i
 	`, workspaceID, FacilitatorStatusContinue); err != nil {
 		return Strategy{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE v2_strategy_openai_sessions
-		SET previous_response_id='', updated_at=NOW()
-		WHERE workspace_id=$1
-	`, workspaceID); err != nil {
-		return Strategy{}, false, err
-	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM v2_strategy_readiness_queue WHERE workspace_id=$1`, workspaceID); err != nil {
 		return Strategy{}, false, err
 	}
@@ -375,11 +368,12 @@ func (s *Store) OpenAIStrategySession(ctx context.Context, workspaceID int, comp
 			compact_threshold=EXCLUDED.compact_threshold,
 			prompt_cache_key=EXCLUDED.prompt_cache_key,
 			updated_at=NOW()
-		RETURNING id, workspace_id, previous_response_id,
+		RETURNING id, workspace_id, conversation_id, previous_response_id,
 			compact_threshold, prompt_cache_key, created_at, updated_at
 	`, workspaceID, compactThreshold, promptCacheKey).Scan(
 		&item.ID,
 		&item.WorkspaceID,
+		&item.ConversationID,
 		&item.PreviousResponseID,
 		&item.CompactThreshold,
 		&item.PromptCacheKey,
@@ -387,6 +381,15 @@ func (s *Store) OpenAIStrategySession(ctx context.Context, workspaceID int, comp
 		&item.UpdatedAt,
 	)
 	return item, err
+}
+
+func (s *Store) UpdateOpenAIStrategyConversationID(ctx context.Context, workspaceID int, conversationID string) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_strategy_openai_sessions
+		SET conversation_id=$2, previous_response_id='', updated_at=NOW()
+		WHERE workspace_id=$1
+	`, workspaceID, strings.TrimSpace(conversationID))
+	return err
 }
 
 func (s *Store) UpdateOpenAIStrategyPreviousResponseID(ctx context.Context, workspaceID int, responseID string) error {

@@ -278,19 +278,24 @@ func (s *Store) BrainstormSession(ctx context.Context, workspaceID int, workstre
 		)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (workspace_id, workstream_id) DO UPDATE SET
-			previous_response_id=CASE
-				WHEN v2_task_brainstorm_sessions.context_fingerprint <> EXCLUDED.context_fingerprint THEN ''
-				ELSE v2_task_brainstorm_sessions.previous_response_id
-			END,
 			compact_threshold=EXCLUDED.compact_threshold,
 			prompt_cache_key=EXCLUDED.prompt_cache_key,
 			context_fingerprint=EXCLUDED.context_fingerprint,
 			updated_at=NOW()
-		RETURNING previous_response_id, compact_threshold, prompt_cache_key, context_fingerprint
+		RETURNING conversation_id, previous_response_id, compact_threshold, prompt_cache_key, context_fingerprint
 	`, workspaceID, workstreamID, compactThreshold, promptCacheKey, fingerprint).Scan(
-		&item.PreviousResponseID, &item.CompactThreshold, &item.PromptCacheKey, &item.ContextFingerprint,
+		&item.ConversationID, &item.PreviousResponseID, &item.CompactThreshold, &item.PromptCacheKey, &item.ContextFingerprint,
 	)
 	return item, err
+}
+
+func (s *Store) UpdateBrainstormConversationID(ctx context.Context, workspaceID int, workstreamID int, conversationID string) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_task_brainstorm_sessions
+		SET conversation_id=$3, previous_response_id='', updated_at=NOW()
+		WHERE workspace_id=$1 AND workstream_id=$2
+	`, workspaceID, workstreamID, strings.TrimSpace(conversationID))
+	return err
 }
 
 func (s *Store) UpdateBrainstormPreviousResponseID(ctx context.Context, workspaceID int, workstreamID int, responseID string) error {

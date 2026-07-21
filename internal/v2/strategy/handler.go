@@ -12,6 +12,7 @@ import (
 	"reup-goals-backend/internal/auth"
 	"reup-goals-backend/internal/security"
 	"reup-goals-backend/internal/v2/api"
+	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/workspaces"
 )
@@ -24,6 +25,13 @@ type Handler struct {
 	facilitator *FacilitatorService
 	synthesis   *SynthesisService
 	readiness   *ReadinessService
+}
+
+func (h *Handler) WithContextIndex(index *contextindex.Service) *Handler {
+	h.facilitator.SetContextIndex(index)
+	h.synthesis.SetContextIndex(index)
+	h.readiness.SetContextIndex(index)
+	return h
 }
 
 func NewHandler(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *Handler {

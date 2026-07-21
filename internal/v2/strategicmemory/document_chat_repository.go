@@ -119,22 +119,33 @@ func (s *Store) DocumentChatSession(
 		)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (workspace_id, document_type) DO UPDATE SET
-			previous_response_id=CASE
-				WHEN strategic_document_chat_sessions.context_fingerprint <> EXCLUDED.context_fingerprint THEN ''
-				ELSE strategic_document_chat_sessions.previous_response_id
-			END,
 			compact_threshold=EXCLUDED.compact_threshold,
 			prompt_cache_key=EXCLUDED.prompt_cache_key,
 			context_fingerprint=EXCLUDED.context_fingerprint,
 			updated_at=NOW()
-		RETURNING previous_response_id, compact_threshold, prompt_cache_key, context_fingerprint
+		RETURNING conversation_id, previous_response_id, compact_threshold, prompt_cache_key, context_fingerprint
 	`, workspaceID, strings.TrimSpace(documentType), compactThreshold, promptCacheKey, contextFingerprint).Scan(
+		&item.ConversationID,
 		&item.PreviousResponseID,
 		&item.CompactThreshold,
 		&item.PromptCacheKey,
 		&item.ContextFingerprint,
 	)
 	return item, err
+}
+
+func (s *Store) UpdateDocumentChatConversationID(
+	ctx context.Context,
+	workspaceID int,
+	documentType string,
+	conversationID string,
+) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE strategic_document_chat_sessions
+		SET conversation_id=$3, previous_response_id='', updated_at=NOW()
+		WHERE workspace_id=$1 AND document_type=$2
+	`, workspaceID, strings.TrimSpace(documentType), strings.TrimSpace(conversationID))
+	return err
 }
 
 func (s *Store) UpdateDocumentChatPreviousResponseID(

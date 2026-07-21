@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
@@ -54,6 +55,11 @@ type TacticsReadinessService struct {
 	ai               ai.Provider
 	compactThreshold int
 	wake             chan struct{}
+	contextIndex     *contextindex.Service
+}
+
+func (s *TacticsReadinessService) SetContextIndex(index *contextindex.Service) {
+	s.contextIndex = index
 }
 
 type tacticsReadinessSource struct {
@@ -270,9 +276,26 @@ func (s *TacticsReadinessService) execute(ctx context.Context, run TacticsReadin
 	if strings.TrimSpace(openAISession.VectorStoreID) != "" {
 		vectorStoreIDs = append(vectorStoreIDs, strings.TrimSpace(openAISession.VectorStoreID))
 	}
+	if s.contextIndex != nil {
+		indexedIDs, indexErr := s.contextIndex.Ensure(ctx, run.WorkspaceID)
+		if indexErr == nil && len(indexedIDs) > 0 {
+			vectorStoreIDs = indexedIDs
+			delete(input, "active_strategy")
+			delete(input, "strategy_documents")
+			delete(input, "active_course")
+			delete(input, "knowledge_base")
+			delete(input, "tactical_system")
+			delete(input, "uploaded_files")
+			input["current_workspace_context"] = "Use file_search for the complete current Knowledge Base, strategy, course, tactical plan, workstreams, projects, risks, opportunities, and tasks."
+			rawInput, err = json.Marshal(input)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	started := time.Now()
 	aiCtx := ai.WithScenario(ctx, run.WorkspaceID, 0, "tactics_readiness_auditor", TacticsReadinessPromptVersion)
-	result, err := s.ai.GenerateJSONNative(aiCtx, tacticsReadinessPrompt, string(rawInput), ai.ResponseContextOptions{
+	result, err := s.ai.GenerateJSONNative(aiCtx, tacticsReadinessPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     openAISession.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-tactics-readiness-workspace-%d-v1", run.WorkspaceID),
@@ -297,6 +320,9 @@ func (s *TacticsReadinessService) execute(ctx context.Context, run TacticsReadin
 		return err
 	}
 	s.memoryStore.LogAIRunWithUsage(ctx, run.WorkspaceID, "tactics_readiness_auditor", s.ai.ModelName(), TacticsReadinessPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	if s.contextIndex != nil {
+		s.contextIndex.RefreshAsync(run.WorkspaceID)
+	}
 	return nil
 }
 

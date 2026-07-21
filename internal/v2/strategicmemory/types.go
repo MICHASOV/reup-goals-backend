@@ -121,6 +121,7 @@ type StrategicDocument struct {
 type OpenAISession struct {
 	ID                 int       `json:"id"`
 	WorkspaceID        int       `json:"workspace_id"`
+	ConversationID     string    `json:"conversation_id,omitempty"`
 	PreviousResponseID string    `json:"previous_response_id,omitempty"`
 	VectorStoreID      string    `json:"vector_store_id,omitempty"`
 	CompactThreshold   int       `json:"compact_threshold"`
@@ -180,6 +181,7 @@ type DocumentChatMessage struct {
 }
 
 type DocumentChatSession struct {
+	ConversationID     string
 	PreviousResponseID string
 	CompactThreshold   int
 	PromptCacheKey     string

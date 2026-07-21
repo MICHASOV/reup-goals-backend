@@ -43,11 +43,12 @@ func (s *Store) OpenAISession(ctx context.Context, workspaceID int, compactThres
 			compact_threshold=EXCLUDED.compact_threshold,
 			prompt_cache_key=EXCLUDED.prompt_cache_key,
 			updated_at=NOW()
-		RETURNING id, workspace_id, previous_response_id, vector_store_id,
+		RETURNING id, workspace_id, conversation_id, previous_response_id, vector_store_id,
 			compact_threshold, prompt_cache_key, created_at, updated_at
 	`, workspaceID, compactThreshold, promptCacheKey).Scan(
 		&item.ID,
 		&item.WorkspaceID,
+		&item.ConversationID,
 		&item.PreviousResponseID,
 		&item.VectorStoreID,
 		&item.CompactThreshold,
@@ -56,6 +57,15 @@ func (s *Store) OpenAISession(ctx context.Context, workspaceID int, compactThres
 		&item.UpdatedAt,
 	)
 	return item, err
+}
+
+func (s *Store) UpdateOpenAIConversationID(ctx context.Context, workspaceID int, conversationID string) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE strategic_openai_sessions
+		SET conversation_id=$2, previous_response_id='', updated_at=NOW()
+		WHERE workspace_id=$1
+	`, workspaceID, strings.TrimSpace(conversationID))
+	return err
 }
 
 func (s *Store) UpdateOpenAIPreviousResponseID(ctx context.Context, workspaceID int, responseID string) error {
@@ -954,6 +964,53 @@ func (s *Store) ListOwnedWorkspaceIDs(ctx context.Context, userID int) ([]int, e
 	return ids, rows.Err()
 }
 
+func (s *Store) ListWorkspaceExternalContextIDs(ctx context.Context, workspaceID int) ([]string, []string, error) {
+	fileRows, err := s.dbx.QueryContext(ctx, `
+		SELECT DISTINCT openai_file_id
+		FROM v2_ai_workspace_context_files
+		WHERE workspace_id=$1 AND BTRIM(openai_file_id) <> ''
+	`, workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer fileRows.Close()
+	fileIDs := []string{}
+	for fileRows.Next() {
+		var id string
+		if err := fileRows.Scan(&id); err != nil {
+			return nil, nil, err
+		}
+		fileIDs = append(fileIDs, strings.TrimSpace(id))
+	}
+	if err := fileRows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	conversationRows, err := s.dbx.QueryContext(ctx, `
+		SELECT DISTINCT conversation_id FROM (
+			SELECT conversation_id FROM strategic_openai_sessions WHERE workspace_id=$1
+			UNION ALL SELECT conversation_id FROM strategic_document_chat_sessions WHERE workspace_id=$1
+			UNION ALL SELECT conversation_id FROM v2_strategy_openai_sessions WHERE workspace_id=$1
+			UNION ALL SELECT conversation_id FROM v2_tactics_scope_sessions WHERE workspace_id=$1
+			UNION ALL SELECT conversation_id FROM v2_task_brainstorm_sessions WHERE workspace_id=$1
+		) conversations
+		WHERE BTRIM(conversation_id) <> ''
+	`, workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer conversationRows.Close()
+	conversationIDs := []string{}
+	for conversationRows.Next() {
+		var id string
+		if err := conversationRows.Scan(&id); err != nil {
+			return nil, nil, err
+		}
+		conversationIDs = append(conversationIDs, strings.TrimSpace(id))
+	}
+	return fileIDs, conversationIDs, conversationRows.Err()
+}
+
 func (s *Store) UpsertDocuments(ctx context.Context, workspaceID int, docs []StrategicDocument) (int, error) {
 	updated := 0
 	for _, doc := range docs {
@@ -1029,14 +1086,26 @@ func (s *Store) Reset(ctx context.Context, workspaceID int) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_openai_files WHERE workspace_id=$1`, workspaceID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM v2_ai_workspace_context_files WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_raw_sources WHERE workspace_id=$1`, workspaceID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE strategic_openai_sessions
-		SET previous_response_id='', vector_store_id='', updated_at=NOW()
+		SET conversation_id='', previous_response_id='', vector_store_id='', updated_at=NOW()
 		WHERE workspace_id=$1
 	`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE v2_strategy_openai_sessions SET conversation_id='', previous_response_id='', updated_at=NOW() WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE v2_tactics_scope_sessions SET conversation_id='', previous_response_id='', updated_at=NOW() WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE v2_task_brainstorm_sessions SET conversation_id='', previous_response_id='', updated_at=NOW() WHERE workspace_id=$1`, workspaceID); err != nil {
 		return err
 	}
 	return tx.Commit()

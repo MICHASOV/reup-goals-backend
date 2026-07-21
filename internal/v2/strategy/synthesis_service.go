@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
@@ -39,6 +40,11 @@ type SynthesisService struct {
 	ai               ai.Provider
 	compactThreshold int
 	jobs             *jobs.Manager
+	contextIndex     *contextindex.Service
+}
+
+func (s *SynthesisService) SetContextIndex(index *contextindex.Service) {
+	s.contextIndex = index
 }
 
 type strategySynthesisJobPayload struct {
@@ -208,6 +214,17 @@ func (s *SynthesisService) execute(ctx context.Context, workspaceID int, runID i
 
 	catalog, sourceIndex := buildSynthesisSourceCatalog(documents, messages, files)
 	input := buildStrategySynthesisInput(strategy, documents, qualityReport, messages, files, catalog)
+	vectorStoreIDs := synthesisVectorStoreIDs(session)
+	if s.contextIndex != nil {
+		indexedIDs, indexErr := s.contextIndex.Ensure(ctx, workspaceID)
+		if indexErr == nil && len(indexedIDs) > 0 {
+			vectorStoreIDs = indexedIDs
+			delete(input, "knowledge_base_documents")
+			delete(input, "knowledge_base_quality")
+			delete(input, "uploaded_files")
+			input["current_workspace_context"] = "Use file_search for the complete current Knowledge Base and uploaded company files."
+		}
+	}
 	rawInput, err := json.Marshal(input)
 	if err != nil {
 		return err
@@ -215,8 +232,8 @@ func (s *SynthesisService) execute(ctx context.Context, workspaceID int, runID i
 
 	started := time.Now()
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "strategy_synthesizer", StrategySynthesizerPromptVersion)
-	result, err := s.ai.GenerateJSONNative(aiCtx, strategySynthesizerPrompt, string(rawInput), ai.ResponseContextOptions{
-		VectorStoreIDs:       synthesisVectorStoreIDs(session),
+	result, err := s.ai.GenerateJSONNative(aiCtx, strategySynthesizerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
+		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       fmt.Sprintf("reupgoals-strategy-synthesizer-workspace-%d-v1", workspaceID),
 		MaxFileSearchResults: 20,
@@ -261,6 +278,9 @@ func (s *SynthesisService) execute(ctx context.Context, workspaceID int, runID i
 		return err
 	}
 	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_synthesizer", s.ai.ModelName(), StrategySynthesizerPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	if s.contextIndex != nil {
+		s.contextIndex.RefreshAsync(workspaceID)
+	}
 	return nil
 }
 

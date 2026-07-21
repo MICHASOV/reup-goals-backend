@@ -321,6 +321,7 @@ type brainstormModelOutput struct {
 }
 
 type BrainstormSession struct {
+	ConversationID     string
 	PreviousResponseID string
 	CompactThreshold   int
 	PromptCacheKey     string

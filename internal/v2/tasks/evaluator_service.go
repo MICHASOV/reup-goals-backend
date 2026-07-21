@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
@@ -20,12 +21,17 @@ const (
 )
 
 type TaskEvaluatorService struct {
-	store   *Store
-	context *taskContextBuilder
-	memory  *strategicmemory.Store
-	ai      ai.Provider
-	wake    chan struct{}
-	slots   chan struct{}
+	store        *Store
+	context      *taskContextBuilder
+	memory       *strategicmemory.Store
+	ai           ai.Provider
+	wake         chan struct{}
+	slots        chan struct{}
+	contextIndex *contextindex.Service
+}
+
+func (s *TaskEvaluatorService) SetContextIndex(index *contextindex.Service) {
+	s.contextIndex = index
 }
 
 func NewTaskEvaluatorService(dbx *sql.DB, aiClient ai.Provider) *TaskEvaluatorService {
@@ -105,7 +111,7 @@ func (s *TaskEvaluatorService) execute(ctx context.Context, job TaskEvaluationJo
 	if task.Status == StatusArchived {
 		return s.store.CompleteTaskEvaluationJob(ctx, job.ID)
 	}
-	pack, _, fingerprint, err := s.context.Build(ctx, job.WorkspaceID, task.WorkstreamID, 0)
+	pack, vectorStoreIDs, fingerprint, err := s.context.Build(ctx, job.WorkspaceID, task.WorkstreamID, 0)
 	if err != nil {
 		return err
 	}
@@ -123,10 +129,23 @@ func (s *TaskEvaluatorService) execute(ctx context.Context, job TaskEvaluationJo
 	if target == nil {
 		return ErrForbidden
 	}
-	rawInput, _ := json.Marshal(map[string]any{"task": target, "context": pack})
+	input := map[string]any{"task": target, "context": pack}
+	if s.contextIndex != nil {
+		indexedIDs, indexErr := s.contextIndex.Ensure(ctx, job.WorkspaceID)
+		if indexErr == nil && len(indexedIDs) > 0 {
+			vectorStoreIDs = indexedIDs
+			input = map[string]any{
+				"task":                      target,
+				"active_workstream_id":      task.WorkstreamID,
+				"current_workspace_context": "Use file_search to evaluate this task against the current strategy, course, tactics, related entities, constraints, and existing tasks.",
+			}
+		}
+	}
+	rawInput, _ := json.Marshal(input)
 	aiCtx := ai.WithScenario(ctx, job.WorkspaceID, 0, "task_evaluator_v2", taskEvaluatorPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(aiCtx, taskEvaluatorPrompt, string(rawInput), ai.ResponseContextOptions{
+	result, err := s.ai.GenerateJSONNative(aiCtx, taskEvaluatorPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
+		VectorStoreIDs: vectorStoreIDs, MaxFileSearchResults: 10,
 		PromptCacheKey:  fmt.Sprintf("reupgoals-task-evaluator-workspace-%d-v2", job.WorkspaceID),
 		MaxOutputTokens: 4000, RequestTimeout: taskEvaluationTimeout,
 	})

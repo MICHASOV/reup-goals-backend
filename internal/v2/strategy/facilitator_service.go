@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
@@ -22,6 +23,12 @@ type FacilitatorService struct {
 	ai               ai.Provider
 	compactThreshold int
 	readiness        *ReadinessService
+	contextIndex     *contextindex.Service
+}
+
+func (s *FacilitatorService) SetContextIndex(index *contextindex.Service) {
+	s.contextIndex = index
+	s.memoryService.SetContextIndex(index)
 }
 
 func NewFacilitatorService(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *FacilitatorService {
@@ -149,17 +156,26 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		return StrategyFacilitatorMessageResponse{}, err
 	}
 	vectorStoreIDs := s.strategyVectorStoreIDs(ctx, workspaceID)
-	usedPreviousResponseID := session.PreviousResponseID
+	if s.contextIndex != nil {
+		indexedIDs, indexErr := s.contextIndex.Available(ctx, workspaceID)
+		if indexErr == nil && len(indexedIDs) > 0 {
+			vectorStoreIDs = indexedIDs
+		} else if indexErr != nil {
+			s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "workspace_context_sync", s.ai.ModelName(), StrategyFacilitatorPromptVersion, 0, 0, 0, "failed", indexErr.Error())
+		}
+	}
 
-	input := buildStrategyFacilitatorTurnInput(message, state)
-	if strings.TrimSpace(session.PreviousResponseID) == "" {
+	input := buildStrategyFacilitatorTurnInput(message)
+	if strings.TrimSpace(session.ConversationID) == "" && strings.TrimSpace(session.PreviousResponseID) != "" {
 		input = buildStrategyFacilitatorFreshInput(workspaceID, message, state)
 	}
 
 	started := time.Now()
 	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "strategy_facilitator_openai_native", StrategyFacilitatorPromptVersion)
-	result, err := s.ai.GenerateJSONNative(aiCtx, strategyFacilitatorPrompt, input, ai.ResponseContextOptions{
-		PreviousResponseID:   session.PreviousResponseID,
+	prompt := strategyFacilitatorPrompt + contextindex.RetrievalInstructions
+	result, err := s.ai.GenerateJSONNative(aiCtx, prompt, input, ai.ResponseContextOptions{
+		UseConversation:      true,
+		ConversationID:       session.ConversationID,
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       session.PromptCacheKey,
@@ -167,11 +183,11 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		if strings.TrimSpace(session.PreviousResponseID) != "" {
-			_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, "")
-			usedPreviousResponseID = ""
+		if strings.TrimSpace(session.ConversationID) != "" && ai.IsConversationStateError(err) {
+			_ = s.store.UpdateOpenAIStrategyConversationID(ctx, workspaceID, "")
 			started = time.Now()
-			result, err = s.ai.GenerateJSONNative(aiCtx, strategyFacilitatorPrompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
+			result, err = s.ai.GenerateJSONNative(aiCtx, prompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
+				UseConversation:      true,
 				VectorStoreIDs:       vectorStoreIDs,
 				CompactThreshold:     session.CompactThreshold,
 				PromptCacheKey:       session.PromptCacheKey,
@@ -184,14 +200,17 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			return s.fallbackResponse(ctx, workspaceID, userSourceID, state), nil
 		}
 	}
+	if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != session.ConversationID {
+		_ = s.store.UpdateOpenAIStrategyConversationID(ctx, workspaceID, result.ConversationID)
+	}
 
 	modelOutput, parseErr := parseStrategyFacilitatorOutput(result.Text)
 	if parseErr != nil {
 		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_output_parse", s.ai.ModelName(), StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
-		_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, "")
-		usedPreviousResponseID = ""
 		started = time.Now()
-		result, err = s.ai.GenerateJSONNative(aiCtx, strategyFacilitatorPrompt, buildStrategyFacilitatorFreshInput(workspaceID, message, state), ai.ResponseContextOptions{
+		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, "Your previous response could not be parsed as the required JSON object. Return the same intended answer again as valid JSON matching the required output contract. Do not ask the user to repeat anything.", ai.ResponseContextOptions{
+			UseConversation:      true,
+			ConversationID:       result.ConversationID,
 			VectorStoreIDs:       vectorStoreIDs,
 			CompactThreshold:     session.CompactThreshold,
 			PromptCacheKey:       session.PromptCacheKey,
@@ -213,9 +232,6 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		}
 	}
 	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_openai_native", s.ai.ModelName(), StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
-	if strings.TrimSpace(result.ResponseID) != "" {
-		_ = s.store.UpdateOpenAIStrategyPreviousResponseID(ctx, workspaceID, result.ResponseID)
-	}
 	assistantMessage := cleanAssistantMessage(modelOutput.Message)
 	if assistantMessage == "" {
 		assistantMessage = strategyFallbackAssistantReply()
@@ -225,7 +241,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		"mode":                    "openai_native",
 		"user_source_id":          userSourceID,
 		"response_id":             result.ResponseID,
-		"previous_response_id":    usedPreviousResponseID,
+		"conversation_id":         result.ConversationID,
 		"vector_store_ids":        vectorStoreIDs,
 		"session_status":          modelOutput.SessionStatus,
 		"status_reason":           modelOutput.StatusReason,
@@ -322,13 +338,8 @@ func buildStrategyFacilitatorFreshInput(workspaceID int, message string, state S
 	return "Context for the strategic session in JSON:\n" + string(rawInput)
 }
 
-func buildStrategyFacilitatorTurnInput(message string, state StrategyFacilitatorState) string {
-	turn := map[string]any{
-		"latest_user_message":       message,
-		"session_state":             state.Session,
-		"latest_readiness_feedback": compactReadinessFeedback(state.Readiness),
-		"instruction":               "Continue the same live strategic conversation. Respond naturally to the user, use any independent-auditor feedback as judgment context, and do not expose internal status mechanics.",
-	}
+func buildStrategyFacilitatorTurnInput(message string) string {
+	turn := map[string]any{"latest_user_message": message}
 	raw, _ := json.Marshal(turn)
 	return string(raw)
 }

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
@@ -24,6 +25,12 @@ type FacilitatorService struct {
 	ai               ai.Provider
 	compactThreshold int
 	readiness        *TacticsReadinessService
+	contextIndex     *contextindex.Service
+}
+
+func (s *FacilitatorService) SetContextIndex(index *contextindex.Service) {
+	s.contextIndex = index
+	s.memoryService.SetContextIndex(index)
 }
 
 func (s *FacilitatorService) SetReadinessService(readiness *TacticsReadinessService) {
@@ -178,27 +185,36 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		return TacticsFacilitatorMessageResponse{}, err
 	}
 	vectorStoreIDs := s.vectorStoreIDs(ctx, workspaceID)
-	usedPreviousResponseID := openAISession.PreviousResponseID
-	input := buildTacticsTurnInput(message, request, scopeContext, state)
-	if strings.TrimSpace(openAISession.PreviousResponseID) == "" {
+	if s.contextIndex != nil {
+		indexedIDs, indexErr := s.contextIndex.Available(ctx, workspaceID)
+		if indexErr == nil && len(indexedIDs) > 0 {
+			vectorStoreIDs = indexedIDs
+		} else if indexErr != nil {
+			s.logAIRun(ctx, workspaceID, 0, 0, 0, "failed", "workspace context sync: "+indexErr.Error())
+		}
+	}
+	input := buildTacticsTurnInput(message, request)
+	if strings.TrimSpace(openAISession.ConversationID) == "" && strings.TrimSpace(openAISession.PreviousResponseID) != "" {
 		input = buildTacticsFreshInput(message, request, scopeContext, state)
 	}
 
 	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "tactics_facilitator_openai_native", TacticsFacilitatorPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(aiCtx, tacticsFacilitatorPrompt, input, ai.ResponseContextOptions{
-		PreviousResponseID:   openAISession.PreviousResponseID,
+	prompt := tacticsFacilitatorPrompt + contextindex.RetrievalInstructions
+	result, err := s.ai.GenerateJSONNative(aiCtx, prompt, input, ai.ResponseContextOptions{
+		UseConversation:      true,
+		ConversationID:       openAISession.ConversationID,
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     openAISession.CompactThreshold,
 		PromptCacheKey:       openAISession.PromptCacheKey,
 		MaxFileSearchResults: 8,
 	})
 	duration := time.Since(started).Milliseconds()
-	if err != nil && strings.TrimSpace(openAISession.PreviousResponseID) != "" {
-		_ = s.store.UpdateOpenAITacticsScopePreviousResponseID(ctx, workspaceID, request.Scope, "")
-		usedPreviousResponseID = ""
+	if err != nil && strings.TrimSpace(openAISession.ConversationID) != "" && ai.IsConversationStateError(err) {
+		_ = s.store.UpdateOpenAITacticsScopeConversationID(ctx, workspaceID, request.Scope, "")
 		started = time.Now()
-		result, err = s.ai.GenerateJSONNative(aiCtx, tacticsFacilitatorPrompt, buildTacticsFreshInput(message, request, scopeContext, state), ai.ResponseContextOptions{
+		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, buildTacticsFreshInput(message, request, scopeContext, state), ai.ResponseContextOptions{
+			UseConversation:      true,
 			VectorStoreIDs:       vectorStoreIDs,
 			CompactThreshold:     openAISession.CompactThreshold,
 			PromptCacheKey:       openAISession.PromptCacheKey,
@@ -210,24 +226,45 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		s.logAIRun(ctx, workspaceID, duration, 0, 0, "failed", err.Error())
 		return s.fallbackResponse(ctx, workspaceID, userMessageID, state, request.Scope), nil
 	}
+	if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != openAISession.ConversationID {
+		_ = s.store.UpdateOpenAITacticsScopeConversationID(ctx, workspaceID, request.Scope, result.ConversationID)
+	}
 
 	modelOutput, parseErr := parseTacticsFacilitatorOutput(result.Text)
 	if parseErr != nil {
-		_ = s.store.UpdateOpenAITacticsScopePreviousResponseID(ctx, workspaceID, request.Scope, "")
 		s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
-		return s.fallbackResponse(ctx, workspaceID, userMessageID, state, request.Scope), nil
+		started = time.Now()
+		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, "Your previous response could not be parsed as the required JSON object. Return the same intended answer again as valid JSON matching the required output contract. Do not ask the user to repeat anything.", ai.ResponseContextOptions{
+			UseConversation:      true,
+			ConversationID:       result.ConversationID,
+			VectorStoreIDs:       vectorStoreIDs,
+			CompactThreshold:     openAISession.CompactThreshold,
+			PromptCacheKey:       openAISession.PromptCacheKey,
+			MaxFileSearchResults: 8,
+		})
+		duration = time.Since(started).Milliseconds()
+		if err == nil {
+			modelOutput, parseErr = parseTacticsFacilitatorOutput(result.Text)
+		}
+		if err != nil || parseErr != nil {
+			errorText := "tactics facilitator retry failed"
+			if err != nil {
+				errorText = err.Error()
+			} else if parseErr != nil {
+				errorText = parseErr.Error()
+			}
+			s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
+			return s.fallbackResponse(ctx, workspaceID, userMessageID, state, request.Scope), nil
+		}
 	}
 	s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
-	if strings.TrimSpace(result.ResponseID) != "" {
-		_ = s.store.UpdateOpenAITacticsScopePreviousResponseID(ctx, workspaceID, request.Scope, result.ResponseID)
-	}
 
 	assistantMessage := cleanTacticsAssistantMessage(modelOutput.Message)
 	assistantMessageID, err := s.store.CreateScopedChatMessage(ctx, workspaceID, nil, "assistant", assistantMessage, map[string]any{
 		"prompt_version":        TacticsFacilitatorPromptVersion,
 		"user_source_id":        userMessageID,
 		"response_id":           result.ResponseID,
-		"previous_response_id":  usedPreviousResponseID,
+		"conversation_id":       result.ConversationID,
 		"vector_store_ids":      vectorStoreIDs,
 		"session_status":        modelOutput.SessionStatus,
 		"current_focus":         modelOutput.CurrentFocus,
@@ -319,17 +356,11 @@ func buildTacticsFreshInput(message string, request TacticsFacilitatorMessageReq
 	return "Context for the tactical session in JSON:\n" + string(raw)
 }
 
-func buildTacticsTurnInput(message string, request TacticsFacilitatorMessageRequest, scopeContext any, state TacticsFacilitatorState) string {
+func buildTacticsTurnInput(message string, request TacticsFacilitatorMessageRequest) string {
 	turn := map[string]any{
 		"latest_user_message": message,
 		"participant_role":    normalizeParticipantRole(request.ParticipantRole),
-		"active_scope": map[string]any{
-			"request": request.Scope,
-			"entity":  scopeContext,
-		},
-		"session_state":           state.Session,
-		"latest_quality_feedback": compactTacticsReadinessFeedback(state.Readiness),
-		"instruction":             "Continue the same tactical conversation. Respond naturally, preserve the active course as the governing constraint, and do not expose internal status mechanics.",
+		"active_scope":        request.Scope,
 	}
 	raw, _ := json.Marshal(turn)
 	return string(raw)

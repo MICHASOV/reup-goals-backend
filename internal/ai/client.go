@@ -141,13 +141,29 @@ func isDirectProxy(value string) bool {
 type responsesRequest struct {
 	Model              string                   `json:"model"`
 	Input              string                   `json:"input"`
-	Instructions       string                   `json:"instructions"`
+	Instructions       string                   `json:"instructions,omitempty"`
 	Text               map[string]interface{}   `json:"text,omitempty"`
 	MaxOutputTokens    int                      `json:"max_output_tokens,omitempty"`
 	PreviousResponseID string                   `json:"previous_response_id,omitempty"`
+	Conversation       string                   `json:"conversation,omitempty"`
 	ContextManagement  []map[string]interface{} `json:"context_management,omitempty"`
 	Tools              []map[string]interface{} `json:"tools,omitempty"`
 	PromptCacheKey     string                   `json:"prompt_cache_key,omitempty"`
+}
+
+type conversationRequest struct {
+	Metadata map[string]string       `json:"metadata,omitempty"`
+	Items    []conversationInputItem `json:"items,omitempty"`
+}
+
+type conversationInputItem struct {
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type conversationResponse struct {
+	ID string `json:"id"`
 }
 
 type responsesResponse struct {
@@ -181,13 +197,16 @@ func (u Usage) CachedInputTokens() int {
 }
 
 type TextResult struct {
-	Text       string
-	ResponseID string
-	Usage      Usage
+	Text           string
+	ResponseID     string
+	ConversationID string
+	Usage          Usage
 }
 
 type ResponseContextOptions struct {
 	PreviousResponseID   string
+	ConversationID       string
+	UseConversation      bool
 	VectorStoreIDs       []string
 	CompactThreshold     int
 	PromptCacheKey       string
@@ -404,36 +423,23 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 	}
 	defer requestCancel()
 
-	reqBody := responsesRequest{
-		Model:              resolved.Model,
-		Input:              input,
-		Instructions:       resolved.Instructions,
-		MaxOutputTokens:    c.MaxOutputTokens,
-		Text:               textFormat,
-		PreviousResponseID: strings.TrimSpace(options.PreviousResponseID),
-		PromptCacheKey:     strings.TrimSpace(options.PromptCacheKey),
-	}
-	if options.MaxOutputTokens > 0 {
-		reqBody.MaxOutputTokens = options.MaxOutputTokens
-	}
-	if options.CompactThreshold > 0 {
-		reqBody.ContextManagement = []map[string]interface{}{
-			{
-				"type":              "compaction",
-				"compact_threshold": options.CompactThreshold,
-			},
+	conversationID := strings.TrimSpace(options.ConversationID)
+	if options.UseConversation && conversationID == "" {
+		conversationID, err = c.createConversation(requestCtx, resolved)
+		if err != nil {
+			return TextResult{}, err
 		}
+		defer func() {
+			if resultErr == nil {
+				return
+			}
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cleanupCancel()
+			_ = c.DeleteConversation(cleanupCtx, conversationID)
+		}()
 	}
-	if len(options.VectorStoreIDs) > 0 {
-		fileSearchTool := map[string]interface{}{
-			"type":             "file_search",
-			"vector_store_ids": cleanStringList(options.VectorStoreIDs),
-		}
-		if options.MaxFileSearchResults > 0 {
-			fileSearchTool["max_num_results"] = options.MaxFileSearchResults
-		}
-		reqBody.Tools = []map[string]interface{}{fileSearchTool}
-	}
+
+	reqBody := buildResponsesRequest(resolved, input, textFormat, options, c.MaxOutputTokens, conversationID)
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -479,10 +485,87 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 	}
 
 	return TextResult{
-		Text:       text,
-		ResponseID: parsed.ID,
-		Usage:      parsed.Usage,
+		Text:           text,
+		ResponseID:     parsed.ID,
+		ConversationID: conversationID,
+		Usage:          parsed.Usage,
 	}, nil
+}
+
+func buildResponsesRequest(
+	resolved ResolvedCall,
+	input string,
+	textFormat map[string]interface{},
+	options ResponseContextOptions,
+	defaultMaxOutputTokens int,
+	conversationID string,
+) responsesRequest {
+	reqBody := responsesRequest{
+		Model:           resolved.Model,
+		Input:           input,
+		MaxOutputTokens: defaultMaxOutputTokens,
+		Text:            textFormat,
+		PromptCacheKey:  strings.TrimSpace(options.PromptCacheKey),
+	}
+	if strings.TrimSpace(conversationID) != "" {
+		reqBody.Conversation = strings.TrimSpace(conversationID)
+	} else {
+		reqBody.Instructions = resolved.Instructions
+		reqBody.PreviousResponseID = strings.TrimSpace(options.PreviousResponseID)
+	}
+	if options.MaxOutputTokens > 0 {
+		reqBody.MaxOutputTokens = options.MaxOutputTokens
+	}
+	if options.CompactThreshold > 0 {
+		reqBody.ContextManagement = []map[string]interface{}{{
+			"type":              "compaction",
+			"compact_threshold": options.CompactThreshold,
+		}}
+	}
+	if vectorStoreIDs := cleanStringList(options.VectorStoreIDs); len(vectorStoreIDs) > 0 {
+		fileSearchTool := map[string]interface{}{
+			"type":             "file_search",
+			"vector_store_ids": vectorStoreIDs,
+		}
+		if options.MaxFileSearchResults > 0 {
+			fileSearchTool["max_num_results"] = options.MaxFileSearchResults
+		}
+		reqBody.Tools = []map[string]interface{}{fileSearchTool}
+	}
+	return reqBody
+}
+
+func (c *OpenAIClient) createConversation(ctx context.Context, resolved ResolvedCall) (string, error) {
+	payload := buildConversationRequest(resolved)
+	var parsed conversationResponse
+	if err := c.doJSON(ctx, http.MethodPost, "https://api.openai.com/v1/conversations", payload, &parsed); err != nil {
+		return "", fmt.Errorf("create conversation: %w", err)
+	}
+	if strings.TrimSpace(parsed.ID) == "" {
+		return "", fmt.Errorf("create conversation: empty conversation id")
+	}
+	return strings.TrimSpace(parsed.ID), nil
+}
+
+func buildConversationRequest(resolved ResolvedCall) conversationRequest {
+	payload := conversationRequest{
+		Metadata: map[string]string{
+			"module":         strings.TrimSpace(resolved.Metadata.Module),
+			"prompt_name":    strings.TrimSpace(resolved.Metadata.PromptName),
+			"prompt_version": strings.TrimSpace(resolved.Metadata.PromptVersion),
+		},
+		Items: []conversationInputItem{{
+			Type:    "message",
+			Role:    "developer",
+			Content: resolved.Instructions,
+		}},
+	}
+	for key, value := range payload.Metadata {
+		if value == "" {
+			delete(payload.Metadata, key)
+		}
+	}
+	return payload
 }
 
 func (c *OpenAIClient) UploadFile(ctx context.Context, filename string, purpose string, file io.Reader) (OpenAIFile, error) {
@@ -555,6 +638,23 @@ func (c *OpenAIClient) DeleteVectorStore(ctx context.Context, vectorStoreID stri
 		return nil
 	}
 	return c.deleteResource(ctx, "https://api.openai.com/v1/vector_stores/"+url.PathEscape(vectorStoreID))
+}
+
+func (c *OpenAIClient) DeleteConversation(ctx context.Context, conversationID string) error {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil
+	}
+	return c.deleteResource(ctx, "https://api.openai.com/v1/conversations/"+url.PathEscape(conversationID))
+}
+
+func (c *OpenAIClient) DeleteVectorStoreFile(ctx context.Context, vectorStoreID string, fileID string) error {
+	vectorStoreID = strings.TrimSpace(vectorStoreID)
+	fileID = strings.TrimSpace(fileID)
+	if vectorStoreID == "" || fileID == "" {
+		return nil
+	}
+	return c.deleteResource(ctx, "https://api.openai.com/v1/vector_stores/"+url.PathEscape(vectorStoreID)+"/files/"+url.PathEscape(fileID))
 }
 
 func (c *OpenAIClient) deleteResource(ctx context.Context, endpoint string) error {
@@ -744,13 +844,33 @@ func safeErrorBody(raw []byte) string {
 
 func cleanStringList(values []string) []string {
 	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		item := strings.TrimSpace(value)
-		if item != "" {
-			result = append(result, item)
+		if item == "" {
+			continue
 		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		result = append(result, item)
 	}
 	return result
+}
+
+func IsConversationStateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	if !strings.Contains(message, "conversation") {
+		return false
+	}
+	return strings.Contains(message, "openai error (404)") ||
+		strings.Contains(message, "not found") ||
+		strings.Contains(message, "does not exist") ||
+		strings.Contains(message, "invalid conversation")
 }
 
 func firstResponseText(parsed responsesResponse) string {

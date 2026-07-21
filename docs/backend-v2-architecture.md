@@ -871,11 +871,17 @@ AI response envelope:
 
 ### Core rule
 
-Frontend never calls OpenAI directly. Backend receives user input, stores it, builds context, calls AI, validates structured JSON, stores output, and only then returns response.
+Frontend never calls OpenAI directly. Backend is the policy and data-isolation boundary.
+
+Dialogue scenarios use one durable OpenAI Conversation per workspace and scope. The resolved business prompt is stored once as the conversation's developer message. Normal turns send only the latest user message plus small scope identifiers when needed. Current structured workspace state is published as a versioned snapshot in the workspace's OpenAI Vector Store and is retrieved with `file_search`; it is not copied into every turn.
+
+The durable dialogue pattern applies to the Knowledge Base, strategy, tactics, document discussions, and task brainstorming. Independent auditors, materializers, formatters, and evaluators remain one-shot calls: they receive only their target/delta/transcript and retrieve stable workspace context through `file_search` when required.
+
+Server-side compaction is enabled for long conversations. The backend stores conversation IDs, keeps the local PostgreSQL transcript for the UI and auditability, and explicitly deletes conversations, files, and vector stores during Knowledge Base reset or account deletion.
 
 ### AI services
 
-Planned services:
+AI services:
 
 - `FactExtractor`: extracts facts from knowledge input/chat/task descriptions.
 - `KnowledgeQualityEvaluator`: evaluates knowledge completeness and gaps.

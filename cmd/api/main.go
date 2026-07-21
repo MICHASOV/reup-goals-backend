@@ -26,6 +26,7 @@ import (
 	v2api "reup-goals-backend/internal/v2/api"
 	audioapi "reup-goals-backend/internal/v2/audio"
 	"reup-goals-backend/internal/v2/bootstrap"
+	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/course"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/operations"
@@ -85,10 +86,11 @@ func main() {
 	aiPlatformHandler := aiplatform.NewHandler(database, cfg.AIAdminKey)
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
-	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager)
-	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager)
-	tacticsHandler := tactics.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager)
-	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold)
+	workspaceContextIndex := contextindex.New(database, auditorAIClient)
+	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
+	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
+	tacticsHandler := tactics.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
+	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold).WithContextIndex(workspaceContextIndex)
 	operationsHandler := operations.NewHandler(database, jobManager)
 	privacyHandler := privacy.NewHandler(database)
 	profileHandler := profile.NewHandler(database, cfg, emailService, cloudPayments)

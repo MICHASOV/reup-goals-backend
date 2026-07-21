@@ -28,6 +28,7 @@ The API is the policy-enforcement point. The browser never calls OpenAI directly
 | Completed privacy requests | 3 years | automatic |
 | Business workspace content | account/workspace lifetime | explicit deletion; legal holds are exceptional and documented |
 | OpenAI files/vector stores | workspace/account lifetime | explicit provider deletion before local identifiers are erased |
+| OpenAI Conversations | workspace/account or scoped-dialogue lifetime | explicit provider deletion on Knowledge Base reset/account deletion; conversation objects are not governed by the normal Response 30-day TTL |
 | PostgreSQL backups | target maximum 30 days | provider lifecycle; restore tests must confirm deletion behavior |
 | Billing/accounting records | legal schedule | confirmed by finance/legal owner, separate from product content |
 
@@ -37,6 +38,6 @@ Retention runs at startup and on `RETENTION_INTERVAL`. PostgreSQL advisory locki
 
 - Do not put prompts, user messages, documents, audio, tokens, passwords, email codes, or payment details in logs.
 - AI context must contain the smallest source set that still preserves answer quality.
-- Uploaded source files must be deleted from OpenAI when the Knowledge Base or account is deleted.
+- Uploaded source files, generated context snapshots, vector stores, and durable Conversations must be deleted from OpenAI when the Knowledge Base or account is deleted.
 - Product analytics properties contain event names, entity IDs, status, and timing, not free-form business text.
 - Production backups and logs stay in the workspace's approved region.

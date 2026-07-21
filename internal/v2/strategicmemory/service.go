@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
 )
 
@@ -22,6 +23,23 @@ type Service struct {
 	qualityAuditMu         sync.Mutex
 	qualityAuditReservedAt map[int]time.Time
 	jobs                   *jobs.Manager
+	contextIndex           *contextindex.Service
+}
+
+func (s *Service) SetContextIndex(index *contextindex.Service) {
+	s.contextIndex = index
+}
+
+func (s *Service) workspaceContextVectorStoreIDs(ctx context.Context, workspaceID int, session OpenAISession) ([]string, bool) {
+	fallback := vectorStoreIDsFromSession(session)
+	if s.contextIndex == nil {
+		return fallback, false
+	}
+	indexed, err := s.contextIndex.Ensure(ctx, workspaceID)
+	if err != nil || len(indexed) == 0 {
+		return fallback, false
+	}
+	return indexed, true
 }
 
 func NewService(store *Store, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *Service {
@@ -122,16 +140,25 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	}
 
 	input := message
-	if strings.TrimSpace(session.PreviousResponseID) == "" {
+	if strings.TrimSpace(session.ConversationID) == "" && strings.TrimSpace(session.PreviousResponseID) != "" {
 		contextPack := buildAuditorConversationInput(workspaceID, message, state, relevantMessages)
 		rawInput, _ := json.Marshal(contextPack)
-		input = "Контекст для ответа в формате JSON:\n" + string(rawInput)
+		input = "One-time conversation bootstrap from the existing local session. Use it for continuity; current structured workspace data is available through file_search.\n" + string(rawInput)
 	}
 	vectorStoreIDs := vectorStoreIDsFromSession(session)
+	if s.contextIndex != nil {
+		indexedIDs, indexErr := s.contextIndex.Available(ctx, workspaceID)
+		if indexErr == nil && len(indexedIDs) > 0 {
+			vectorStoreIDs = indexedIDs
+		} else if indexErr != nil {
+			s.store.LogAIRunWithUsage(ctx, workspaceID, "workspace_context_sync", s.ai.ModelName(), StrategicMemoryPromptVersion, 0, 0, 0, "failed", indexErr.Error())
+		}
+	}
 	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "business_auditor_openai_native", StrategicMemoryPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateTextNative(aiCtx, businessAuditorPrompt, input, ai.ResponseContextOptions{
-		PreviousResponseID:   session.PreviousResponseID,
+	result, err := s.ai.GenerateTextNative(aiCtx, businessAuditorPrompt+contextindex.RetrievalInstructions, input, ai.ResponseContextOptions{
+		UseConversation:      true,
+		ConversationID:       session.ConversationID,
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       session.PromptCacheKey,
@@ -139,11 +166,12 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		if strings.TrimSpace(session.PreviousResponseID) != "" {
-			_ = s.store.UpdateOpenAIPreviousResponseID(ctx, workspaceID, "")
+		if strings.TrimSpace(session.ConversationID) != "" && ai.IsConversationStateError(err) {
+			_ = s.store.UpdateOpenAIConversationID(ctx, workspaceID, "")
 			retryInput := buildFreshContextInput(workspaceID, message, state, relevantMessages)
 			started = time.Now()
-			result, err = s.ai.GenerateTextNative(aiCtx, businessAuditorPrompt, retryInput, ai.ResponseContextOptions{
+			result, err = s.ai.GenerateTextNative(aiCtx, businessAuditorPrompt+contextindex.RetrievalInstructions, retryInput, ai.ResponseContextOptions{
+				UseConversation:      true,
 				VectorStoreIDs:       vectorStoreIDs,
 				CompactThreshold:     session.CompactThreshold,
 				PromptCacheKey:       session.PromptCacheKey,
@@ -157,19 +185,19 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		}
 	}
 	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
-	if strings.TrimSpace(result.ResponseID) != "" {
-		_ = s.store.UpdateOpenAIPreviousResponseID(ctx, workspaceID, result.ResponseID)
+	if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != session.ConversationID {
+		_ = s.store.UpdateOpenAIConversationID(ctx, workspaceID, result.ConversationID)
 	}
 
 	assistantMessage := cleanAssistantMessage(result.Text)
 	assistantMessage = fallbackAssistantReply(assistantMessage)
 	_, _ = s.store.CreateRawSource(ctx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
-		"prompt_version":       StrategicMemoryPromptVersion,
-		"mode":                 "openai_native",
-		"user_source_id":       sourceID,
-		"response_id":          result.ResponseID,
-		"previous_response_id": session.PreviousResponseID,
-		"vector_store_ids":     vectorStoreIDs,
+		"prompt_version":   StrategicMemoryPromptVersion,
+		"mode":             "openai_native",
+		"user_source_id":   sourceID,
+		"response_id":      result.ResponseID,
+		"conversation_id":  result.ConversationID,
+		"vector_store_ids": vectorStoreIDs,
 	})
 	s.queueBusinessContextMaterialization(workspaceID, sourceID, message, assistantMessage)
 
@@ -356,6 +384,10 @@ func (s *Service) CleanupExternalResources(ctx context.Context, workspaceID int)
 	if err != nil {
 		return err
 	}
+	contextFileIDs, conversationIDs, err := s.store.ListWorkspaceExternalContextIDs(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
 	fileIDs := make(map[string]struct{})
 	vectorStoreIDs := make(map[string]struct{})
 	for _, item := range files {
@@ -366,10 +398,15 @@ func (s *Service) CleanupExternalResources(ctx context.Context, workspaceID int)
 			vectorStoreIDs[id] = struct{}{}
 		}
 	}
+	for _, id := range contextFileIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			fileIDs[id] = struct{}{}
+		}
+	}
 	if id := strings.TrimSpace(session.VectorStoreID); id != "" {
 		vectorStoreIDs[id] = struct{}{}
 	}
-	if len(fileIDs) == 0 && len(vectorStoreIDs) == 0 {
+	if len(fileIDs) == 0 && len(vectorStoreIDs) == 0 && len(conversationIDs) == 0 {
 		return nil
 	}
 	cleaner, ok := s.ai.(ai.ResourceCleaner)
@@ -384,6 +421,17 @@ func (s *Service) CleanupExternalResources(ctx context.Context, workspaceID int)
 	for id := range fileIDs {
 		if err := cleaner.DeleteFile(ctx, id); err != nil {
 			return fmt.Errorf("delete file %s: %w", id, err)
+		}
+	}
+	if len(conversationIDs) > 0 {
+		conversationCleaner, ok := s.ai.(ai.ConversationCleaner)
+		if !ok {
+			return fmt.Errorf("ai provider does not support conversation cleanup")
+		}
+		for _, id := range conversationIDs {
+			if err := conversationCleaner.DeleteConversation(ctx, id); err != nil {
+				return fmt.Errorf("delete conversation %s: %w", id, err)
+			}
 		}
 	}
 	return nil

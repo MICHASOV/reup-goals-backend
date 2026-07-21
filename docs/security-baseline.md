@@ -22,7 +22,7 @@ Core rules:
 - every product query is scoped by `workspace_id` and active membership;
 - business data is never logged as request bodies or prompt text;
 - secrets are supplied at runtime and never committed;
-- deletion covers PostgreSQL and persistent OpenAI files/vector stores;
+- deletion covers PostgreSQL and persistent OpenAI files, vector stores, and Conversations;
 - production access follows least privilege and is auditable.
 
 ## 2. Application controls
@@ -38,7 +38,7 @@ Implemented baseline:
 - Prompt Registry and AI usage policies require a separate admin key;
 - task assignees must be active members of the workspace;
 - outbound OpenAI requests use bounded response reads, streaming uploads, connection pooling, and operation timeouts;
-- account/Knowledge Base deletion removes persistent OpenAI files and vector stores before local identifiers are erased;
+- account/Knowledge Base deletion removes persistent OpenAI files, vector stores, and Conversations before local identifiers are erased;
 - migrations are transactional and serialized with a PostgreSQL advisory lock.
 
 ## 3. Infrastructure controls required before customer data
@@ -60,7 +60,7 @@ These controls require provider or server configuration and cannot be guaranteed
 
 - Account deletion must fail visibly if external OpenAI cleanup fails. The user record remains so cleanup can be retried.
 - Knowledge Base reset follows the same external-first rule.
-- OpenAI files and vector stores are explicitly deleted. Provider-side response retention still follows the configured OpenAI data controls.
+- OpenAI files, vector stores, and durable Conversations are explicitly deleted. Conversation items do not use the normal Response 30-day TTL, so losing their local identifiers before provider cleanup is a deletion failure.
 - Database backup retention may delay physical erasure. This must be disclosed in the privacy policy with the maximum deletion window.
 - Analytics and audit data need a written retention schedule before production.
 
