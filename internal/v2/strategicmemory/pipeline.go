@@ -77,8 +77,9 @@ func (s *Service) queueKnowledgeCandidate(
 		}
 		return state, nil
 	}
+	parentCtx := context.WithoutCancel(ctx)
 	go func() {
-		jobCtx, cancel := context.WithTimeout(context.Background(), knowledgeCandidateTimeout)
+		jobCtx, cancel := context.WithTimeout(parentCtx, knowledgeCandidateTimeout)
 		defer cancel()
 		if runErr := s.runKnowledgeCandidate(jobCtx, workspaceID, payload); runErr != nil {
 			log.Printf("[WARN] knowledge candidate failed workspace_id=%d revision=%d: %v", workspaceID, payload.Revision, runErr)
