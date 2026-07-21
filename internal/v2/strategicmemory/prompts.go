@@ -132,7 +132,7 @@ When relation_to_existing is confirms, extends, replaces, contradicts, or makes_
 
 When preferred_document_type is present, the message comes from that document's dedicated conversation. Use that document as the primary destination when the fact belongs there, while still routing genuinely cross-cutting facts to their correct primary documents. Never treat the selected document itself or the assistant reply as a new fact; extract facts only from the user's new source.
 
-When facts_only is true, accept only business reality stated in the user's new source: current or historical facts, existing processes, observed problems or constraints, metrics, and results. Exclude strategic choices made during the session, goals, plans, hypotheses, assumptions, opinions, opportunities, future risks, recommendations, and open questions. An explicit uncertainty about a factual statement must remain uncertainty and must never be promoted into a fact.
+When facts_only is true for the input or for a source in its metadata, accept only business reality stated in that source: current or historical facts, existing processes, observed problems or constraints, metrics, and results. Exclude strategic choices made during the session, goals, plans, hypotheses, assumptions, opinions, opportunities, future risks, recommendations, and open questions. An explicit uncertainty about a factual statement must remain uncertainty and must never be promoted into a fact.
 
 Return valid JSON only with this shape:
 {

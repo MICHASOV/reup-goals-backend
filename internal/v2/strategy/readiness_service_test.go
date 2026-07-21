@@ -1,6 +1,27 @@
 package strategy
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestStrategyConversationInputsStayCompactAfterInitialization(t *testing.T) {
+	state := StrategyFacilitatorState{Strategy: Strategy{ID: 17, Status: StatusDraft, Title: "Основная стратегия"}}
+	var initial map[string]any
+	if err := json.Unmarshal([]byte(buildStrategyFacilitatorInitialInput("Начнем", state)), &initial); err != nil {
+		t.Fatal(err)
+	}
+	if initial["active_strategy"] == nil || initial["knowledge_base"] != nil || initial["recent_dialogue"] != nil {
+		t.Fatalf("unexpected initial context: %#v", initial)
+	}
+	var turn map[string]any
+	if err := json.Unmarshal([]byte(buildStrategyFacilitatorTurnInput("Продолжим")), &turn); err != nil {
+		t.Fatal(err)
+	}
+	if len(turn) != 1 || turn["latest_user_message"] != "Продолжим" {
+		t.Fatalf("conversation turn repeated context: %#v", turn)
+	}
+}
 
 func TestNormalizeReadinessReportAlwaysAddsFeedbackForReady(t *testing.T) {
 	run := StrategyReadinessRun{SessionRevision: 7, ValidatedThroughMessageID: 42}

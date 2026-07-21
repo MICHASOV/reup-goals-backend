@@ -220,6 +220,13 @@ func (s *Service) extractKnowledgeSourceChunk(ctx context.Context, workspaceID i
 		"existing_agenda":   limitAgendaForContext(agenda, 120),
 		"existing_snapshot": snapshot,
 	}
+	policy := knowledgeSourceChunkPolicy(sources)
+	if policy.FactsOnly {
+		input["facts_only"] = true
+	}
+	if policy.PreferredDocumentType != "" {
+		input["preferred_document_type"] = policy.PreferredDocumentType
+	}
 	vectorStoreIDs, indexed := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
 	if indexed {
 		delete(input, "existing_claims")
@@ -248,6 +255,9 @@ func (s *Service) extractKnowledgeSourceChunk(ctx context.Context, workspaceID i
 	var materialized materializerOutput
 	if err := json.Unmarshal([]byte(result.Text), &materialized); err != nil {
 		return fmt.Errorf("deferred extractor json decode error: %w", err)
+	}
+	if policy.FactsOnly {
+		materialized = factsOnlyMaterialization(materialized)
 	}
 	fallbackSourceID := lastEvidenceSourceID(sources)
 	if _, _, err := s.store.InsertClaims(ctx, workspaceID, fallbackSourceID, materializerItemsToClaims(materialized.ExtractedItems)); err != nil {
@@ -352,12 +362,17 @@ func chunkKnowledgeSources(sources []RawSource, maxRunes int) [][]RawSource {
 	chunks := [][]RawSource{}
 	current := []RawSource{}
 	currentRunes := 0
+	currentPolicy := ""
 	for _, source := range sources {
 		size := len([]rune(source.Content))
-		if len(current) > 0 && currentRunes+size > maxRunes {
+		policy := knowledgeSourcePolicyKey(source)
+		if len(current) > 0 && (currentRunes+size > maxRunes || policy != currentPolicy) {
 			chunks = append(chunks, current)
 			current = nil
 			currentRunes = 0
+		}
+		if len(current) == 0 {
+			currentPolicy = policy
 		}
 		current = append(current, source)
 		currentRunes += size
@@ -373,7 +388,7 @@ func compilationSources(sources []RawSource) []knowledgeCompilationSource {
 	for _, source := range sources {
 		role := "context"
 		switch source.SourceType {
-		case SourceTypeUserMessage:
+		case SourceTypeUserMessage, SourceTypeStrategyMessage, SourceTypeDocumentMessage:
 			role = "user"
 		case SourceTypeAssistantMessage:
 			role = "assistant"
@@ -390,7 +405,10 @@ func compilationSources(sources []RawSource) []knowledgeCompilationSource {
 
 func lastEvidenceSourceID(sources []RawSource) int {
 	for index := len(sources) - 1; index >= 0; index-- {
-		if sources[index].SourceType == SourceTypeUserMessage || sources[index].SourceType == SourceTypeFileUpload {
+		if sources[index].SourceType == SourceTypeUserMessage ||
+			sources[index].SourceType == SourceTypeFileUpload ||
+			sources[index].SourceType == SourceTypeStrategyMessage ||
+			sources[index].SourceType == SourceTypeDocumentMessage {
 			return sources[index].ID
 		}
 	}
@@ -398,6 +416,40 @@ func lastEvidenceSourceID(sources []RawSource) int {
 		return sources[len(sources)-1].ID
 	}
 	return 0
+}
+
+type knowledgeChunkPolicy struct {
+	FactsOnly             bool
+	PreferredDocumentType string
+}
+
+func knowledgeSourceChunkPolicy(sources []RawSource) knowledgeChunkPolicy {
+	if len(sources) == 0 {
+		return knowledgeChunkPolicy{}
+	}
+	return knowledgeSourcePolicy(sources[0])
+}
+
+func knowledgeSourcePolicyKey(source RawSource) string {
+	policy := knowledgeSourcePolicy(source)
+	return fmt.Sprintf("facts_only=%t|document=%s", policy.FactsOnly, policy.PreferredDocumentType)
+}
+
+func knowledgeSourcePolicy(source RawSource) knowledgeChunkPolicy {
+	var metadata struct {
+		FactsOnly             bool   `json:"facts_only"`
+		PreferredDocumentType string `json:"preferred_document_type"`
+		DocumentType          string `json:"document_type"`
+	}
+	_ = json.Unmarshal(source.Metadata, &metadata)
+	preferredDocumentType := normalizeDocumentType(defaultString(metadata.PreferredDocumentType, metadata.DocumentType))
+	if !validStrategicDocumentType(preferredDocumentType) {
+		preferredDocumentType = ""
+	}
+	return knowledgeChunkPolicy{
+		FactsOnly:             metadata.FactsOnly,
+		PreferredDocumentType: preferredDocumentType,
+	}
 }
 
 func allStrategicDocumentTypes() []string {

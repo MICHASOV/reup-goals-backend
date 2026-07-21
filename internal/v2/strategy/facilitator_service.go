@@ -143,7 +143,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if _, err := s.store.BeginFacilitatorTurn(ctx, workspaceID, userID, userSourceID); err != nil {
 		return StrategyFacilitatorMessageResponse{}, err
 	}
-	if err := s.memoryService.QueueFactsFromStrategy(ctx, workspaceID, userID, userSourceID, message); err != nil {
+	if err := s.memoryService.CaptureStrategyFacts(ctx, workspaceID, userID, userSourceID, message); err != nil {
 		s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facts_to_knowledge_base", s.ai.ModelName(), StrategyFacilitatorPromptVersion, 0, 0, 0, "failed", err.Error())
 	}
 
@@ -166,8 +166,12 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	}
 
 	input := buildStrategyFacilitatorTurnInput(message)
-	if strings.TrimSpace(session.ConversationID) == "" && strings.TrimSpace(session.PreviousResponseID) != "" {
-		input = buildStrategyFacilitatorFreshInput(workspaceID, message, state)
+	if strings.TrimSpace(session.ConversationID) == "" {
+		if strings.TrimSpace(session.PreviousResponseID) != "" {
+			input = buildStrategyFacilitatorFreshInput(workspaceID, message, state)
+		} else {
+			input = buildStrategyFacilitatorInitialInput(message, state)
+		}
 	}
 
 	started := time.Now()
@@ -340,6 +344,20 @@ func buildStrategyFacilitatorFreshInput(workspaceID int, message string, state S
 
 func buildStrategyFacilitatorTurnInput(message string) string {
 	turn := map[string]any{"latest_user_message": message}
+	raw, _ := json.Marshal(turn)
+	return string(raw)
+}
+
+func buildStrategyFacilitatorInitialInput(message string, state StrategyFacilitatorState) string {
+	turn := map[string]any{
+		"latest_user_message": message,
+		"active_strategy": map[string]any{
+			"id":     state.Strategy.ID,
+			"status": state.Strategy.Status,
+			"title":  state.Strategy.Title,
+		},
+		"context_access": "Use file_search for the current Knowledge Base, uploaded files, and other current workspace data before choosing the next move.",
+	}
 	raw, _ := json.Marshal(turn)
 	return string(raw)
 }

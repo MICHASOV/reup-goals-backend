@@ -96,8 +96,12 @@ func (s *BrainstormService) HandleMessage(
 		}
 	}
 	input := brainstormTurnInput(request.Message)
-	if strings.TrimSpace(session.ConversationID) == "" && strings.TrimSpace(session.PreviousResponseID) != "" {
-		input = brainstormFreshInput(pack, request.Message)
+	if strings.TrimSpace(session.ConversationID) == "" {
+		if strings.TrimSpace(session.PreviousResponseID) != "" {
+			input = brainstormFreshInput(pack, request.Message)
+		} else {
+			input = brainstormInitialInput(pack, request.Message)
+		}
 	}
 	started := time.Now()
 	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "task_brainstorm", taskBrainstormPromptVersion)
@@ -331,6 +335,15 @@ func brainstormFreshInput(pack taskContextPack, message string) string {
 
 func brainstormTurnInput(message string) string {
 	raw, _ := json.Marshal(map[string]any{"current_user_message": message})
+	return string(raw)
+}
+
+func brainstormInitialInput(pack taskContextPack, message string) string {
+	raw, _ := json.Marshal(map[string]any{
+		"current_user_message": message,
+		"active_workstream":    pack.Workstream,
+		"context_access":       "Use file_search for the current business, strategy, course, tactics, and tasks.",
+	})
 	return string(raw)
 }
 

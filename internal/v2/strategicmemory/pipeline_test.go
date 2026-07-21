@@ -59,6 +59,40 @@ func TestChunkKnowledgeSourcesPreservesOrderAndOversizedSource(t *testing.T) {
 	}
 }
 
+func TestChunkKnowledgeSourcesSeparatesDeferredPolicies(t *testing.T) {
+	factsOnly, _ := json.Marshal(map[string]any{"facts_only": true})
+	financeDocument, _ := json.Marshal(map[string]any{
+		"preferred_document_type": "finance_economics",
+	})
+	sources := []RawSource{
+		{ID: 1, SourceType: SourceTypeUserMessage, Content: "base"},
+		{ID: 2, SourceType: SourceTypeStrategyMessage, Content: "strategy fact", Metadata: factsOnly},
+		{ID: 3, SourceType: SourceTypeStrategyMessage, Content: "another fact", Metadata: factsOnly},
+		{ID: 4, SourceType: SourceTypeDocumentMessage, Content: "finance correction", Metadata: financeDocument},
+	}
+
+	chunks := chunkKnowledgeSources(sources, 1000)
+	if len(chunks) != 3 {
+		t.Fatalf("expected policy-isolated chunks, got %#v", chunks)
+	}
+	if got := knowledgeSourceChunkPolicy(chunks[1]); !got.FactsOnly || got.PreferredDocumentType != "" {
+		t.Fatalf("unexpected strategy policy: %#v", got)
+	}
+	if got := knowledgeSourceChunkPolicy(chunks[2]); got.FactsOnly || got.PreferredDocumentType != "finance_economics" {
+		t.Fatalf("unexpected document policy: %#v", got)
+	}
+}
+
+func TestCompilationSourcesTreatsInterviewSourcesAsUserEvidence(t *testing.T) {
+	got := compilationSources([]RawSource{
+		{ID: 1, SourceType: SourceTypeStrategyMessage},
+		{ID: 2, SourceType: SourceTypeDocumentMessage},
+	})
+	if len(got) != 2 || got[0].Role != "user" || got[1].Role != "user" {
+		t.Fatalf("interview sources must remain user evidence: %#v", got)
+	}
+}
+
 func TestValidClaimSourceIDsFiltersForeignAndDuplicateIDs(t *testing.T) {
 	valid := map[int]bool{2: true, 3: true, 7: true}
 	got := validClaimSourceIDs([]int{3, 999, 3, 2}, 7, valid)

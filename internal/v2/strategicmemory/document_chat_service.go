@@ -75,10 +75,9 @@ func (s *Service) HandleDocumentChatMessage(
 	if err != nil {
 		return DocumentChatMessageResponse{}, err
 	}
-	sourceID, err := s.store.CreateRawSource(ctx, workspaceID, &userID, SourceTypeDocumentMessage, message, map[string]any{
-		"document_type":            documentType,
-		"document_chat_message_id": userMessage.ID,
-	})
+	sourceID, err := s.captureDocumentDiscussion(
+		ctx, workspaceID, userID, documentType, userMessage.ID, message,
+	)
 	if err != nil {
 		return DocumentChatMessageResponse{}, err
 	}
@@ -94,8 +93,12 @@ func (s *Service) HandleDocumentChatMessage(
 	}
 
 	input := documentChatTurnInput(message)
-	if strings.TrimSpace(session.ConversationID) == "" && strings.TrimSpace(session.PreviousResponseID) != "" {
-		input = documentChatFreshInput(document, history, state, message)
+	if strings.TrimSpace(session.ConversationID) == "" {
+		if strings.TrimSpace(session.PreviousResponseID) != "" {
+			input = documentChatFreshInput(document, history, state, message)
+		} else {
+			input = documentChatInitialInput(document, message)
+		}
 	}
 	vectorStoreIDs := vectorStoreIDsFromSession(globalSession)
 	if s.contextIndex != nil {
@@ -156,8 +159,6 @@ func (s *Service) HandleDocumentChatMessage(
 		return DocumentChatMessageResponse{}, err
 	}
 	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_document_chat", s.ai.ModelName(), documentChatPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
-	s.queueDocumentContextMaterialization(workspaceID, sourceID, documentType, message, assistantText)
-
 	return DocumentChatMessageResponse{
 		WorkspaceID:      workspaceID,
 		Document:         document,
@@ -191,6 +192,19 @@ func documentChatFreshInput(
 
 func documentChatTurnInput(message string) string {
 	raw, _ := json.Marshal(map[string]string{"latest_user_message": message})
+	return string(raw)
+}
+
+func documentChatInitialInput(document StrategicDocument, message string) string {
+	raw, _ := json.Marshal(map[string]any{
+		"latest_user_message": message,
+		"selected_document": map[string]any{
+			"document_type": document.DocumentType,
+			"title":         document.Title,
+			"version":       document.Version,
+		},
+		"context_access": "Use file_search to read the current document and related workspace context.",
+	})
 	return string(raw)
 }
 

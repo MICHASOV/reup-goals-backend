@@ -1,6 +1,27 @@
 package tactics
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestTacticsConversationTurnContainsOnlyMessageAndScope(t *testing.T) {
+	workstreamID := 42
+	input := buildTacticsTurnInput("Разберем риск", TacticsFacilitatorMessageRequest{
+		ParticipantRole: "owner",
+		Scope:           &TacticsMessageScope{EntityType: "workstream", EntityID: workstreamID},
+	})
+	var turn map[string]any
+	if err := json.Unmarshal([]byte(input), &turn); err != nil {
+		t.Fatal(err)
+	}
+	if len(turn) != 3 || turn["latest_user_message"] != "Разберем риск" {
+		t.Fatalf("unexpected compact tactics turn: %#v", turn)
+	}
+	if turn["knowledge_base"] != nil || turn["strategy"] != nil || turn["current_tactical_plan"] != nil {
+		t.Fatalf("tactics turn repeated workspace context: %#v", turn)
+	}
+}
 
 func TestParseTacticsFacilitatorOutput(t *testing.T) {
 	raw := `{

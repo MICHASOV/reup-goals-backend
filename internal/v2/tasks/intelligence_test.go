@@ -1,6 +1,27 @@
 package tasks
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestBrainstormConversationInputsKeepWorkspaceContextOutOfEveryTurn(t *testing.T) {
+	pack := taskContextPack{Workstream: &WorkstreamSummary{ID: 8, Title: "Платящий сегмент"}}
+	var initial map[string]any
+	if err := json.Unmarshal([]byte(brainstormInitialInput(pack, "Поштурмим задачи")), &initial); err != nil {
+		t.Fatal(err)
+	}
+	if initial["active_workstream"] == nil || initial["strategy_documents"] != nil {
+		t.Fatalf("unexpected initial brainstorm context: %#v", initial)
+	}
+	var turn map[string]any
+	if err := json.Unmarshal([]byte(brainstormTurnInput("Еще вариант")), &turn); err != nil {
+		t.Fatal(err)
+	}
+	if len(turn) != 1 || turn["current_user_message"] != "Еще вариант" {
+		t.Fatalf("brainstorm turn repeated context: %#v", turn)
+	}
+}
 
 func TestParseBrainstormOutputKeepsOnlyValidScopedActions(t *testing.T) {
 	projectID := 12

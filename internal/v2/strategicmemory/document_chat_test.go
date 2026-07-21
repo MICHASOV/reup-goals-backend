@@ -1,6 +1,27 @@
 package strategicmemory
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestDocumentConversationPinsScopeOnceAndKeepsTurnsCompact(t *testing.T) {
+	document := StrategicDocument{DocumentType: "finance_economics", Title: "Финансы", Version: 3}
+	var initial map[string]any
+	if err := json.Unmarshal([]byte(documentChatInitialInput(document, "Исправь выручку")), &initial); err != nil {
+		t.Fatal(err)
+	}
+	if initial["selected_document"] == nil || initial["related_business_context"] != nil {
+		t.Fatalf("unexpected document initial context: %#v", initial)
+	}
+	var turn map[string]any
+	if err := json.Unmarshal([]byte(documentChatTurnInput("Теперь маржу")), &turn); err != nil {
+		t.Fatal(err)
+	}
+	if len(turn) != 1 || turn["latest_user_message"] != "Теперь маржу" {
+		t.Fatalf("document turn repeated context: %#v", turn)
+	}
+}
 
 func TestStrategicDocumentDefinitionsAreCompleteAndUnique(t *testing.T) {
 	definitions := strategicDocumentDefinitions()
@@ -60,6 +81,7 @@ func TestFactsOnlyMaterializationDropsStrategyContent(t *testing.T) {
 			{DocumentType: "finance_economics", KeyPoints: []string{"Revenue is 10M"}},
 			{DocumentType: "strategy_development", KeyPoints: []string{"Enter a new market"}},
 		},
+		Snapshot: map[string]any{"future_market": "Australia"},
 	}
 
 	result := factsOnlyMaterialization(input)
@@ -71,6 +93,9 @@ func TestFactsOnlyMaterializationDropsStrategyContent(t *testing.T) {
 	}
 	if len(result.DocumentBrief) != 1 || result.DocumentBrief[0].DocumentType != "finance_economics" {
 		t.Fatalf("unexpected document brief: %#v", result.DocumentBrief)
+	}
+	if result.Snapshot != nil {
+		t.Fatalf("facts-only sources must not rewrite an untyped snapshot: %#v", result.Snapshot)
 	}
 }
 
