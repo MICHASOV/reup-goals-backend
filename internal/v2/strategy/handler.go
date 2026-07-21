@@ -78,11 +78,17 @@ func (h *Handler) Current(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	api.WriteJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"strategy":       strategy,
 		"artifacts":      artifacts,
 		"knowledge_base": summary,
-	})
+	}
+	if r.URL.Query().Get("view") == "active" {
+		if synthesis, synthesisErr := h.store.LatestSynthesis(r.Context(), workspace.ID, strategy.ID); synthesisErr == nil && len(synthesis.Documents) > 0 {
+			response["documents"] = synthesis.Documents
+		}
+	}
+	api.WriteJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) Strategy(w http.ResponseWriter, r *http.Request) {
