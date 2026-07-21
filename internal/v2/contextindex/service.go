@@ -322,7 +322,9 @@ func (s *Service) acquireDatabaseLock(ctx context.Context, workspaceID int) (fun
 	}
 	lockKey := workspaceContextLockNamespace + int64(workspaceID)
 	if _, err := connection.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, lockKey); err != nil {
-		connection.Close()
+		if closeErr := connection.Close(); closeErr != nil {
+			return nil, fmt.Errorf("acquire workspace context lock: %w; close connection: %v", err, closeErr)
+		}
 		return nil, fmt.Errorf("acquire workspace context lock: %w", err)
 	}
 	return func() {
