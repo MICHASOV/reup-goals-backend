@@ -43,6 +43,32 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Strat
 	return strategy, artifacts, summary, nil
 }
 
+// CurrentActive returns the strategy that currently drives the course and
+// execution views. If a workspace has not activated a strategy yet, it falls
+// back to the current working version.
+func (s *Store) CurrentActive(ctx context.Context, workspaceID int, userID int) (Strategy, []Artifact, KnowledgeBaseSummary, error) {
+	strategy, err := s.getActive(ctx, workspaceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return s.Current(ctx, workspaceID, userID)
+	}
+	if err != nil {
+		return Strategy{}, nil, KnowledgeBaseSummary{}, err
+	}
+
+	if err := s.ensureDefaultArtifacts(ctx, strategy.ID, workspaceID); err != nil {
+		return Strategy{}, nil, KnowledgeBaseSummary{}, err
+	}
+	artifacts, err := s.listArtifacts(ctx, workspaceID, strategy.ID)
+	if err != nil {
+		return Strategy{}, nil, KnowledgeBaseSummary{}, err
+	}
+	summary, err := s.knowledgeBaseSummary(ctx, workspaceID)
+	if err != nil {
+		return Strategy{}, nil, KnowledgeBaseSummary{}, err
+	}
+	return strategy, artifacts, summary, nil
+}
+
 func (s *Store) ListVersions(ctx context.Context, workspaceID int) ([]Strategy, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, workspace_id, status, version, title, summary, source_type,
@@ -419,6 +445,19 @@ func (s *Store) getCurrent(ctx context.Context, workspaceID int) (Strategy, erro
 		LIMIT 1
 	`, workspaceID, StatusDraft, StatusReadyForReview, StatusActive)
 
+	return scanStrategy(row)
+}
+
+func (s *Store) getActive(ctx context.Context, workspaceID int) (Strategy, error) {
+	row := s.dbx.QueryRowContext(ctx, `
+		SELECT
+			id, workspace_id, status, version, title, summary, source_type,
+			created_by, approved_by, created_at, updated_at, approved_at, activated_at
+		FROM v2_strategies
+		WHERE workspace_id=$1 AND archived_at IS NULL AND status=$2
+		ORDER BY version DESC, activated_at DESC NULLS LAST, id DESC
+		LIMIT 1
+	`, workspaceID, StatusActive)
 	return scanStrategy(row)
 }
 

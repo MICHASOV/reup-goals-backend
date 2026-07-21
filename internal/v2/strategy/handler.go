@@ -64,7 +64,15 @@ func (h *Handler) Current(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	strategy, artifacts, summary, err := h.store.Current(r.Context(), workspace.ID, userID)
+	var strategy Strategy
+	var artifacts []Artifact
+	var summary KnowledgeBaseSummary
+	var err error
+	if r.URL.Query().Get("view") == "active" {
+		strategy, artifacts, summary, err = h.store.CurrentActive(r.Context(), workspace.ID, userID)
+	} else {
+		strategy, artifacts, summary, err = h.store.Current(r.Context(), workspace.ID, userID)
+	}
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "strategy_current_failed")
 		return
