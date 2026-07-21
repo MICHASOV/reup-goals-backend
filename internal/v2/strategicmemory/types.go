@@ -13,6 +13,16 @@ const (
 	SourceTypeStrategyMessage  = "strategy_user_message"
 
 	ConversationStateCollectingContext = "collecting_context"
+	ConversationStateProcessingContext = "processing_context"
+	ConversationStateReadyForStrategy  = "ready_for_strategy"
+
+	KnowledgePipelineCollecting       = "collecting"
+	KnowledgePipelineAuditCandidate   = "audit_candidate"
+	KnowledgePipelineExtracting       = "extracting"
+	KnowledgePipelineReviewing        = "reviewing"
+	KnowledgePipelineNeedsMoreContext = "needs_more_context"
+	KnowledgePipelineCompiling        = "compiling_documents"
+	KnowledgePipelineReady            = "ready"
 
 	ClaimStatusSuggested  = "suggested"
 	ClaimStatusConfirmed  = "confirmed"
@@ -25,7 +35,7 @@ const (
 	DefaultDetailLevel             = "normal"
 	DefaultStructurePreference     = "free_dialogue"
 	DefaultFrustrationSensitivity  = "medium"
-	StrategicMemoryPromptVersion   = "business_auditor_openai_native_v0_4_0"
+	StrategicMemoryPromptVersion   = "business_auditor_openai_native_v0_5_0"
 	DefaultStrategicDocumentStatus = "draft"
 )
 
@@ -126,8 +136,27 @@ type OpenAISession struct {
 	VectorStoreID      string    `json:"vector_store_id,omitempty"`
 	CompactThreshold   int       `json:"compact_threshold"`
 	PromptCacheKey     string    `json:"prompt_cache_key,omitempty"`
+	PromptVersion      string    `json:"prompt_version,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type KnowledgePipelineState struct {
+	WorkspaceID               int             `json:"workspace_id"`
+	Status                    string          `json:"status"`
+	ConversationRevision      int             `json:"conversation_revision"`
+	LastUserSourceID          int             `json:"last_user_source_id"`
+	LastExtractedSourceID     int             `json:"last_extracted_source_id"`
+	LastAuditedSourceID       int             `json:"last_audited_source_id"`
+	CandidateRevision         int             `json:"candidate_revision"`
+	CandidateSourceID         int             `json:"candidate_source_id"`
+	ReadyRevision             int             `json:"ready_revision"`
+	CompiledRevision          int             `json:"compiled_revision"`
+	CandidateReason           string          `json:"candidate_reason,omitempty"`
+	AuditFeedback             json.RawMessage `json:"audit_feedback_json,omitempty"`
+	CandidateReport           json.RawMessage `json:"-"`
+	FeedbackDeliveredRevision int             `json:"feedback_delivered_revision"`
+	UpdatedAt                 time.Time       `json:"updated_at"`
 }
 
 type StrategicFile struct {
@@ -146,17 +175,18 @@ type StrategicFile struct {
 }
 
 type StateResponse struct {
-	WorkspaceID          int                   `json:"workspace_id"`
-	DocumentCatalog      []DocumentCatalogItem `json:"document_catalog"`
-	Snapshot             *MemorySnapshot       `json:"snapshot,omitempty"`
-	Claims               []Claim               `json:"claims"`
-	Agenda               []ResearchAgendaItem  `json:"agenda"`
-	QualityReport        *QualityReport        `json:"quality_report,omitempty"`
-	CommunicationProfile CommunicationProfile  `json:"communication_profile"`
-	DialogueFocus        DialogueFocus         `json:"dialogue_focus"`
-	Documents            []StrategicDocument   `json:"documents"`
-	RecentMessages       []ConversationMessage `json:"recent_messages"`
-	Files                []StrategicFile       `json:"files,omitempty"`
+	WorkspaceID          int                    `json:"workspace_id"`
+	DocumentCatalog      []DocumentCatalogItem  `json:"document_catalog"`
+	Snapshot             *MemorySnapshot        `json:"snapshot,omitempty"`
+	Claims               []Claim                `json:"claims"`
+	Agenda               []ResearchAgendaItem   `json:"agenda"`
+	QualityReport        *QualityReport         `json:"quality_report,omitempty"`
+	CommunicationProfile CommunicationProfile   `json:"communication_profile"`
+	DialogueFocus        DialogueFocus          `json:"dialogue_focus"`
+	Documents            []StrategicDocument    `json:"documents"`
+	RecentMessages       []ConversationMessage  `json:"recent_messages"`
+	Files                []StrategicFile        `json:"files,omitempty"`
+	Pipeline             KnowledgePipelineState `json:"pipeline"`
 }
 
 type DocumentCatalogItem struct {
@@ -213,17 +243,24 @@ type MessageRequest struct {
 }
 
 type MessageResponse struct {
-	WorkspaceID          int                  `json:"workspace_id"`
-	AssistantMessage     string               `json:"assistant_message"`
-	ConversationState    string               `json:"conversation_state"`
-	MemoryUpdates        MemoryUpdates        `json:"memory_updates"`
-	Snapshot             *MemorySnapshot      `json:"snapshot,omitempty"`
-	Documents            []StrategicDocument  `json:"documents"`
-	Agenda               []ResearchAgendaItem `json:"agenda"`
-	Claims               []Claim              `json:"claims"`
-	CommunicationProfile CommunicationProfile `json:"communication_profile"`
-	DialogueFocus        DialogueFocus        `json:"dialogue_focus"`
-	OpenAIResponseID     string               `json:"openai_response_id,omitempty"`
+	WorkspaceID          int                    `json:"workspace_id"`
+	AssistantMessage     string                 `json:"assistant_message"`
+	ConversationState    string                 `json:"conversation_state"`
+	MemoryUpdates        MemoryUpdates          `json:"memory_updates"`
+	Snapshot             *MemorySnapshot        `json:"snapshot,omitempty"`
+	Documents            []StrategicDocument    `json:"documents"`
+	Agenda               []ResearchAgendaItem   `json:"agenda"`
+	Claims               []Claim                `json:"claims"`
+	CommunicationProfile CommunicationProfile   `json:"communication_profile"`
+	DialogueFocus        DialogueFocus          `json:"dialogue_focus"`
+	OpenAIResponseID     string                 `json:"openai_response_id,omitempty"`
+	Pipeline             KnowledgePipelineState `json:"pipeline"`
+}
+
+type auditorTurnOutput struct {
+	Reply           string `json:"reply"`
+	AuditCandidate  bool   `json:"audit_candidate"`
+	CandidateReason string `json:"candidate_reason"`
 }
 
 type FileUploadResponse struct {

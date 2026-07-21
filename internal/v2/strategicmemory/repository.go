@@ -34,20 +34,29 @@ func (s *Store) CreateRawSource(ctx context.Context, workspaceID int, userID *in
 
 func (s *Store) OpenAISession(ctx context.Context, workspaceID int, compactThreshold int) (OpenAISession, error) {
 	if compactThreshold <= 0 {
-		compactThreshold = 120000
+		compactThreshold = 60000
 	}
-	promptCacheKey := fmt.Sprintf("reupgoals-strategic-director-workspace-%d-v1", workspaceID)
+	promptCacheKey := fmt.Sprintf("reupgoals-business-auditor-workspace-%d-v2", workspaceID)
 	var item OpenAISession
 	err := s.dbx.QueryRowContext(ctx, `
-		INSERT INTO strategic_openai_sessions (workspace_id, compact_threshold, prompt_cache_key)
-		VALUES ($1, $2, $3)
+		INSERT INTO strategic_openai_sessions (workspace_id, compact_threshold, prompt_cache_key, prompt_version)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (workspace_id) DO UPDATE SET
+			conversation_id=CASE
+				WHEN strategic_openai_sessions.prompt_version<>EXCLUDED.prompt_version THEN ''
+				ELSE strategic_openai_sessions.conversation_id
+			END,
+			previous_response_id=CASE
+				WHEN strategic_openai_sessions.prompt_version<>EXCLUDED.prompt_version THEN ''
+				ELSE strategic_openai_sessions.previous_response_id
+			END,
 			compact_threshold=EXCLUDED.compact_threshold,
 			prompt_cache_key=EXCLUDED.prompt_cache_key,
+			prompt_version=EXCLUDED.prompt_version,
 			updated_at=NOW()
 		RETURNING id, workspace_id, conversation_id, previous_response_id, vector_store_id,
-			compact_threshold, prompt_cache_key, created_at, updated_at
-	`, workspaceID, compactThreshold, promptCacheKey).Scan(
+			compact_threshold, prompt_cache_key, prompt_version, created_at, updated_at
+	`, workspaceID, compactThreshold, promptCacheKey, StrategicMemoryPromptVersion).Scan(
 		&item.ID,
 		&item.WorkspaceID,
 		&item.ConversationID,
@@ -55,6 +64,7 @@ func (s *Store) OpenAISession(ctx context.Context, workspaceID int, compactThres
 		&item.VectorStoreID,
 		&item.CompactThreshold,
 		&item.PromptCacheKey,
+		&item.PromptVersion,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	)
@@ -81,21 +91,66 @@ func (s *Store) UpdateOpenAIPreviousResponseID(ctx context.Context, workspaceID 
 
 func (s *Store) UpdateOpenAIVectorStoreID(ctx context.Context, workspaceID int, vectorStoreID string, compactThreshold int) error {
 	if compactThreshold <= 0 {
-		compactThreshold = 120000
+		compactThreshold = 60000
 	}
-	promptCacheKey := fmt.Sprintf("reupgoals-strategic-director-workspace-%d-v1", workspaceID)
+	promptCacheKey := fmt.Sprintf("reupgoals-business-auditor-workspace-%d-v2", workspaceID)
 	_, err := s.dbx.ExecContext(ctx, `
 		INSERT INTO strategic_openai_sessions (
-			workspace_id, vector_store_id, compact_threshold, prompt_cache_key
+			workspace_id, vector_store_id, compact_threshold, prompt_cache_key, prompt_version
 		)
-		VALUES ($1, $2, $3, $4)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (workspace_id) DO UPDATE SET
 			vector_store_id=EXCLUDED.vector_store_id,
 			compact_threshold=EXCLUDED.compact_threshold,
 			prompt_cache_key=EXCLUDED.prompt_cache_key,
+			prompt_version=EXCLUDED.prompt_version,
 			updated_at=NOW()
-	`, workspaceID, strings.TrimSpace(vectorStoreID), compactThreshold, promptCacheKey)
+	`, workspaceID, strings.TrimSpace(vectorStoreID), compactThreshold, promptCacheKey, StrategicMemoryPromptVersion)
 	return err
+}
+
+func (s *Store) KnowledgePipelineState(ctx context.Context, workspaceID int) (KnowledgePipelineState, error) {
+	var item KnowledgePipelineState
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO strategic_knowledge_pipeline_state (workspace_id)
+		VALUES ($1)
+		ON CONFLICT (workspace_id) DO UPDATE SET workspace_id=EXCLUDED.workspace_id
+		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
+			last_extracted_source_id, last_audited_source_id, candidate_revision,
+			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision, updated_at
+	`, workspaceID).Scan(
+		&item.WorkspaceID, &item.Status, &item.ConversationRevision, &item.LastUserSourceID,
+		&item.LastExtractedSourceID, &item.LastAuditedSourceID, &item.CandidateRevision,
+		&item.CandidateSourceID, &item.ReadyRevision, &item.CompiledRevision,
+		&item.CandidateReason, &item.AuditFeedback, &item.CandidateReport, &item.FeedbackDeliveredRevision,
+		&item.UpdatedAt,
+	)
+	return item, err
+}
+
+func (s *Store) RecordKnowledgeUserTurn(ctx context.Context, workspaceID int, sourceID int) (KnowledgePipelineState, error) {
+	var item KnowledgePipelineState
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO strategic_knowledge_pipeline_state (
+			workspace_id, conversation_revision, last_user_source_id
+		) VALUES ($1, 1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			conversation_revision=strategic_knowledge_pipeline_state.conversation_revision + 1,
+			last_user_source_id=GREATEST(strategic_knowledge_pipeline_state.last_user_source_id, EXCLUDED.last_user_source_id),
+			updated_at=NOW()
+		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
+			last_extracted_source_id, last_audited_source_id, candidate_revision,
+			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision, updated_at
+	`, workspaceID, sourceID).Scan(
+		&item.WorkspaceID, &item.Status, &item.ConversationRevision, &item.LastUserSourceID,
+		&item.LastExtractedSourceID, &item.LastAuditedSourceID, &item.CandidateRevision,
+		&item.CandidateSourceID, &item.ReadyRevision, &item.CompiledRevision,
+		&item.CandidateReason, &item.AuditFeedback, &item.CandidateReport, &item.FeedbackDeliveredRevision,
+		&item.UpdatedAt,
+	)
+	return item, err
 }
 
 func (s *Store) CreateStrategicFile(ctx context.Context, workspaceID int, rawSourceID *int, openAIFileID string, vectorStoreID string, filename string, contentType string, sizeBytes int64, status string, errorText string) (StrategicFile, error) {
@@ -297,7 +352,10 @@ func (s *Store) InsertClaims(ctx context.Context, workspaceID int, sourceID int,
 
 	added := 0
 	skipped := 0
-	sourceIDs := mustJSON([]int{sourceID})
+	validSourceIDs, err := rawSourceIDSet(ctx, tx, workspaceID)
+	if err != nil {
+		return 0, 0, err
+	}
 	for _, claim := range claims {
 		text := cleanText(claim.ClaimText)
 		if text == "" {
@@ -309,6 +367,7 @@ func (s *Store) InsertClaims(ctx context.Context, workspaceID int, sourceID int,
 			continue
 		}
 		status := claimStatusForMaterializedClaim(claim)
+		sourceIDs := mustJSON(validClaimSourceIDs(claim.SourceIDs, sourceID, validSourceIDs))
 		var claimID int
 		err := tx.QueryRowContext(ctx, `
 			INSERT INTO strategic_claims (
@@ -353,10 +412,49 @@ type aiMemoryResponseClaim struct {
 	Confidence    string
 	Relation      string
 	ExistingID    int
+	SourceIDs     []int
+}
+
+func rawSourceIDSet(ctx context.Context, dbx claimQueryer, workspaceID int) (map[int]bool, error) {
+	rows, err := dbx.QueryContext(ctx, `SELECT id FROM strategic_raw_sources WHERE workspace_id=$1`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[int]bool{}
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result[id] = true
+	}
+	return result, rows.Err()
+}
+
+func validClaimSourceIDs(candidate []int, fallback int, valid map[int]bool) []int {
+	result := make([]int, 0, len(candidate)+1)
+	seen := map[int]bool{}
+	for _, id := range candidate {
+		if id <= 0 || !valid[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+	if len(result) == 0 && fallback > 0 && valid[fallback] {
+		result = append(result, fallback)
+	}
+	return result
 }
 
 type claimQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+type strategicExecQueryer interface {
+	claimQueryer
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
 func claimKeys(ctx context.Context, dbx claimQueryer, workspaceID int) (map[string]bool, error) {
@@ -1014,13 +1112,17 @@ func (s *Store) ListWorkspaceExternalContextIDs(ctx context.Context, workspaceID
 }
 
 func (s *Store) UpsertDocuments(ctx context.Context, workspaceID int, docs []StrategicDocument) (int, error) {
+	return upsertDocuments(ctx, s.dbx, workspaceID, docs)
+}
+
+func upsertDocuments(ctx context.Context, dbx strategicExecQueryer, workspaceID int, docs []StrategicDocument) (int, error) {
 	updated := 0
 	for _, doc := range docs {
 		docType := normalizeDocumentType(doc.DocumentType)
 		if docType == "" || strings.TrimSpace(doc.Markdown) == "" {
 			continue
 		}
-		_, err := s.dbx.ExecContext(ctx, `
+		_, err := dbx.ExecContext(ctx, `
 			INSERT INTO strategic_documents (
 				workspace_id, document_type, title, markdown, source_claim_ids_json, status, version
 			)
@@ -1056,6 +1158,9 @@ func (s *Store) Reset(ctx context.Context, workspaceID int) error {
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_ai_runs WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_knowledge_pipeline_state WHERE workspace_id=$1`, workspaceID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_quality_reports WHERE workspace_id=$1`, workspaceID); err != nil {

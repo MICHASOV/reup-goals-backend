@@ -39,6 +39,7 @@ type materializerItem struct {
 	Importance         string   `json:"importance"`
 	RelationToExisting string   `json:"relation_to_existing"`
 	ExistingClaimID    int      `json:"existing_claim_id"`
+	SourceIDs          []int    `json:"source_ids"`
 }
 
 type materializerDocumentNote struct {
@@ -68,10 +69,11 @@ type documentDesignerOutput struct {
 }
 
 type documentDesignerDocument struct {
-	DocumentType string `json:"document_type"`
-	Title        string `json:"title"`
-	Markdown     string `json:"markdown"`
-	Status       string `json:"status"`
+	DocumentType   string `json:"document_type"`
+	Title          string `json:"title"`
+	Markdown       string `json:"markdown"`
+	Status         string `json:"status"`
+	SourceClaimIDs []int  `json:"source_claim_ids"`
 }
 
 type materializationOptions struct {
@@ -83,7 +85,9 @@ type materializationOptions struct {
 const (
 	jobTypeMaterializeBusinessContext = "knowledge_base.materialize"
 	jobTypeKnowledgeQualityAudit      = "knowledge_base.quality_audit"
-	knowledgeWorkerModel              = "gpt-4.1"
+	jobTypeKnowledgeCandidate         = "knowledge_base.audit_candidate"
+	knowledgeExtractionModel          = "gpt-5.4-mini"
+	knowledgeDocumentModel            = "gpt-5.4-mini"
 )
 
 type materializationJobPayload struct {
@@ -99,6 +103,20 @@ type qualityAuditJobPayload struct {
 }
 
 func (s *Service) registerJobHandlers() {
+	s.jobs.Register(jobTypeKnowledgeCandidate, func(ctx context.Context, job jobs.Job) error {
+		if job.WorkspaceID == nil {
+			return fmt.Errorf("knowledge candidate job has no workspace")
+		}
+		var payload knowledgeCandidateJobPayload
+		if err := json.Unmarshal(job.Payload, &payload); err != nil {
+			return err
+		}
+		err := s.runKnowledgeCandidate(ctx, *job.WorkspaceID, payload)
+		if err != nil && job.Attempts >= job.MaxAttempts {
+			_ = s.store.FailKnowledgeCandidate(context.WithoutCancel(ctx), *job.WorkspaceID, payload.Revision)
+		}
+		return err
+	})
 	s.jobs.Register(jobTypeMaterializeBusinessContext, func(ctx context.Context, job jobs.Job) error {
 		if job.WorkspaceID == nil {
 			return fmt.Errorf("materialization job has no workspace")
@@ -241,7 +259,7 @@ func (s *Service) materializeBusinessContextWithOptions(
 	}
 
 	documentsUpdated := 0
-	if len(materialized.ExtractedItems) > 0 || len(materialized.DocumentBrief) > 0 || len(materialized.Contradictions) > 0 {
+	if !options.FactsOnly && (len(materialized.ExtractedItems) > 0 || len(materialized.DocumentBrief) > 0 || len(materialized.Contradictions) > 0) {
 		updatedState, err := s.State(ctx, workspaceID)
 		if err != nil {
 			return err
@@ -320,7 +338,7 @@ func (s *Service) extractBusinessContext(
 	rawInput, _ := json.Marshal(input)
 
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "business_context_materializer", StrategicMemoryPromptVersion)
-	workerAI := s.ai.ForModel(knowledgeWorkerModel)
+	workerAI := s.ai.ForModel(knowledgeExtractionModel)
 	started := time.Now()
 	result, err := workerAI.GenerateJSONNative(aiCtx, businessContextMaterializerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDs,
@@ -381,6 +399,7 @@ func (s *Service) designDocuments(
 ) ([]StrategicDocument, error) {
 	input := map[string]any{
 		"workspace_id":            workspaceID,
+		"compilation_mode":        "incremental",
 		"document_catalog":        strategicDocumentCatalog(),
 		"affected_document_types": affectedDocumentTypes(materialized),
 		"current_documents":       limitDocumentsForContext(state.Documents, 13),
@@ -397,7 +416,7 @@ func (s *Service) designDocuments(
 	rawInput, _ := json.Marshal(input)
 
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "business_document_visual_designer", StrategicMemoryPromptVersion)
-	workerAI := s.ai.ForModel(knowledgeWorkerModel)
+	workerAI := s.ai.ForModel(knowledgeDocumentModel)
 	started := time.Now()
 	result, err := workerAI.GenerateJSONNative(aiCtx, documentVisualDesignerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDs,
@@ -426,11 +445,12 @@ func (s *Service) designDocuments(
 		}
 		docType := normalizeDocumentType(doc.DocumentType)
 		documents = append(documents, StrategicDocument{
-			WorkspaceID:  workspaceID,
-			DocumentType: docType,
-			Title:        defaultString(doc.Title, documentTitle(docType)),
-			Markdown:     markdown,
-			Status:       normalizeDocumentStatus(doc.Status),
+			WorkspaceID:    workspaceID,
+			DocumentType:   docType,
+			Title:          defaultString(doc.Title, documentTitle(docType)),
+			Markdown:       markdown,
+			SourceClaimIDs: mustJSON(doc.SourceClaimIDs),
+			Status:         normalizeDocumentStatus(doc.Status),
 		})
 	}
 	return documents, nil
@@ -451,6 +471,7 @@ func materializerItemsToClaims(items []materializerItem) []aiMemoryResponseClaim
 			Confidence:    item.Confidence,
 			Relation:      item.RelationToExisting,
 			ExistingID:    item.ExistingClaimID,
+			SourceIDs:     item.SourceIDs,
 		})
 	}
 	return claims

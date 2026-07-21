@@ -2145,6 +2145,74 @@ var migrations = []Migration{
 				ON v2_ai_workspace_context_files (workspace_id, status, updated_at DESC);
 		`,
 	},
+	{
+		ID: "20260721_036_deferred_knowledge_compilation",
+		SQL: `
+			ALTER TABLE strategic_openai_sessions
+				ADD COLUMN IF NOT EXISTS prompt_version TEXT NOT NULL DEFAULT '';
+
+			CREATE TABLE IF NOT EXISTS strategic_knowledge_pipeline_state (
+				workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+				status TEXT NOT NULL DEFAULT 'collecting',
+				conversation_revision INTEGER NOT NULL DEFAULT 0,
+				last_user_source_id INTEGER NOT NULL DEFAULT 0,
+				last_extracted_source_id INTEGER NOT NULL DEFAULT 0,
+				last_audited_source_id INTEGER NOT NULL DEFAULT 0,
+				candidate_revision INTEGER NOT NULL DEFAULT 0,
+				candidate_source_id INTEGER NOT NULL DEFAULT 0,
+				ready_revision INTEGER NOT NULL DEFAULT 0,
+				compiled_revision INTEGER NOT NULL DEFAULT 0,
+				candidate_reason TEXT NOT NULL DEFAULT '',
+				audit_feedback_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				candidate_report_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				feedback_delivered_revision INTEGER NOT NULL DEFAULT 0,
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				CHECK (status IN (
+					'collecting', 'audit_candidate', 'extracting', 'reviewing',
+					'needs_more_context', 'compiling_documents', 'ready'
+				))
+			);
+
+			INSERT INTO strategic_knowledge_pipeline_state (
+				workspace_id, status, conversation_revision, last_user_source_id,
+				ready_revision, compiled_revision
+			)
+			SELECT
+				session.workspace_id,
+				CASE
+					WHEN COALESCE((
+						SELECT (report.report_json->'strategy_gate'->>'can_start_strategy')::boolean
+						FROM strategic_quality_reports report
+						WHERE report.workspace_id=session.workspace_id
+						ORDER BY report.created_at DESC, report.id DESC
+						LIMIT 1
+					), false)
+					AND EXISTS (
+						SELECT 1 FROM strategic_documents document
+						WHERE document.workspace_id=session.workspace_id AND BTRIM(document.markdown)<>''
+					)
+					THEN 'ready'
+					ELSE 'collecting'
+				END,
+				COALESCE(source_stats.user_turns, 0),
+				COALESCE(source_stats.last_user_source_id, 0),
+				CASE WHEN EXISTS (
+					SELECT 1 FROM strategic_documents document
+					WHERE document.workspace_id=session.workspace_id AND BTRIM(document.markdown)<>''
+				) THEN COALESCE(source_stats.user_turns, 0) ELSE 0 END,
+				CASE WHEN EXISTS (
+					SELECT 1 FROM strategic_documents document
+					WHERE document.workspace_id=session.workspace_id AND BTRIM(document.markdown)<>''
+				) THEN COALESCE(source_stats.user_turns, 0) ELSE 0 END
+			FROM strategic_openai_sessions session
+			LEFT JOIN LATERAL (
+				SELECT COUNT(*)::integer AS user_turns, COALESCE(MAX(id), 0)::integer AS last_user_source_id
+				FROM strategic_raw_sources source
+				WHERE source.workspace_id=session.workspace_id AND source.source_type='user_message'
+			) source_stats ON true
+			ON CONFLICT (workspace_id) DO NOTHING;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

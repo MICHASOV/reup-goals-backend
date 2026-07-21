@@ -359,10 +359,10 @@ func (s *Service) ensureVectorStore(ctx context.Context, workspaceID int) (strin
 	var vectorStoreID string
 	err := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO strategic_openai_sessions (workspace_id, compact_threshold, prompt_cache_key)
-		VALUES ($1, 120000, $2)
+		VALUES ($1, 60000, $2)
 		ON CONFLICT (workspace_id) DO UPDATE SET updated_at=NOW()
 		RETURNING vector_store_id
-	`, workspaceID, fmt.Sprintf("reupgoals-strategic-director-workspace-%d-v1", workspaceID)).Scan(&vectorStoreID)
+	`, workspaceID, fmt.Sprintf("reupgoals-business-auditor-workspace-%d-v2", workspaceID)).Scan(&vectorStoreID)
 	if err != nil {
 		return "", fmt.Errorf("load workspace vector store: %w", err)
 	}

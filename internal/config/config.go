@@ -103,7 +103,7 @@ func Load() *Config {
 		transcriptionModel = "gpt-4o-transcribe"
 	}
 	auditorMaxOutputTokens := parseIntEnv("OPENAI_AUDITOR_MAX_OUTPUT_TOKENS", 1800)
-	auditorCompactThreshold := parseIntEnv("OPENAI_AUDITOR_COMPACT_THRESHOLD", 120000)
+	auditorCompactThreshold := parseIntEnv("OPENAI_AUDITOR_COMPACT_THRESHOLD", 60000)
 	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
 	if openAIProxyURL == "" {
 		openAIProxyURL = "socks5://127.0.0.1:10808"

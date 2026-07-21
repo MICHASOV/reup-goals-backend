@@ -77,12 +77,28 @@ func (s *Service) markQualityAuditCompleted(workspaceID int) {
 }
 
 func (s *Service) RunQualityAudit(ctx context.Context, workspaceID int, changedDocumentTypes []string, trigger string) (QualityReport, error) {
+	report, err := s.evaluateQualityAudit(ctx, workspaceID, changedDocumentTypes, trigger)
+	if err != nil {
+		return QualityReport{}, err
+	}
+	return s.saveQualityReport(ctx, workspaceID, report)
+}
+
+func (s *Service) evaluateQualityAudit(ctx context.Context, workspaceID int, changedDocumentTypes []string, trigger string) (QualityReport, error) {
 	state, err := s.State(ctx, workspaceID)
 	if err != nil {
 		return QualityReport{}, err
 	}
-	if len(state.Documents) == 0 {
-		return QualityReport{}, fmt.Errorf("quality_audit_no_documents")
+	claims, err := s.store.ListClaims(ctx, workspaceID, 3000)
+	if err != nil {
+		return QualityReport{}, err
+	}
+	agenda, err := s.store.ListAgenda(ctx, workspaceID, 500)
+	if err != nil {
+		return QualityReport{}, err
+	}
+	if len(state.Documents) == 0 && len(claims) == 0 {
+		return QualityReport{}, fmt.Errorf("quality_audit_no_context")
 	}
 	session, err := s.store.OpenAISession(ctx, workspaceID, s.compactThreshold)
 	if err != nil {
@@ -96,13 +112,13 @@ func (s *Service) RunQualityAudit(ctx context.Context, workspaceID int, changedD
 		"changed_document_types":   changedDocumentTypes,
 		"document_catalog":         strategicDocumentCatalog(),
 		"documents":                documentsForQualityAuditContext(state.Documents),
-		"claims":                   limitClaimsForContext(state.Claims, 160),
-		"research_agenda":          limitAgendaForContext(state.Agenda, 80),
+		"claims":                   claims,
+		"research_agenda":          agenda,
 		"snapshot":                 state.Snapshot,
 		"quality_formula_contract": qualityFormulaContract(),
 	}
 	vectorStoreIDs, indexed := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
-	if indexed {
+	if indexed && trigger != "interview_candidate" {
 		delete(input, "documents")
 		delete(input, "claims")
 		delete(input, "research_agenda")
@@ -112,7 +128,7 @@ func (s *Service) RunQualityAudit(ctx context.Context, workspaceID int, changedD
 	rawInput, _ := json.Marshal(input)
 
 	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "knowledge_base_quality_auditor", StrategicMemoryPromptVersion)
-	workerAI := s.ai.ForModel(knowledgeWorkerModel)
+	workerAI := s.ai
 	started := time.Now()
 	result, err := workerAI.GenerateJSONNative(aiCtx, knowledgeBaseQualityAuditorPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDs,
@@ -134,8 +150,10 @@ func (s *Service) RunQualityAudit(ctx context.Context, workspaceID int, changedD
 	}
 	report.WorkspaceID = workspaceID
 	report.ChangedDocumentTypes = changedDocumentTypes
-	report = finalizeQualityReport(report)
+	return finalizeQualityReport(report), nil
+}
 
+func (s *Service) saveQualityReport(ctx context.Context, workspaceID int, report QualityReport) (QualityReport, error) {
 	saved, err := s.store.SaveQualityReport(ctx, workspaceID, report)
 	if err == nil {
 		s.markQualityAuditCompleted(workspaceID)

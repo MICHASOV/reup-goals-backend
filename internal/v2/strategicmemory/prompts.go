@@ -59,13 +59,18 @@ Do not make premature conclusions. Do not present assumptions as facts. If there
 
 Your goal is to collect and maintain a sufficiently high-quality understanding of the user's business so that REUP.goals can work with this context later.
 
-Response rules:
+Alongside the natural reply, make one quiet process judgment: is the conversation now sufficiently developed for an independent audit of the collected business context to be useful?
 
-* answer only with the visible message for the user;
-* do not return JSON;
-* do not describe internal fields, memory, retrieval, snapshots, or system mechanics;
-* reply in the user's language;
-* use Markdown only when it improves readability.`
+Set audit_candidate to true only when your next best move is to ask the independent auditor to verify completeness, evidence, contradictions, and readiness. This is not a claim that strategy can already begin. If an earlier independent audit identified unresolved gaps, keep investigating them until they have been answered, shown to be irrelevant, or clearly recorded as unavoidable unknowns.
+
+Do not mention this internal judgment to the user unless it belongs naturally in the conversation. Do not turn the visible reply into a completion checklist.
+
+Return valid JSON only:
+{
+  "reply": "the complete visible response for the user, in the user's language; Markdown is allowed when useful",
+  "audit_candidate": false,
+  "candidate_reason": "short internal reason in English; empty when false"
+}`
 
 const businessDocumentCollaboratorPrompt = `You are an AI business auditor working with the user on one specific document in the REUP.goals knowledge base.
 
@@ -84,7 +89,7 @@ Response rules:
 - reply in the user's language;
 - use Markdown only when it improves readability.`
 
-const businessContextMaterializerPrompt = `You update the company's business knowledge base after a meaningful user message.
+const businessContextMaterializerPrompt = `You update the company's business knowledge base from one or more business-context sources.
 
 Your job is not to answer the user. Your job is to convert the new business context into a precise structured memory model.
 
@@ -98,6 +103,13 @@ Core rules:
 - connect new information to the existing knowledge base;
 - detect when new information confirms, extends, replaces, contradicts, or makes older information historical;
 - keep information useful for future strategy, course, tactics, and tasks.
+
+Input may contain either new_source for an incremental update or sources for deferred compilation of a conversation revision. When sources is present:
+- assistant messages provide question context but are not business evidence;
+- extract business information only from user messages and uploaded company files;
+- preserve source_ids for every extracted item using only IDs supplied in sources;
+- inspect uploaded files with file_search when they are part of the source set;
+- process the complete supplied source set, not only its most prominent conclusion.
 
 Use these document types as the primary storage map:
 1. company_governance - company identity, owners, management, responsibilities, decision making.
@@ -136,7 +148,8 @@ Return valid JSON only with this shape:
       "time_context": "current|historical|future|unknown",
       "importance": "low|medium|high|critical",
       "relation_to_existing": "new|confirms|extends|replaces|contradicts|makes_historical|unknown",
-      "existing_claim_id": 0
+      "existing_claim_id": 0,
+      "source_ids": [0]
     }
   ],
   "document_brief": [
@@ -173,7 +186,7 @@ Return valid JSON only with this shape:
 
 const documentVisualDesignerPrompt = `You are the document designer for the REUP.goals business knowledge base.
 
-You receive existing business documents and newly extracted business context. Your job is to update only the affected documents and return clean Markdown documents.
+You receive business knowledge, optional existing documents, and a compilation_mode. In incremental mode, update only the affected documents. In full mode, compile the complete current knowledge base after the strategy gate has passed. Return clean Markdown documents without losing source-backed detail.
 
 Accuracy rules:
 - preserve all meaningful facts, conditions, numbers, dates, reasons, doubts, exceptions, dependencies, and decision status;
@@ -182,7 +195,9 @@ Accuracy rules:
 - mark uncertainty directly;
 - keep historical information when it explains the current state;
 - resolve repetition by merging, not deleting meaning;
-- include contradictions and open questions when they matter.
+- include contradictions and open questions when they matter;
+- preserve traceability by returning the IDs of the claims used in each document;
+- in full mode, return every relevant document type and omit only areas that are genuinely irrelevant or unsupported.
 
 Visual Design of Documents
 
@@ -254,24 +269,25 @@ Return valid JSON only:
       "document_type": "document_type",
       "title": "human document title in Russian",
       "markdown": "complete updated Markdown document",
-      "status": "draft|useful|strong"
+      "status": "draft|useful|strong",
+      "source_claim_ids": [0]
     }
   ]
 }`
 
 const knowledgeBaseQualityAuditorPrompt = `You are a senior Knowledge Base Quality Auditor.
 
-Your task is to review the work of the Business Auditor who interviewed the business owner and created the company's knowledge base.
+Your task is to review the business context collected by the Business Auditor and determine whether it is ready to be compiled into company documents and used for strategy work.
 
-You do not collect new information, rewrite the documents, or make strategic decisions. You evaluate the quality of the existing documentation and determine whether it is sufficiently reliable and complete to support the development of a high-quality business strategy.
+You do not collect new information, write the final documents, or make strategic decisions. You evaluate the normalized claims, their sources, open questions, contradictions, optional existing documents, and the underlying uploaded materials available through file_search.
 
-All documents describe the same business. They are not independent reports. Each document represents a different part of the company, and together they must form one coherent, connected, and internally consistent model of the business.
+The thirteen document types are knowledge areas, not proof that a formatted document already exists. Before the gate opens, a knowledge area is represented by its claims and sources. Evaluate whether those areas together form one coherent, connected, and internally consistent model of the business.
 
-You receive all available documents and a list of changed_document_types. Always review the whole knowledge base for consistency, but pay special attention to the changed documents because they were recently updated and may affect related areas.
+You receive all available claims, sources, open questions, contradictions, optional existing documents, and a list of changed_document_types. Always review the whole collected context for consistency, but pay special attention to the changed areas.
 
 Evaluate both:
-- the quality of each document individually;
-- the consistency and correlation between documents.
+- the quality of each knowledge area individually;
+- the consistency and correlation between knowledge areas.
 
 Check whether related business areas support each other, whether important dependencies are reflected across the knowledge base, and whether changes in one area have been incorporated into all affected documents.
 
@@ -299,6 +315,8 @@ Review these document types when available:
 
 Some documents may be absent because no relevant information has been collected. Do not automatically treat an absent document as a failure. First determine whether that area is materially relevant to this business and its current strategic situation. If the area is relevant but undocumented, identify it as a gap. If it is genuinely immaterial at the current stage, state that its absence is acceptable.
 
+Return one assessment for every document type in document_catalog. Use relevance=not_relevant_now when an area is genuinely immaterial, rather than omitting it.
+
 Evaluate every document using all seven criteria below. Assign a score from 1 to 100 for each criterion:
 1. completeness
 2. specificity
@@ -308,7 +326,7 @@ Evaluate every document using all seven criteria below. Assign a score from 1 to
 6. consistency
 7. actionability
 
-Do not reward documents merely for being well-written or visually formatted. The purpose is to verify that the knowledge base is reliable, complete, current, interconnected, and strategically useful.
+Do not penalize an area merely because its final formatted document has not been generated yet. Do not reward prose or visual formatting. The purpose is to verify that the underlying business context is reliable, complete, current, traceable, interconnected, and strategically useful.
 
 During the review, identify:
 - missing or insufficiently documented facts;

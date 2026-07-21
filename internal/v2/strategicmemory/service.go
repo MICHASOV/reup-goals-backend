@@ -44,7 +44,7 @@ func (s *Service) workspaceContextVectorStoreIDs(ctx context.Context, workspaceI
 
 func NewService(store *Store, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *Service {
 	if compactThreshold <= 0 {
-		compactThreshold = 120000
+		compactThreshold = 60000
 	}
 	service := &Service{
 		store:                  store,
@@ -96,6 +96,10 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 	if err != nil {
 		return StateResponse{}, err
 	}
+	pipeline, err := s.store.KnowledgePipelineState(ctx, workspaceID)
+	if err != nil {
+		return StateResponse{}, err
+	}
 
 	return StateResponse{
 		WorkspaceID:          workspaceID,
@@ -109,6 +113,7 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 		Documents:            documents,
 		RecentMessages:       messages,
 		Files:                files,
+		Pipeline:             pipeline,
 	}, nil
 }
 
@@ -122,6 +127,10 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	}
 
 	sourceID, err := s.store.CreateRawSource(ctx, workspaceID, &userID, SourceTypeUserMessage, message, map[string]any{})
+	if err != nil {
+		return MessageResponse{}, err
+	}
+	pipeline, err := s.store.RecordKnowledgeUserTurn(ctx, workspaceID, sourceID)
 	if err != nil {
 		return MessageResponse{}, err
 	}
@@ -139,12 +148,21 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		return MessageResponse{}, err
 	}
 
-	input := message
-	if strings.TrimSpace(session.ConversationID) == "" && strings.TrimSpace(session.PreviousResponseID) != "" {
-		contextPack := buildAuditorConversationInput(workspaceID, message, state, relevantMessages)
-		rawInput, _ := json.Marshal(contextPack)
-		input = "One-time conversation bootstrap from the existing local session. Use it for continuity; current structured workspace data is available through file_search.\n" + string(rawInput)
+	turnInput := map[string]any{"latest_user_message": message}
+	feedbackIncluded := false
+	if pipeline.Status == KnowledgePipelineNeedsMoreContext &&
+		pipeline.CandidateRevision > pipeline.FeedbackDeliveredRevision && len(pipeline.AuditFeedback) > 0 {
+		var feedback any
+		if json.Unmarshal(pipeline.AuditFeedback, &feedback) == nil {
+			turnInput["independent_audit_feedback"] = feedback
+			feedbackIncluded = true
+		}
 	}
+	if strings.TrimSpace(session.ConversationID) == "" && len(state.RecentMessages) > 1 {
+		turnInput["one_time_local_continuity"] = buildAuditorConversationInput(workspaceID, message, state, relevantMessages)
+	}
+	rawTurnInput, _ := json.Marshal(turnInput)
+	input := string(rawTurnInput)
 	vectorStoreIDs := vectorStoreIDsFromSession(session)
 	if s.contextIndex != nil {
 		indexedIDs, indexErr := s.contextIndex.Available(ctx, workspaceID)
@@ -156,26 +174,29 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	}
 	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "business_auditor_openai_native", StrategicMemoryPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateTextNative(aiCtx, businessAuditorPrompt+contextindex.RetrievalInstructions, input, ai.ResponseContextOptions{
+	result, err := s.ai.GenerateJSONNative(aiCtx, businessAuditorPrompt+contextindex.RetrievalInstructions, input, ai.ResponseContextOptions{
 		UseConversation:      true,
 		ConversationID:       session.ConversationID,
 		VectorStoreIDs:       vectorStoreIDs,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       session.PromptCacheKey,
-		MaxFileSearchResults: 8,
+		MaxFileSearchResults: 4,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
 		if strings.TrimSpace(session.ConversationID) != "" && ai.IsConversationStateError(err) {
 			_ = s.store.UpdateOpenAIConversationID(ctx, workspaceID, "")
-			retryInput := buildFreshContextInput(workspaceID, message, state, relevantMessages)
+			retryInput, _ := json.Marshal(map[string]any{
+				"latest_user_message":       message,
+				"one_time_local_continuity": buildAuditorConversationInput(workspaceID, message, state, relevantMessages),
+			})
 			started = time.Now()
-			result, err = s.ai.GenerateTextNative(aiCtx, businessAuditorPrompt+contextindex.RetrievalInstructions, retryInput, ai.ResponseContextOptions{
+			result, err = s.ai.GenerateJSONNative(aiCtx, businessAuditorPrompt+contextindex.RetrievalInstructions, string(retryInput), ai.ResponseContextOptions{
 				UseConversation:      true,
 				VectorStoreIDs:       vectorStoreIDs,
 				CompactThreshold:     session.CompactThreshold,
 				PromptCacheKey:       session.PromptCacheKey,
-				MaxFileSearchResults: 8,
+				MaxFileSearchResults: 4,
 			})
 			duration = time.Since(started).Milliseconds()
 		}
@@ -184,12 +205,23 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 			return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
 		}
 	}
+	var turn auditorTurnOutput
+	if err := json.Unmarshal([]byte(result.Text), &turn); err != nil || strings.TrimSpace(turn.Reply) == "" {
+		parseErr := err
+		if parseErr == nil {
+			parseErr = fmt.Errorf("business auditor response has empty reply")
+		} else {
+			parseErr = fmt.Errorf("business auditor response decode failed: %w", parseErr)
+		}
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
+		return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
+	}
 	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != session.ConversationID {
 		_ = s.store.UpdateOpenAIConversationID(ctx, workspaceID, result.ConversationID)
 	}
 
-	assistantMessage := cleanAssistantMessage(result.Text)
+	assistantMessage := cleanAssistantMessage(turn.Reply)
 	assistantMessage = fallbackAssistantReply(assistantMessage)
 	_, _ = s.store.CreateRawSource(ctx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
 		"prompt_version":   StrategicMemoryPromptVersion,
@@ -199,7 +231,16 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		"conversation_id":  result.ConversationID,
 		"vector_store_ids": vectorStoreIDs,
 	})
-	s.queueBusinessContextMaterialization(workspaceID, sourceID, message, assistantMessage)
+	if feedbackIncluded {
+		_ = s.store.MarkKnowledgeFeedbackDelivered(ctx, workspaceID, pipeline.CandidateRevision)
+	}
+	if turn.AuditCandidate {
+		if queuedState, queueErr := s.queueKnowledgeCandidate(ctx, workspaceID, pipeline, sourceID, turn.CandidateReason); queueErr == nil {
+			pipeline = queuedState
+		} else {
+			s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_audit_candidate", s.ai.ModelName(), StrategicMemoryPromptVersion, 0, 0, 0, "failed", queueErr.Error())
+		}
+	}
 
 	finalState, err := s.State(ctx, workspaceID)
 	if err != nil {
@@ -221,7 +262,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	return MessageResponse{
 		WorkspaceID:          workspaceID,
 		AssistantMessage:     assistantMessage,
-		ConversationState:    ConversationStateCollectingContext,
+		ConversationState:    pipelineConversationState(finalState.Pipeline.Status),
 		MemoryUpdates:        MemoryUpdates{},
 		Snapshot:             finalState.Snapshot,
 		Documents:            documents,
@@ -230,6 +271,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		CommunicationProfile: finalState.CommunicationProfile,
 		DialogueFocus:        finalState.DialogueFocus,
 		OpenAIResponseID:     result.ResponseID,
+		Pipeline:             finalState.Pipeline,
 	}, nil
 }
 
@@ -296,6 +338,9 @@ func (s *Service) UploadFile(ctx context.Context, workspaceID int, userID int, f
 	if errorText != "" {
 		return FileUploadResponse{WorkspaceID: workspaceID, File: item}, fmt.Errorf("%s", errorText)
 	}
+	if _, err := s.store.RecordKnowledgeUserTurn(ctx, workspaceID, rawSourceID); err != nil {
+		return FileUploadResponse{}, err
+	}
 	return FileUploadResponse{WorkspaceID: workspaceID, File: item}, nil
 }
 
@@ -309,7 +354,7 @@ func (s *Service) fallbackMessageResponse(ctx context.Context, workspaceID int, 
 	return MessageResponse{
 		WorkspaceID:          workspaceID,
 		AssistantMessage:     assistantMessage,
-		ConversationState:    ConversationStateCollectingContext,
+		ConversationState:    pipelineConversationState(state.Pipeline.Status),
 		MemoryUpdates:        MemoryUpdates{},
 		Snapshot:             state.Snapshot,
 		Documents:            state.Documents,
@@ -317,6 +362,7 @@ func (s *Service) fallbackMessageResponse(ctx context.Context, workspaceID int, 
 		Claims:               state.Claims,
 		CommunicationProfile: state.CommunicationProfile,
 		DialogueFocus:        state.DialogueFocus,
+		Pipeline:             state.Pipeline,
 	}
 }
 

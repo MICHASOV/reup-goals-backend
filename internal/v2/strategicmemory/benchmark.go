@@ -147,7 +147,7 @@ func (h *Handler) runModelBenchmark(ctx context.Context, model string, scenarioI
 	client := h.service.ai.ForModel(model)
 
 	started := time.Now()
-	result, err := client.GenerateTextNative(ctx, businessAuditorPrompt, "Контекст для ответа в формате JSON:\n"+string(rawInput), ai.ResponseContextOptions{MaxOutputTokens: 900})
+	result, err := client.GenerateJSONNative(ctx, businessAuditorPrompt, string(rawInput), ai.ResponseContextOptions{MaxOutputTokens: 900})
 	latencyMS := time.Since(started).Milliseconds()
 
 	output := modelBenchmarkResult{
@@ -162,7 +162,13 @@ func (h *Handler) runModelBenchmark(ctx context.Context, model string, scenarioI
 		return output
 	}
 
-	output.Text = cleanAssistantMessage(result.Text)
+	var turn auditorTurnOutput
+	if err := json.Unmarshal([]byte(result.Text), &turn); err != nil || strings.TrimSpace(turn.Reply) == "" {
+		output.Status = "failed"
+		output.Error = "invalid structured auditor response"
+		return output
+	}
+	output.Text = cleanAssistantMessage(turn.Reply)
 	output.InputTokens = result.Usage.InputTokens
 	output.OutputTokens = result.Usage.OutputTokens
 	output.TotalTokens = result.Usage.TotalTokens

@@ -330,11 +330,24 @@ func (h *Handler) qualityAudit(w http.ResponseWriter, r *http.Request, workspace
 			ChangedDocumentTypes []string `json:"changed_document_types"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		pipeline, queued, err := h.service.queueManualKnowledgeCandidate(r.Context(), workspaceID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "strategic_quality_audit_failed")
+			return
+		}
+		if queued || pipeline.Status == KnowledgePipelineAuditCandidate ||
+			pipeline.Status == KnowledgePipelineExtracting || pipeline.Status == KnowledgePipelineReviewing ||
+			pipeline.Status == KnowledgePipelineCompiling {
+			api.WriteJSON(w, http.StatusAccepted, map[string]any{
+				"workspace_id": workspaceID, "queued": queued, "pipeline": pipeline,
+			})
+			return
+		}
 
 		report, err := h.service.RunQualityAudit(r.Context(), workspaceID, req.ChangedDocumentTypes, "manual")
 		if err != nil {
-			if strings.Contains(err.Error(), "quality_audit_no_documents") {
-				api.WriteError(w, http.StatusBadRequest, "quality_audit_no_documents")
+			if strings.Contains(err.Error(), "quality_audit_no_context") {
+				api.WriteError(w, http.StatusBadRequest, "quality_audit_no_context")
 				return
 			}
 			api.WriteError(w, http.StatusInternalServerError, "strategic_quality_audit_failed")
