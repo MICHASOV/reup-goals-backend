@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"reup-goals-backend/internal/ai"
 )
 
 type Store struct {
@@ -1126,6 +1128,25 @@ func (s *Store) LogAIRunWithUsage(ctx context.Context, workspaceID int, scenario
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`, workspaceID, scenario, model, promptVersion, inputTokens, outputTokens, durationMs, status, errorText)
+
+	usage := ai.Usage{InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens}
+	_, _ = s.dbx.ExecContext(ctx, `
+		INSERT INTO v2_ai_call_logs (
+			workspace_id, ai_module, prompt_name, prompt_version, provider, model,
+			status, error, latency_ms, token_usage_input, token_usage_output,
+			token_usage_total, cached_input_tokens, estimated_cost
+		)
+		SELECT $1, $2, $2, $3, 'openai', $4, $9, $10, $5, $6, $7, $8, 0, $11
+		WHERE NOT EXISTS (
+			SELECT 1 FROM v2_ai_call_logs
+			WHERE workspace_id=$1 AND ai_module=$2 AND status=$9
+				AND COALESCE(token_usage_input, 0)=$6
+				AND COALESCE(token_usage_output, 0)=$7
+				AND ABS(latency_ms - $5) <= 1000
+				AND created_at > NOW() - INTERVAL '30 seconds'
+		)
+	`, workspaceID, scenario, promptVersion, model, durationMs, inputTokens, outputTokens,
+		inputTokens+outputTokens, status, errorText, ai.EstimateCost(model, usage))
 }
 
 func (s *Store) ListAIRuns(ctx context.Context, workspaceID int, limit int) ([]AIRun, error) {

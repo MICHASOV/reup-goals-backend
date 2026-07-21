@@ -118,6 +118,10 @@ func (s *Service) registerJobHandlers() {
 		if err := json.Unmarshal(job.Payload, &payload); err != nil {
 			return err
 		}
+		if payload.Trigger == "documents_updated" && !s.reserveAutoQualityAudit(*job.WorkspaceID) {
+			log.Printf("[INFO] strategic quality audit job skipped by throttle workspace_id=%d", *job.WorkspaceID)
+			return nil
+		}
 		_, err := s.RunQualityAudit(ctx, *job.WorkspaceID, payload.ChangedDocumentTypes, payload.Trigger)
 		return err
 	})
