@@ -19,6 +19,7 @@ const (
 	knowledgeCompilerMaxOutputTokens   = 24000
 	knowledgeSourceChunkRunes          = 120000
 	knowledgeCandidateTimeout          = 9 * time.Minute
+	knowledgeDocumentPromptVersion     = "knowledge_document_compiler_v1_1"
 )
 
 type knowledgeCandidateJobPayload struct {
@@ -281,15 +282,16 @@ func (s *Service) compileKnowledgeDocuments(ctx context.Context, workspaceID int
 		return nil, err
 	}
 	input := map[string]any{
-		"workspace_id":          workspaceID,
-		"compilation_mode":      "full",
-		"document_catalog":      strategicDocumentCatalog(),
-		"knowledge_claims":      claims,
-		"research_agenda":       agenda,
-		"current_snapshot":      state.Snapshot,
-		"current_documents":     state.Documents,
-		"quality_report":        report,
-		"uploaded_file_catalog": state.Files,
+		"workspace_id":            workspaceID,
+		"compilation_mode":        "full",
+		"document_catalog":        strategicDocumentCatalog(),
+		"knowledge_claims":        claims,
+		"research_agenda":         agenda,
+		"current_snapshot":        state.Snapshot,
+		"current_documents":       state.Documents,
+		"quality_report":          report,
+		"uploaded_file_catalog":   state.Files,
+		"claim_reference_catalog": claimsForQualityAuditContext(claims),
 	}
 	vectorStoreIDs, indexed := s.workspaceContextVectorStoreIDs(ctx, workspaceID, session)
 	if indexed {
@@ -301,21 +303,21 @@ func (s *Service) compileKnowledgeDocuments(ctx context.Context, workspaceID int
 	}
 	rawInput, _ := json.Marshal(input)
 	workerAI := s.ai.ForModel(knowledgeDocumentModel)
-	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "knowledge_base_document_compiler", StrategicMemoryPromptVersion)
+	aiCtx := ai.WithScenario(ctx, workspaceID, 0, "knowledge_base_document_compiler", knowledgeDocumentPromptVersion)
 	started := time.Now()
 	result, err := workerAI.GenerateJSONNative(aiCtx, documentVisualDesignerPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
 		VectorStoreIDs:       vectorStoreIDs,
-		PromptCacheKey:       fmt.Sprintf("reupgoals-knowledge-compiler-workspace-%d-v2", workspaceID),
+		PromptCacheKey:       fmt.Sprintf("reupgoals-knowledge-compiler-workspace-%d-v3", workspaceID),
 		MaxFileSearchResults: 15,
 		MaxOutputTokens:      knowledgeCompilerMaxOutputTokens,
 		RequestTimeout:       4 * time.Minute,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
-		s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_document_compiler", workerAI.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_document_compiler", workerAI.ModelName(), knowledgeDocumentPromptVersion, duration, 0, 0, "failed", err.Error())
 		return nil, err
 	}
-	s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_document_compiler", workerAI.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_document_compiler", workerAI.ModelName(), knowledgeDocumentPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 
 	var parsed documentDesignerOutput
 	if err := json.Unmarshal([]byte(result.Text), &parsed); err != nil {

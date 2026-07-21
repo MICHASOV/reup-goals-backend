@@ -234,7 +234,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	if feedbackIncluded {
 		_ = s.store.MarkKnowledgeFeedbackDelivered(ctx, workspaceID, pipeline.CandidateRevision)
 	}
-	if turn.AuditCandidate {
+	if turn.AuditCandidate && pipeline.ReadyRevision == 0 {
 		if queuedState, queueErr := s.queueKnowledgeCandidate(ctx, workspaceID, pipeline, sourceID, turn.CandidateReason); queueErr == nil {
 			pipeline = queuedState
 		} else {

@@ -138,6 +138,10 @@ func (s *Store) RecordKnowledgeUserTurn(ctx context.Context, workspaceID int, so
 		ON CONFLICT (workspace_id) DO UPDATE SET
 			conversation_revision=strategic_knowledge_pipeline_state.conversation_revision + 1,
 			last_user_source_id=GREATEST(strategic_knowledge_pipeline_state.last_user_source_id, EXCLUDED.last_user_source_id),
+			status=CASE
+				WHEN strategic_knowledge_pipeline_state.status='ready' THEN 'collecting'
+				ELSE strategic_knowledge_pipeline_state.status
+			END,
 			updated_at=NOW()
 		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
 			last_extracted_source_id, last_audited_source_id, candidate_revision,

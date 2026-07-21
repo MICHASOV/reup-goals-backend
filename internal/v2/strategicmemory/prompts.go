@@ -199,6 +199,14 @@ Accuracy rules:
 - preserve traceability by returning the IDs of the claims used in each document;
 - in full mode, return every relevant document type and omit only areas that are genuinely irrelevant or unsupported.
 
+Writing and traceability rules:
+- write each document as an internal company working document, not as an external analyst's notes about the company;
+- use the primary language of the business context consistently throughout the document; preserve product names and necessary technical terms, but do not switch languages gratuitously inside headings or prose;
+- use only claim IDs that are explicitly present in claim_reference_catalog or retrieved knowledge claims;
+- return those IDs only in source_claim_ids; never print claim IDs, source IDs, retrieval notes, or an "IDs used" section inside the human-facing Markdown;
+- if a statement is derived only from an open question or an auditor assessment rather than a claim, present it as an open question and do not invent a source_claim_id;
+- do not describe an area as missing merely because the formatted document did not exist before this compilation; judge the underlying claims and known context.
+
 Visual Design of Documents
 
 Each document should be designed individually, in the format that makes its content easiest and most convenient for the business owner to understand.
