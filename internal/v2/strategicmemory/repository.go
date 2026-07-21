@@ -1139,10 +1139,7 @@ func (s *Store) LogAIRunWithUsage(ctx context.Context, workspaceID int, scenario
 		SELECT $1, $2, $2, $3, 'openai', $4, $9, $10, $5, $6, $7, $8, 0, $11
 		WHERE NOT EXISTS (
 			SELECT 1 FROM v2_ai_call_logs
-			WHERE workspace_id=$1 AND ai_module=$2 AND status=$9
-				AND COALESCE(token_usage_input, 0)=$6
-				AND COALESCE(token_usage_output, 0)=$7
-				AND ABS(latency_ms - $5) <= 1000
+			WHERE workspace_id=$1 AND ai_module=$2
 				AND created_at > NOW() - INTERVAL '30 seconds'
 		)
 	`, workspaceID, scenario, promptVersion, model, durationMs, inputTokens, outputTokens,
