@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"reup-goals-backend/internal/ai"
@@ -78,22 +79,23 @@ func (g *Governance) AfterCall(ctx context.Context, call ai.ResolvedCall, result
 		errorText = result.Err.Error()
 	}
 	cost := estimateCost(call.Model, result.Usage)
-	_, _ = g.dbx.ExecContext(ctx, `
+	_, err := g.dbx.ExecContext(ctx, `
 		INSERT INTO v2_ai_call_logs (
 			workspace_id, user_id, ai_module, prompt_name, prompt_version, provider, model,
 			status, error, latency_ms, token_usage_input, token_usage_output, token_usage_total,
-			cached_input_tokens, estimated_cost, request_id, response_id, input_json, output_json
+			cached_input_tokens, estimated_cost, request_id, response_id
 		)
 		VALUES (
 			NULLIF($1, 0), NULLIF($2, 0), $3, $4, $5, $6, $7,
-			$8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-			jsonb_build_object('prompt_source', CASE WHEN $5='code_fallback' THEN 'code' ELSE 'registry' END),
-			jsonb_build_object('response_id', $17)
+			$8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 		)
 	`, call.Metadata.WorkspaceID, call.Metadata.UserID, call.Metadata.Module, call.Metadata.PromptName,
 		call.Metadata.PromptVersion, call.Provider, call.Model, status, truncate(errorText, 4000),
 		result.LatencyMS, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens,
 		result.Usage.CachedInputTokens(), cost, operations.RequestID(ctx), result.ResponseID)
+	if err != nil {
+		log.Printf("[ERROR] ai call log insert failed workspace_id=%d module=%s: %v", call.Metadata.WorkspaceID, call.Metadata.Module, err)
+	}
 }
 
 func (g *Governance) registerFallback(ctx context.Context, metadata ai.CallMetadata, instructions string, model string) {

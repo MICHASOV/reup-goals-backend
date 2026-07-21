@@ -92,18 +92,20 @@ func (h *Handler) httpStats(r *http.Request, workspaceID int) (map[string]any, e
 }
 
 func (h *Handler) aiStats(r *http.Request, workspaceID int) (map[string]any, error) {
-	var calls, failures, inputTokens, outputTokens int
+	var calls, failures, inputTokens, cachedInputTokens, outputTokens int
 	var cost float64
 	err := h.dbx.QueryRowContext(r.Context(), `
 		SELECT COUNT(*), COUNT(*) FILTER (WHERE status <> 'success'),
-			COALESCE(SUM(token_usage_input), 0), COALESCE(SUM(token_usage_output), 0),
+			COALESCE(SUM(token_usage_input), 0), COALESCE(SUM(cached_input_tokens), 0),
+			COALESCE(SUM(token_usage_output), 0),
 			COALESCE(SUM(estimated_cost), 0)
 		FROM v2_ai_call_logs
 		WHERE workspace_id=$1 AND created_at > NOW() - INTERVAL '24 hours'
-	`, workspaceID).Scan(&calls, &failures, &inputTokens, &outputTokens, &cost)
+	`, workspaceID).Scan(&calls, &failures, &inputTokens, &cachedInputTokens, &outputTokens, &cost)
 	return map[string]any{
 		"calls_24h": calls, "failures_24h": failures, "input_tokens_24h": inputTokens,
-		"output_tokens_24h": outputTokens, "estimated_cost_usd_24h": cost,
+		"cached_input_tokens_24h": cachedInputTokens, "output_tokens_24h": outputTokens,
+		"estimated_cost_usd_24h": cost,
 	}, err
 }
 
