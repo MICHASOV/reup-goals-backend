@@ -2440,6 +2440,23 @@ var migrations = []Migration{
 				ON workspace_document_versions (workspace_id, document_id, version DESC);
 		`,
 	},
+	{
+		ID: "20260722_039_task_completion_context",
+		SQL: `
+			ALTER TABLE v2_tasks
+				ADD COLUMN IF NOT EXISTS completion_result TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS completion_evidence TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS completion_learning TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS hypothesis_outcome TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS next_step TEXT NOT NULL DEFAULT '';
+
+			ALTER TABLE v2_tasks
+				DROP CONSTRAINT IF EXISTS v2_tasks_hypothesis_outcome_check;
+			ALTER TABLE v2_tasks
+				ADD CONSTRAINT v2_tasks_hypothesis_outcome_check
+				CHECK (hypothesis_outcome IN ('', 'confirmed', 'disproved', 'unclear', 'not_applicable'));
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

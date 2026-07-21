@@ -153,6 +153,11 @@ type Task struct {
 	StartedAt              *time.Time      `json:"started_at"`
 	CompletedAt            *time.Time      `json:"completed_at"`
 	ArchivedAt             *time.Time      `json:"archived_at"`
+	CompletionResult       string          `json:"completion_result"`
+	CompletionEvidence     string          `json:"completion_evidence"`
+	CompletionLearning     string          `json:"completion_learning"`
+	HypothesisOutcome      string          `json:"hypothesis_outcome"`
+	NextStep               string          `json:"next_step"`
 	Evaluation             *TaskEvaluation `json:"evaluation,omitempty"`
 	EvaluationStatus       string          `json:"evaluation_status"`
 	ManualPriorityScore    *int            `json:"manual_priority_score,omitempty"`
@@ -234,6 +239,11 @@ type TaskInput struct {
 	DueDate                *string `json:"due_date"`
 	SourceType             *string `json:"source_type"`
 	SourceID               *int    `json:"source_id"`
+	CompletionResult       *string `json:"completion_result"`
+	CompletionEvidence     *string `json:"completion_evidence"`
+	CompletionLearning     *string `json:"completion_learning"`
+	HypothesisOutcome      *string `json:"hypothesis_outcome"`
+	NextStep               *string `json:"next_step"`
 }
 
 type BrainstormMessage struct {

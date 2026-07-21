@@ -143,7 +143,8 @@ func (s *Store) List(ctx context.Context, workspaceID int, filter ListFilter) ([
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
-			updated_at, started_at, completed_at, archived_at
+			updated_at, started_at, completed_at, archived_at,
+			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step
 		FROM v2_tasks task
 		LEFT JOIN LATERAL (
 			SELECT priority_score
@@ -235,7 +236,8 @@ func (s *Store) Get(ctx context.Context, workspaceID int, taskID int) (Task, err
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
-			updated_at, started_at, completed_at, archived_at
+			updated_at, started_at, completed_at, archived_at,
+			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step
 		FROM v2_tasks
 		WHERE id=$1 AND workspace_id=$2
 	`, taskID, workspaceID)
@@ -273,6 +275,9 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 		sourceType = strings.TrimSpace(*input.SourceType)
 	}
 	if !ValidSourceType(sourceType) {
+		return Task{}, ErrForbidden
+	}
+	if !validHypothesisOutcome(valueOrEmpty(input.HypothesisOutcome)) {
 		return Task{}, ErrForbidden
 	}
 
@@ -315,25 +320,30 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 			workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, owner_user_id, due_date, source_type, source_id, created_by, updated_by,
+			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step,
 			started_at, completed_at, archived_at
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::DATE, $20, $21, $22, $22,
-			CASE WHEN $14=$23 THEN NOW() ELSE NULL END,
-			CASE WHEN $14=$24 THEN NOW() ELSE NULL END,
-			CASE WHEN $14=$25 THEN NOW() ELSE NULL END
+			$23, $24, $25, $26, $27,
+			CASE WHEN $14=$28 THEN NOW() ELSE NULL END,
+			CASE WHEN $14=$29 THEN NOW() ELSE NULL END,
+			CASE WHEN $14=$30 THEN NOW() ELSE NULL END
 		)
 		RETURNING
 			id, workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
-			updated_at, started_at, completed_at, archived_at
+			updated_at, started_at, completed_at, archived_at,
+			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step
 	`, workspaceID, ctxData.Course.ID, ctxData.Plan.ID, workstream.ID, departmentID, nullableInt(input.ProjectID),
 		nullableInt(input.RiskID), nullableInt(input.OpportunityID), strings.TrimSpace(*input.Title),
 		valueOrEmpty(input.Description), valueOrEmpty(input.ExpectedResult), valueOrEmpty(input.SuccessCriteria),
 		valueOrEmpty(input.WhyNow), status, blocked, backlogCategory, nullableInt(input.PriorityOrder), nullableInt(input.OwnerUserID),
 		nullableString(input.DueDate), sourceType, nullableInt(input.SourceID), userID,
+		valueOrEmpty(input.CompletionResult), valueOrEmpty(input.CompletionEvidence), valueOrEmpty(input.CompletionLearning),
+		valueOrEmpty(input.HypothesisOutcome), valueOrEmpty(input.NextStep),
 		StatusInProgress, StatusDone, StatusArchived)
 
 	task, err := scanTask(row)
@@ -382,6 +392,36 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 	if input.WhyNow != nil {
 		whyNow = strings.TrimSpace(*input.WhyNow)
 	}
+	status := current.Status
+	if input.Status != nil {
+		status = strings.TrimSpace(*input.Status)
+		if !ValidStatus(status) {
+			return Task{}, ErrForbidden
+		}
+	}
+	completionResult := current.CompletionResult
+	if input.CompletionResult != nil {
+		completionResult = strings.TrimSpace(*input.CompletionResult)
+	}
+	completionEvidence := current.CompletionEvidence
+	if input.CompletionEvidence != nil {
+		completionEvidence = strings.TrimSpace(*input.CompletionEvidence)
+	}
+	completionLearning := current.CompletionLearning
+	if input.CompletionLearning != nil {
+		completionLearning = strings.TrimSpace(*input.CompletionLearning)
+	}
+	hypothesisOutcome := current.HypothesisOutcome
+	if input.HypothesisOutcome != nil {
+		hypothesisOutcome = strings.TrimSpace(*input.HypothesisOutcome)
+		if !validHypothesisOutcome(hypothesisOutcome) {
+			return Task{}, ErrForbidden
+		}
+	}
+	nextStep := current.NextStep
+	if input.NextStep != nil {
+		nextStep = strings.TrimSpace(*input.NextStep)
+	}
 	blocked := current.Blocked
 	if input.Blocked != nil {
 		blocked = *input.Blocked
@@ -417,11 +457,18 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 		}
 	}
 
-	workstream, err := s.workstreamByID(ctx, workspaceID, current.WorkstreamID)
+	workstreamID := current.WorkstreamID
+	if input.WorkstreamID > 0 {
+		workstreamID = input.WorkstreamID
+	}
+	workstream, err := s.workstreamByID(ctx, workspaceID, workstreamID)
 	if err != nil {
 		return Task{}, ErrForbidden
 	}
-	input.WorkstreamID = current.WorkstreamID
+	if workstream.TacticalPlanID != current.TacticalPlanID {
+		return Task{}, ErrForbidden
+	}
+	input.WorkstreamID = workstreamID
 	input.ProjectID = projectID
 	input.RiskID = current.RiskID
 	input.OpportunityID = current.OpportunityID
@@ -435,8 +482,13 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 		return Task{}, err
 	}
 	secondaryWorkstreamIDs := current.SecondaryWorkstreamIDs
-	if input.SecondaryWorkstreamIDs != nil {
-		secondaryWorkstreamIDs, err = s.validateSecondaryWorkstreams(ctx, workspaceID, current.TacticalPlanID, workstream.ID, input.SecondaryWorkstreamIDs)
+	workstreamChanged := workstreamID != current.WorkstreamID
+	if input.SecondaryWorkstreamIDs != nil || workstreamChanged {
+		requestedSecondary := input.SecondaryWorkstreamIDs
+		if requestedSecondary == nil {
+			requestedSecondary = current.SecondaryWorkstreamIDs
+		}
+		secondaryWorkstreamIDs, err = s.validateSecondaryWorkstreams(ctx, workspaceID, current.TacticalPlanID, workstream.ID, requestedSecondary)
 		if err != nil {
 			return Task{}, err
 		}
@@ -453,24 +505,37 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 			backlog_category=$7,
 			project_id=$8,
 			department_id=$9,
-			owner_user_id=$10,
-			due_date=$11::DATE,
-			updated_by=$12,
+			workstream_id=$10,
+			owner_user_id=$11,
+			due_date=$12::DATE,
+			status=$13,
+			completion_result=$14,
+			completion_evidence=$15,
+			completion_learning=$16,
+			hypothesis_outcome=$17,
+			next_step=$18,
+			updated_by=$19,
+			started_at=CASE WHEN $13=$22 THEN COALESCE(started_at, NOW()) ELSE started_at END,
+			completed_at=CASE WHEN $13=$23 THEN COALESCE(completed_at, NOW()) ELSE NULL END,
+			archived_at=CASE WHEN $13=$24 THEN COALESCE(archived_at, NOW()) ELSE NULL END,
 			updated_at=NOW()
-		WHERE id=$13 AND workspace_id=$14
+		WHERE id=$20 AND workspace_id=$21
 		RETURNING
 			id, workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
-			updated_at, started_at, completed_at, archived_at
-	`, title, description, expectedResult, successCriteria, whyNow, blocked, backlogCategory, nullableInt(projectID), departmentID, nullableInt(ownerUserID), nullableString(dueDate), userID, taskID, workspaceID)
+			updated_at, started_at, completed_at, archived_at,
+			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step
+	`, title, description, expectedResult, successCriteria, whyNow, blocked, backlogCategory, nullableInt(projectID), departmentID, workstreamID, nullableInt(ownerUserID), nullableString(dueDate),
+		status, completionResult, completionEvidence, completionLearning, hypothesisOutcome, nextStep, userID, taskID, workspaceID,
+		StatusInProgress, StatusDone, StatusArchived)
 
 	task, err := scanTask(row)
 	if err != nil {
 		return Task{}, err
 	}
-	if input.SecondaryWorkstreamIDs != nil {
+	if input.SecondaryWorkstreamIDs != nil || workstreamChanged {
 		if err := s.replaceSecondaryWorkstreams(ctx, workspaceID, task.ID, secondaryWorkstreamIDs); err != nil {
 			return Task{}, err
 		}
@@ -568,8 +633,8 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 			priority_order=COALESCE($2, priority_order),
 			updated_by=$3,
 			started_at=CASE WHEN $1=$4 THEN COALESCE(started_at, NOW()) ELSE started_at END,
-			completed_at=CASE WHEN $1=$5 THEN COALESCE(completed_at, NOW()) ELSE completed_at END,
-			archived_at=CASE WHEN $1=$6 THEN COALESCE(archived_at, NOW()) ELSE archived_at END,
+			completed_at=CASE WHEN $1=$5 THEN COALESCE(completed_at, NOW()) ELSE NULL END,
+			archived_at=CASE WHEN $1=$6 THEN COALESCE(archived_at, NOW()) ELSE NULL END,
 			updated_at=NOW()
 		WHERE id=$7 AND workspace_id=$8
 		RETURNING
@@ -577,7 +642,8 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
-			updated_at, started_at, completed_at, archived_at
+			updated_at, started_at, completed_at, archived_at,
+			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step
 	`, status, nullableInt(priorityOrder), userID, StatusInProgress, StatusDone, StatusArchived, taskID, workspaceID)
 
 	task, err := scanTask(row)
@@ -611,7 +677,8 @@ func (s *Store) SetManualPriority(ctx context.Context, workspaceID int, userID i
 			opportunity_id, title, description, expected_result, success_criteria, why_now,
 			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
-			updated_at, started_at, completed_at, archived_at
+			updated_at, started_at, completed_at, archived_at,
+			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step
 	`, nullableInt(score), tier, userID, taskID, workspaceID)
 	task, err := scanTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1036,6 +1103,7 @@ func scanTask(scanner scanner) (Task, error) {
 		&task.SuccessCriteria, &task.WhyNow, &task.Status, &task.Blocked, &task.BacklogCategory, &priorityOrder, &manualPriorityScore,
 		&manualPriorityTier, &ownerUserID, &dueDate, &task.SourceType, &sourceID, &createdBy,
 		&updatedBy, &task.CreatedAt, &task.UpdatedAt, &startedAt, &completedAt, &archivedAt,
+		&task.CompletionResult, &task.CompletionEvidence, &task.CompletionLearning, &task.HypothesisOutcome, &task.NextStep,
 	)
 	if err != nil {
 		return Task{}, err
@@ -1062,6 +1130,15 @@ func scanTask(scanner scanner) (Task, error) {
 	task.ArchivedAt = timePtr(archivedAt)
 
 	return task, nil
+}
+
+func validHypothesisOutcome(value string) bool {
+	switch value {
+	case "", "confirmed", "disproved", "unclear", "not_applicable":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task) ([]Task, error) {
@@ -1243,6 +1320,11 @@ func (i *TaskInput) normalize() {
 	if i.SourceType != nil {
 		trimmed := strings.TrimSpace(*i.SourceType)
 		i.SourceType = &trimmed
+	}
+	for _, field := range []*string{i.CompletionResult, i.CompletionEvidence, i.CompletionLearning, i.HypothesisOutcome, i.NextStep} {
+		if field != nil {
+			*field = strings.TrimSpace(*field)
+		}
 	}
 }
 
