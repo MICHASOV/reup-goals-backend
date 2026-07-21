@@ -132,9 +132,12 @@ func TestPipelineConversationState(t *testing.T) {
 
 func TestAuditorTurnOutputContract(t *testing.T) {
 	var turn auditorTurnOutput
-	err := json.Unmarshal([]byte(`{"reply":"Продолжим.","audit_candidate":true,"candidate_reason":"baseline covered"}`), &turn)
+	err := json.Unmarshal([]byte(`{"reply":"Продолжим【】.","audit_candidate":true,"candidate_reason":"baseline covered"}`), &turn)
 	if err != nil || turn.Reply == "" || !turn.AuditCandidate {
 		t.Fatalf("structured turn contract failed: %+v, %v", turn, err)
+	}
+	if got := cleanAssistantMessage(turn.Reply); got != "Продолжим." {
+		t.Fatalf("citation marker was not removed: %q", got)
 	}
 }
 

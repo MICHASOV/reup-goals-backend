@@ -184,6 +184,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       session.PromptCacheKey,
 		MaxFileSearchResults: 8,
+		MaxOutputTokens:      5000,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
@@ -196,6 +197,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 				CompactThreshold:     session.CompactThreshold,
 				PromptCacheKey:       session.PromptCacheKey,
 				MaxFileSearchResults: 8,
+				MaxOutputTokens:      5000,
 			})
 			duration = time.Since(started).Milliseconds()
 		}
@@ -219,6 +221,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			CompactThreshold:     session.CompactThreshold,
 			PromptCacheKey:       session.PromptCacheKey,
 			MaxFileSearchResults: 8,
+			MaxOutputTokens:      5000,
 		})
 		duration = time.Since(started).Milliseconds()
 		if err == nil {
@@ -495,6 +498,8 @@ func limitStringRunes(value string, limit int) string {
 }
 
 func cleanAssistantMessage(value string) string {
+	value = strings.ReplaceAll(value, "【】", "")
+	value = strings.ReplaceAll(value, "【 】", "")
 	return strings.TrimSpace(value)
 }
 

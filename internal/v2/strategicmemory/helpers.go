@@ -13,6 +13,8 @@ func cleanText(value string) string {
 func cleanAssistantMessage(value string) string {
 	value = strings.TrimSpace(value)
 	replacer := strings.NewReplacer(
+		"【】", "",
+		"【 】", "",
 		"właśnie", "именно",
 		"verdadeiro", "реальное",
 		"verdadeira", "реальная",

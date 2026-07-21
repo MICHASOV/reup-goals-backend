@@ -353,6 +353,8 @@ func parseBrainstormOutput(raw string, pack taskContextPack) (brainstormModelOut
 		return brainstormModelOutput{}, err
 	}
 	output.Message = strings.TrimSpace(output.Message)
+	output.Message = strings.ReplaceAll(output.Message, "【】", "")
+	output.Message = strings.ReplaceAll(output.Message, "【 】", "")
 	if output.Message == "" {
 		return brainstormModelOutput{}, fmt.Errorf("empty_brainstorm_message")
 	}

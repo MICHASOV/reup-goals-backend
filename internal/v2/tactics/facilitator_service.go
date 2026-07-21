@@ -208,6 +208,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		CompactThreshold:     openAISession.CompactThreshold,
 		PromptCacheKey:       openAISession.PromptCacheKey,
 		MaxFileSearchResults: 8,
+		MaxOutputTokens:      5000,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil && strings.TrimSpace(openAISession.ConversationID) != "" && ai.IsConversationStateError(err) {
@@ -219,6 +220,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			CompactThreshold:     openAISession.CompactThreshold,
 			PromptCacheKey:       openAISession.PromptCacheKey,
 			MaxFileSearchResults: 8,
+			MaxOutputTokens:      5000,
 		})
 		duration = time.Since(started).Milliseconds()
 	}
@@ -241,6 +243,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			CompactThreshold:     openAISession.CompactThreshold,
 			PromptCacheKey:       openAISession.PromptCacheKey,
 			MaxFileSearchResults: 8,
+			MaxOutputTokens:      5000,
 		})
 		duration = time.Since(started).Milliseconds()
 		if err == nil {
@@ -476,6 +479,8 @@ func normalizeParticipantRole(value string) string {
 
 func cleanTacticsAssistantMessage(value string) string {
 	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "【】", "")
+	value = strings.ReplaceAll(value, "【 】", "")
 	return strings.TrimSpace(value)
 }
 

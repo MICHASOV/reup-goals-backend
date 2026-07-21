@@ -33,7 +33,7 @@ func TestParseBrainstormOutputKeepsOnlyValidScopedActions(t *testing.T) {
 		ExistingTasks: []taskContextItem{{ID: taskID, Title: "Existing"}},
 	}
 	raw := `{
-		"message":"Давайте зафиксируем следующий шаг.",
+		"message":"Давайте зафиксируем следующий шаг【】.",
 		"task_actions":[
 			{"action_type":"create","title":"Проверить сегмент","project_id":12},
 			{"action_type":"create","title":"Проверить канал","project_id":99},
@@ -47,6 +47,9 @@ func TestParseBrainstormOutputKeepsOnlyValidScopedActions(t *testing.T) {
 	}
 	if len(result.Actions) != 3 {
 		t.Fatalf("expected 3 valid actions, got %d", len(result.Actions))
+	}
+	if result.Message != "Давайте зафиксируем следующий шаг." {
+		t.Fatalf("citation marker was not removed: %q", result.Message)
 	}
 	if result.Actions[0].ProjectID == nil || *result.Actions[0].ProjectID != projectID {
 		t.Fatalf("known project link was lost: %#v", result.Actions[0])

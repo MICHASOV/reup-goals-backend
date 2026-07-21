@@ -181,6 +181,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		CompactThreshold:     session.CompactThreshold,
 		PromptCacheKey:       session.PromptCacheKey,
 		MaxFileSearchResults: 4,
+		MaxOutputTokens:      4000,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
@@ -197,6 +198,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 				CompactThreshold:     session.CompactThreshold,
 				PromptCacheKey:       session.PromptCacheKey,
 				MaxFileSearchResults: 4,
+				MaxOutputTokens:      4000,
 			})
 			duration = time.Since(started).Milliseconds()
 		}
@@ -216,6 +218,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 			CompactThreshold:     session.CompactThreshold,
 			PromptCacheKey:       session.PromptCacheKey,
 			MaxFileSearchResults: 4,
+			MaxOutputTokens:      4000,
 		})
 		duration = time.Since(started).Milliseconds()
 		if err == nil {

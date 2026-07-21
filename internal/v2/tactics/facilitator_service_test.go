@@ -25,7 +25,7 @@ func TestTacticsConversationTurnContainsOnlyMessageAndScope(t *testing.T) {
 
 func TestParseTacticsFacilitatorOutput(t *testing.T) {
 	raw := `{
-		"message":"Проверим **механизм изменения**, а не список задач.",
+		"message":"Проверим **механизм изменения**【 】, а не список задач.",
 		"session_status":"candidate_ready",
 		"status_reason":"The change portfolio is coherent.",
 		"current_focus":{
@@ -46,6 +46,9 @@ func TestParseTacticsFacilitatorOutput(t *testing.T) {
 	}
 	if output.SessionStatus != FacilitatorStatusCandidateReady {
 		t.Fatalf("unexpected status: %s", output.SessionStatus)
+	}
+	if output.Message != "Проверим **механизм изменения**, а не список задач." {
+		t.Fatalf("citation marker was not removed: %q", output.Message)
 	}
 	if output.CurrentFocus.EntityID == nil || *output.CurrentFocus.EntityID != 17 {
 		t.Fatalf("unexpected focus id: %#v", output.CurrentFocus.EntityID)

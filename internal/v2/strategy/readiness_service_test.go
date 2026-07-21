@@ -85,7 +85,7 @@ func TestNormalizeReadinessReportBlockingGapPreventsSynthesis(t *testing.T) {
 
 func TestParseStrategyFacilitatorOutputKeepsNaturalMessageAndNormalizesStatus(t *testing.T) {
 	raw := `{
-		"message":"Понял. Тогда давай проверим экономику этого выбора.",
+		"message":"Понял【】. Тогда давай проверим экономику этого выбора.",
 		"session_status":"CANDIDATE_READY",
 		"status_reason":" Core choice is explicit. ",
 		"remaining_uncertainties":[" Economics ","Economics",""]
