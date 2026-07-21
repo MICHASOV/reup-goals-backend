@@ -102,11 +102,45 @@ func (h *Handler) aiStats(r *http.Request, workspaceID int) (map[string]any, err
 		FROM v2_ai_call_logs
 		WHERE workspace_id=$1 AND created_at > NOW() - INTERVAL '24 hours'
 	`, workspaceID).Scan(&calls, &failures, &inputTokens, &cachedInputTokens, &outputTokens, &cost)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := h.dbx.QueryContext(r.Context(), `
+		SELECT ai_module, model, status,
+			COALESCE(token_usage_input, 0), COALESCE(cached_input_tokens, 0),
+			COALESCE(token_usage_output, 0), COALESCE(estimated_cost, 0), created_at
+		FROM v2_ai_call_logs
+		WHERE workspace_id=$1 AND created_at > NOW() - INTERVAL '24 hours'
+		ORDER BY created_at DESC, id DESC
+		LIMIT 20
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	recent := make([]map[string]any, 0)
+	for rows.Next() {
+		var module, model, status string
+		var input, cached, output int
+		var estimatedCost float64
+		var createdAt time.Time
+		if err := rows.Scan(&module, &model, &status, &input, &cached, &output, &estimatedCost, &createdAt); err != nil {
+			return nil, err
+		}
+		recent = append(recent, map[string]any{
+			"module": module, "model": model, "status": status,
+			"input_tokens": input, "cached_input_tokens": cached, "output_tokens": output,
+			"estimated_cost_usd": estimatedCost, "created_at": createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"calls_24h": calls, "failures_24h": failures, "input_tokens_24h": inputTokens,
 		"cached_input_tokens_24h": cachedInputTokens, "output_tokens_24h": outputTokens,
-		"estimated_cost_usd_24h": cost,
-	}, err
+		"estimated_cost_usd_24h": cost, "recent_calls": recent,
+	}, nil
 }
 
 func (h *Handler) warnings(r *http.Request, workspaceID int, queue jobs.QueueStats) ([]Warning, error) {
