@@ -457,11 +457,21 @@ func scanEntities(rows *sql.Rows, err error) ([]EntitySummary, error) {
 
 func (s *Store) documents(ctx context.Context, workspaceID int, entityType string, entityID int) ([]DocumentLink, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
-		SELECT link.id, document.id, document.document_type, document.title, document.generated_at
-		FROM v2_entity_document_links link
-		JOIN strategic_documents document ON document.id=link.document_id AND document.workspace_id=link.workspace_id
-		WHERE link.workspace_id=$1 AND link.entity_type=$2 AND link.entity_id=$3
-		ORDER BY document.generated_at DESC, document.id DESC
+		SELECT records.link_id, records.document_id, records.document_type, records.title, records.updated_at
+		FROM (
+			SELECT link.id AS link_id, document.id AS document_id, document.document_type,
+				document.title, document.generated_at AS updated_at
+			FROM v2_entity_document_links link
+			JOIN strategic_documents document ON document.id=link.document_id AND document.workspace_id=link.workspace_id
+			WHERE link.workspace_id=$1 AND link.entity_type=$2 AND link.entity_id=$3
+			UNION ALL
+			SELECT -document.id::integer AS link_id, document.id::integer AS document_id,
+				'workspace_document' AS document_type, document.title, document.updated_at
+			FROM workspace_documents document
+			WHERE document.workspace_id=$1 AND document.archived_at IS NULL AND $2='department'
+				AND document.linked_department_ids @> jsonb_build_array($3::integer)
+		) records
+		ORDER BY records.updated_at DESC, records.document_id DESC
 	`, workspaceID, entityType, entityID)
 	if err != nil {
 		return nil, err

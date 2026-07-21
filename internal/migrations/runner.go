@@ -2391,6 +2391,55 @@ var migrations = []Migration{
 			FOR EACH ROW EXECUTE FUNCTION v2_attach_default_project_department();
 		`,
 	},
+	{
+		ID: "20260722_038_workspace_documents",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS workspace_documents (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				parent_id BIGINT NULL REFERENCES workspace_documents(id) ON DELETE SET NULL,
+				title TEXT NOT NULL,
+				content TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'draft',
+				favorite BOOLEAN NOT NULL DEFAULT false,
+				linked_department_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+				linked_workstream_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+				linked_project_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+				version INTEGER NOT NULL DEFAULT 1,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				updated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				archived_at TIMESTAMPTZ NULL,
+				CHECK (status IN ('draft', 'published', 'archived')),
+				CHECK (char_length(title) BETWEEN 1 AND 240),
+				CHECK (char_length(content) <= 1000000)
+			);
+			CREATE INDEX IF NOT EXISTS idx_workspace_documents_workspace
+				ON workspace_documents (workspace_id, status, favorite DESC, updated_at DESC, id DESC);
+			CREATE INDEX IF NOT EXISTS idx_workspace_documents_parent
+				ON workspace_documents (workspace_id, parent_id, updated_at DESC);
+
+			CREATE TABLE IF NOT EXISTS workspace_document_versions (
+				id BIGSERIAL PRIMARY KEY,
+				document_id BIGINT NOT NULL REFERENCES workspace_documents(id) ON DELETE CASCADE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				version INTEGER NOT NULL,
+				title TEXT NOT NULL,
+				content TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL,
+				favorite BOOLEAN NOT NULL DEFAULT false,
+				linked_department_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+				linked_workstream_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+				linked_project_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+				saved_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE (document_id, version)
+			);
+			CREATE INDEX IF NOT EXISTS idx_workspace_document_versions_document
+				ON workspace_document_versions (workspace_id, document_id, version DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
