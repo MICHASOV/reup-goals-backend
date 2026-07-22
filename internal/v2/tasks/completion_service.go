@@ -75,9 +75,20 @@ func (s *TaskCompletionService) Complete(ctx context.Context, workspaceID int, u
 		return Task{}, err
 	}
 
-	input, _, err := s.evaluator.buildEvaluationInput(ctx, workspaceID, updated)
-	if err != nil {
-		return Task{}, err
+	input, _, contextErr := s.evaluator.buildEvaluationInput(ctx, workspaceID, updated)
+	if contextErr != nil {
+		input = map[string]any{
+			"task": map[string]any{
+				"id": updated.ID, "title": updated.Title, "description": updated.Description,
+				"expected_result": updated.ExpectedResult,
+			},
+		}
+		if snapshot, snapshotErr := s.memory.LatestSnapshot(ctx, workspaceID); snapshotErr == nil && snapshot != nil {
+			input["company_context"] = map[string]any{
+				"business_stage":   snapshot.BusinessStage,
+				"snapshot_excerpt": truncateRunes(string(snapshot.Snapshot), 3500),
+			}
+		}
 	}
 	input["completion"] = map[string]any{
 		"result": resultText,
