@@ -13,13 +13,15 @@ import (
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
-const taskCompletionPromptVersion = "task_completion_evaluator_v1_0_0"
+const taskCompletionPromptVersion = "task_completion_evaluator_v1_1_0"
 
 const taskCompletionPrompt = `You evaluate whether a completed task result is documented well enough to be useful to the business.
 
 Use the task, its expected result, company goal, project context, the user's completion statement, and any attached result files. Attached files are supporting evidence; they do not replace a clear completion statement.
 
 Decide whether the result explains what actually changed or was produced. Do not require unnecessary ceremony. A short answer is sufficient when it names a concrete outcome. Mark it insufficient when it only says that work was done, repeats the task, gives no observable outcome, or makes an unsupported claim where evidence is necessary.
+
+Write reason and missing_information in the same language as the completion statement.
 
 Return JSON only:
 {
@@ -97,7 +99,7 @@ func (s *TaskCompletionService) Complete(ctx context.Context, workspaceID int, u
 	rawInput, _ := json.Marshal(input)
 
 	options := ai.ResponseContextOptions{
-		PromptCacheKey:  fmt.Sprintf("reupgoals-task-completion-workspace-%d-v1", workspaceID),
+		PromptCacheKey:  fmt.Sprintf("reupgoals-task-completion-workspace-%d-v1-1", workspaceID),
 		MaxOutputTokens: 500,
 		RequestTimeout:  90 * time.Second,
 	}
