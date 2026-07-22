@@ -310,8 +310,22 @@ func taskEvaluationInputChanged(before Task, after Task) bool {
 	return before.Title != after.Title ||
 		before.Description != after.Description ||
 		before.ExpectedResult != after.ExpectedResult ||
+		before.SuccessCriteria != after.SuccessCriteria ||
 		before.WorkstreamID != after.WorkstreamID ||
-		!sameOptionalInt(before.ProjectID, after.ProjectID)
+		!sameOptionalInt(before.ProjectID, after.ProjectID) ||
+		!sameIntSet(blockingTaskIDs(before.BlockingTasks), blockingTaskIDs(after.BlockingTasks))
+}
+
+func sameIntSet(left []int, right []int) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func sameOptionalInt(left *int, right *int) bool {
@@ -415,6 +429,10 @@ func writeTask(w http.ResponseWriter, task Task, err error, fallback string) {
 	}
 	if errors.Is(err, ErrInvalidInput) {
 		api.WriteError(w, http.StatusUnprocessableEntity, ErrInvalidInput.Error())
+		return
+	}
+	if errors.Is(err, ErrInvalidDependency) || errors.Is(err, ErrDependencyCycle) {
+		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	if err != nil {

@@ -14,11 +14,13 @@ import (
 )
 
 var (
-	ErrNoActiveCourse = errors.New("no_active_course")
-	ErrNoTacticalPlan = errors.New("no_tactical_plan")
-	ErrForbidden      = errors.New("forbidden")
-	ErrInvalidOwner   = errors.New("invalid_task_owner")
-	ErrInvalidInput   = errors.New("invalid_task_input")
+	ErrNoActiveCourse    = errors.New("no_active_course")
+	ErrNoTacticalPlan    = errors.New("no_tactical_plan")
+	ErrForbidden         = errors.New("forbidden")
+	ErrInvalidOwner      = errors.New("invalid_task_owner")
+	ErrInvalidInput      = errors.New("invalid_task_input")
+	ErrInvalidDependency = errors.New("invalid_task_dependency")
+	ErrDependencyCycle   = errors.New("task_dependency_cycle")
 )
 
 type Store struct {
@@ -310,6 +312,9 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 	if err != nil {
 		return Task{}, err
 	}
+	if err := s.validateTaskDependencies(ctx, workspaceID, 0, input.BlockingTaskIDs); err != nil {
+		return Task{}, err
+	}
 
 	sortOrder, err := s.nextPriorityOrder(ctx, workspaceID, input.WorkstreamID, status)
 	if err != nil {
@@ -355,6 +360,9 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 		return Task{}, err
 	}
 	if err := s.replaceSecondaryWorkstreams(ctx, workspaceID, task.ID, secondaryWorkstreamIDs); err != nil {
+		return Task{}, err
+	}
+	if err := s.replaceTaskDependencies(ctx, workspaceID, task.ID, input.BlockingTaskIDs); err != nil {
 		return Task{}, err
 	}
 	items, err := s.decorateTasks(ctx, workspaceID, []Task{task})
@@ -499,6 +507,13 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 			return Task{}, err
 		}
 	}
+	blockingTaskIDs := blockingTaskIDs(current.BlockingTasks)
+	if input.BlockingTaskIDs != nil {
+		if err := s.validateTaskDependencies(ctx, workspaceID, taskID, input.BlockingTaskIDs); err != nil {
+			return Task{}, err
+		}
+		blockingTaskIDs = input.BlockingTaskIDs
+	}
 
 	row := s.dbx.QueryRowContext(ctx, `
 		UPDATE v2_tasks
@@ -546,6 +561,11 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 			return Task{}, err
 		}
 	}
+	if input.BlockingTaskIDs != nil {
+		if err := s.replaceTaskDependencies(ctx, workspaceID, task.ID, blockingTaskIDs); err != nil {
+			return Task{}, err
+		}
+	}
 	items, err := s.decorateTasks(ctx, workspaceID, []Task{task})
 	if err != nil {
 		return Task{}, err
@@ -571,6 +591,72 @@ func (s *Store) validateOwner(ctx context.Context, workspaceID int, ownerUserID 
 	}
 	if !active {
 		return ErrInvalidOwner
+	}
+	return nil
+}
+
+func (s *Store) validateTaskDependencies(ctx context.Context, workspaceID int, taskID int, blockerTaskIDs []int) error {
+	if len(blockerTaskIDs) == 0 {
+		return nil
+	}
+	if len(blockerTaskIDs) > 50 {
+		return ErrInvalidDependency
+	}
+	for _, blockerID := range blockerTaskIDs {
+		if blockerID <= 0 || blockerID == taskID {
+			return ErrInvalidDependency
+		}
+	}
+	var count int
+	if err := s.dbx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM v2_tasks
+		WHERE workspace_id=$1 AND id=ANY($2)
+	`, workspaceID, pq.Array(blockerTaskIDs)).Scan(&count); err != nil {
+		return err
+	}
+	if count != len(blockerTaskIDs) {
+		return ErrInvalidDependency
+	}
+	if taskID <= 0 {
+		return nil
+	}
+	var createsCycle bool
+	if err := s.dbx.QueryRowContext(ctx, `
+		WITH RECURSIVE dependency_chain(blocker_task_id) AS (
+			SELECT dependency.blocker_task_id
+			FROM v2_task_dependencies dependency
+			WHERE dependency.workspace_id=$1 AND dependency.task_id=ANY($2)
+			UNION
+			SELECT dependency.blocker_task_id
+			FROM v2_task_dependencies dependency
+			JOIN dependency_chain chain ON dependency.task_id=chain.blocker_task_id
+			WHERE dependency.workspace_id=$1
+		)
+		SELECT EXISTS(SELECT 1 FROM dependency_chain WHERE blocker_task_id=$3)
+	`, workspaceID, pq.Array(blockerTaskIDs), taskID).Scan(&createsCycle); err != nil {
+		return err
+	}
+	if createsCycle {
+		return ErrDependencyCycle
+	}
+	return nil
+}
+
+func (s *Store) replaceTaskDependencies(ctx context.Context, workspaceID int, taskID int, blockerTaskIDs []int) error {
+	if _, err := s.dbx.ExecContext(ctx, `
+		DELETE FROM v2_task_dependencies WHERE workspace_id=$1 AND task_id=$2
+	`, workspaceID, taskID); err != nil {
+		return err
+	}
+	for _, blockerID := range blockerTaskIDs {
+		if _, err := s.dbx.ExecContext(ctx, `
+			INSERT INTO v2_task_dependencies (workspace_id, task_id, blocker_task_id)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (task_id, blocker_task_id) DO NOTHING
+		`, workspaceID, taskID, blockerID); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1159,6 +1245,7 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		taskIDs = append(taskIDs, tasks[i].ID)
 		tasks[i].Flags = []string{}
 		tasks[i].SecondaryWorkstreamIDs = []int{}
+		tasks[i].BlockingTasks = []BlockingTask{}
 		tasks[i].EvaluationStatus = "not_evaluated"
 		tasks[i].PrioritySource = "none"
 		if tasks[i].ManualPriorityScore != nil {
@@ -1190,6 +1277,31 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		secondaryByTask[taskID] = append(secondaryByTask[taskID], workstreamID)
 	}
 	if err := secondaryRows.Close(); err != nil {
+		return nil, err
+	}
+
+	dependencyRows, err := s.dbx.QueryContext(ctx, `
+		SELECT dependency.task_id, blocker.id, blocker.title, blocker.status
+		FROM v2_task_dependencies dependency
+		JOIN v2_tasks blocker
+			ON blocker.id=dependency.blocker_task_id AND blocker.workspace_id=dependency.workspace_id
+		WHERE dependency.workspace_id=$1 AND dependency.task_id=ANY($2)
+		ORDER BY dependency.task_id, blocker.title, blocker.id
+	`, workspaceID, pq.Array(taskIDs))
+	if err != nil {
+		return nil, err
+	}
+	dependenciesByTask := map[int][]BlockingTask{}
+	for dependencyRows.Next() {
+		var taskID int
+		var blocker BlockingTask
+		if err := dependencyRows.Scan(&taskID, &blocker.ID, &blocker.Title, &blocker.Status); err != nil {
+			_ = dependencyRows.Close()
+			return nil, err
+		}
+		dependenciesByTask[taskID] = append(dependenciesByTask[taskID], blocker)
+	}
+	if err := dependencyRows.Close(); err != nil {
 		return nil, err
 	}
 
@@ -1258,7 +1370,16 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		if linked, ok := secondaryByTask[tasks[i].ID]; ok {
 			tasks[i].SecondaryWorkstreamIDs = linked
 		}
-		if tasks[i].Blocked {
+		if blockers, ok := dependenciesByTask[tasks[i].ID]; ok {
+			tasks[i].BlockingTasks = blockers
+			for _, blocker := range blockers {
+				if blocker.Status != StatusDone && blocker.Status != StatusArchived {
+					tasks[i].DependencyBlocked = true
+					break
+				}
+			}
+		}
+		if tasks[i].Blocked || tasks[i].DependencyBlocked {
 			tasks[i].Flags = append(tasks[i].Flags, TaskFlagBlocked)
 		}
 		if evaluation, ok := evaluations[tasks[i].ID]; ok {
@@ -1333,6 +1454,27 @@ func (i *TaskInput) normalize() {
 			*field = strings.TrimSpace(*field)
 		}
 	}
+	if i.BlockingTaskIDs != nil {
+		seen := map[int]bool{}
+		cleaned := make([]int, 0, len(i.BlockingTaskIDs))
+		for _, taskID := range i.BlockingTaskIDs {
+			if !seen[taskID] {
+				seen[taskID] = true
+				cleaned = append(cleaned, taskID)
+			}
+		}
+		sort.Ints(cleaned)
+		i.BlockingTaskIDs = cleaned
+	}
+}
+
+func blockingTaskIDs(tasks []BlockingTask) []int {
+	ids := make([]int, 0, len(tasks))
+	for _, task := range tasks {
+		ids = append(ids, task.ID)
+	}
+	sort.Ints(ids)
+	return ids
 }
 
 func attachTasks(workstreams []WorkstreamSummary, tasks []Task) {

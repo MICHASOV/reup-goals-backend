@@ -138,6 +138,8 @@ type Task struct {
 	WhyNow                 string          `json:"why_now"`
 	Status                 string          `json:"status"`
 	Blocked                bool            `json:"blocked"`
+	DependencyBlocked      bool            `json:"dependency_blocked"`
+	BlockingTasks          []BlockingTask  `json:"blocking_tasks"`
 	BacklogCategory        string          `json:"backlog_category"`
 	Flags                  []string        `json:"flags"`
 	SecondaryWorkstreamIDs []int           `json:"secondary_workstream_ids"`
@@ -165,6 +167,12 @@ type Task struct {
 	EffectivePriorityScore int             `json:"effective_priority_score"`
 	EffectivePriorityTier  string          `json:"effective_priority_tier"`
 	PrioritySource         string          `json:"priority_source"`
+}
+
+type BlockingTask struct {
+	ID     int    `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 type TaskEvaluation struct {
@@ -232,6 +240,7 @@ type TaskInput struct {
 	WhyNow                 *string `json:"why_now"`
 	Status                 *string `json:"status"`
 	Blocked                *bool   `json:"blocked"`
+	BlockingTaskIDs        []int   `json:"blocking_task_ids"`
 	BacklogCategory        *string `json:"backlog_category"`
 	SecondaryWorkstreamIDs []int   `json:"secondary_workstream_ids"`
 	PriorityOrder          *int    `json:"priority_order"`

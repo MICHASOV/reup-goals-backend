@@ -209,7 +209,8 @@ func (s *TaskEvaluatorService) buildEvaluationInput(ctx context.Context, workspa
 	input := map[string]any{
 		"task": map[string]any{
 			"id": task.ID, "title": task.Title, "description": task.Description,
-			"expected_result": task.ExpectedResult,
+			"expected_result": task.ExpectedResult, "success_criteria": task.SuccessCriteria,
+			"blocking_tasks": task.BlockingTasks,
 		},
 		"global_company_goal": map[string]any{
 			"strategy_title": strategyTitle, "strategy_summary": truncateRunes(strategySummary, 1200),

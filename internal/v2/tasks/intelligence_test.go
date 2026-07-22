@@ -94,7 +94,7 @@ func TestTaskPriorityUsesFiveTiersAndCapsRemoveRecommendation(t *testing.T) {
 
 func TestTaskEvaluationInputChangedOnlyForMeaningfulEvaluationFields(t *testing.T) {
 	projectID := 7
-	baseline := Task{Title: "Run interviews", Description: "Interview ten customers", ExpectedResult: "Five validated insights", WorkstreamID: 3, ProjectID: &projectID, DepartmentID: 2}
+	baseline := Task{Title: "Run interviews", Description: "Interview ten customers", ExpectedResult: "Five validated insights", SuccessCriteria: "Five interviews completed", WorkstreamID: 3, ProjectID: &projectID, DepartmentID: 2, BlockingTasks: []BlockingTask{{ID: 4}}}
 
 	unchanged := baseline
 	unchanged.Status = StatusInProgress
@@ -114,6 +114,18 @@ func TestTaskEvaluationInputChangedOnlyForMeaningfulEvaluationFields(t *testing.
 	changed.ProjectID = &otherProjectID
 	if !taskEvaluationInputChanged(baseline, changed) {
 		t.Fatal("project change must trigger AI evaluation")
+	}
+
+	changed = baseline
+	changed.SuccessCriteria = "Five paying customers interviewed"
+	if !taskEvaluationInputChanged(baseline, changed) {
+		t.Fatal("success criteria change must trigger AI evaluation")
+	}
+
+	changed = baseline
+	changed.BlockingTasks = []BlockingTask{{ID: 5}}
+	if !taskEvaluationInputChanged(baseline, changed) {
+		t.Fatal("dependency change must trigger AI evaluation")
 	}
 }
 

@@ -2469,6 +2469,24 @@ var migrations = []Migration{
 			WHERE status <> 'archived' AND archived_at IS NOT NULL;
 		`,
 	},
+	{
+		ID: "20260722_041_task_dependencies",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_task_dependencies (
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				blocker_task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (task_id, blocker_task_id),
+				CHECK (task_id <> blocker_task_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_task_dependencies_workspace_task
+				ON v2_task_dependencies (workspace_id, task_id);
+			CREATE INDEX IF NOT EXISTS idx_v2_task_dependencies_workspace_blocker
+				ON v2_task_dependencies (workspace_id, blocker_task_id);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
