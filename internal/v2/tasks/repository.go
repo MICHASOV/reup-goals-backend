@@ -1374,6 +1374,7 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 			tasks[i].BlockingTasks = blockers
 			for _, blocker := range blockers {
 				if blocker.Status != StatusDone && blocker.Status != StatusArchived {
+					// #nosec G602 -- i is bounded by the range over tasks above.
 					tasks[i].DependencyBlocked = true
 					break
 				}
