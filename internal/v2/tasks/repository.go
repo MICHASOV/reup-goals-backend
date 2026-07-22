@@ -14,13 +14,15 @@ import (
 )
 
 var (
-	ErrNoActiveCourse    = errors.New("no_active_course")
-	ErrNoTacticalPlan    = errors.New("no_tactical_plan")
-	ErrForbidden         = errors.New("forbidden")
-	ErrInvalidOwner      = errors.New("invalid_task_owner")
-	ErrInvalidInput      = errors.New("invalid_task_input")
-	ErrInvalidDependency = errors.New("invalid_task_dependency")
-	ErrDependencyCycle   = errors.New("task_dependency_cycle")
+	ErrNoActiveCourse           = errors.New("no_active_course")
+	ErrNoTacticalPlan           = errors.New("no_tactical_plan")
+	ErrForbidden                = errors.New("forbidden")
+	ErrInvalidOwner             = errors.New("invalid_task_owner")
+	ErrInvalidInput             = errors.New("invalid_task_input")
+	ErrInvalidDependency        = errors.New("invalid_task_dependency")
+	ErrDependencyCycle          = errors.New("task_dependency_cycle")
+	ErrCompletionResultRequired = errors.New("task_completion_result_required")
+	ErrInvalidCompletionFile    = errors.New("invalid_task_completion_file")
 )
 
 type Store struct {
@@ -164,7 +166,7 @@ func (s *Store) List(ctx context.Context, workspaceID int, filter ListFilter) ([
 			AND ($6::BOOLEAN = TRUE OR archived_at IS NULL)
 			AND ($7::TEXT = '' OR title ILIKE '%' || $7 || '%' OR description ILIKE '%' || $7 || '%'
 				OR expected_result ILIKE '%' || $7 || '%' OR success_criteria ILIKE '%' || $7 || '%' OR why_now ILIKE '%' || $7 || '%')
-		ORDER BY COALESCE(task.manual_priority_score, latest_evaluation.priority_score, 0) DESC,
+		ORDER BY COALESCE(latest_evaluation.priority_score, 0) DESC,
 			COALESCE(task.priority_order, 9999), task.updated_at DESC, task.id DESC
 		LIMIT $8 OFFSET $9
 	`, workspaceID, nullableString(filter.Status), nullableInt(filter.WorkstreamID), nullableInt(filter.DepartmentID), nullableInt(filter.ProjectID), filter.IncludeArchived, strings.TrimSpace(filter.Query), filter.Limit, filter.Offset)
@@ -259,8 +261,7 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 	input.normalize()
 	if input.WorkstreamID <= 0 || input.ProjectID == nil || *input.ProjectID <= 0 ||
 		input.Title == nil || strings.TrimSpace(*input.Title) == "" ||
-		input.Description == nil || strings.TrimSpace(*input.Description) == "" ||
-		input.ExpectedResult == nil || strings.TrimSpace(*input.ExpectedResult) == "" {
+		input.Description == nil || strings.TrimSpace(*input.Description) == "" {
 		return Task{}, ErrInvalidInput
 	}
 	status := StatusFree
@@ -269,6 +270,9 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 	}
 	if !ValidStatus(status) {
 		return Task{}, ErrForbidden
+	}
+	if status == StatusDone && strings.TrimSpace(valueOrEmpty(input.CompletionResult)) == "" {
+		return Task{}, ErrCompletionResultRequired
 	}
 	blocked := input.Blocked != nil && *input.Blocked
 	backlogCategory := normalizeBacklogCategory(valueOrEmpty(input.BacklogCategory))
@@ -386,11 +390,14 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 		title = strings.TrimSpace(*input.Title)
 	}
 	if title == "" {
-		return Task{}, ErrForbidden
+		return Task{}, ErrInvalidInput
 	}
 	description := current.Description
 	if input.Description != nil {
 		description = strings.TrimSpace(*input.Description)
+	}
+	if description == "" {
+		return Task{}, ErrInvalidInput
 	}
 	expectedResult := current.ExpectedResult
 	if input.ExpectedResult != nil {
@@ -434,6 +441,9 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 	if input.NextStep != nil {
 		nextStep = strings.TrimSpace(*input.NextStep)
 	}
+	if status == StatusDone && completionResult == "" {
+		return Task{}, ErrCompletionResultRequired
+	}
 	blocked := current.Blocked
 	if input.Blocked != nil {
 		blocked = *input.Blocked
@@ -447,9 +457,12 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 	}
 	projectID := current.ProjectID
 	if input.ClearProject {
-		projectID = nil
+		return Task{}, ErrInvalidInput
 	} else if input.ProjectID != nil {
 		projectID = input.ProjectID
+	}
+	if projectID == nil || *projectID <= 0 {
+		return Task{}, ErrInvalidInput
 	}
 	departmentID := current.DepartmentID
 	if input.DepartmentID != nil {
@@ -719,6 +732,9 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 	} else if err != nil {
 		return Task{}, err
 	}
+	if status == StatusDone && strings.TrimSpace(current.CompletionResult) == "" {
+		return Task{}, ErrCompletionResultRequired
+	}
 
 	row := s.dbx.QueryRowContext(ctx, `
 		UPDATE v2_tasks
@@ -740,43 +756,6 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 	`, status, nullableInt(priorityOrder), userID, StatusInProgress, StatusDone, StatusArchived, taskID, workspaceID, current.Status)
 
 	task, err := scanTask(row)
-	if err != nil {
-		return Task{}, err
-	}
-	items, err := s.decorateTasks(ctx, workspaceID, []Task{task})
-	if err != nil {
-		return Task{}, err
-	}
-	return items[0], nil
-}
-
-func (s *Store) SetManualPriority(ctx context.Context, workspaceID int, userID int, taskID int, score *int) (Task, error) {
-	if score != nil && (*score < 0 || *score > 100) {
-		return Task{}, ErrForbidden
-	}
-	tier := ""
-	if score != nil {
-		tier = PriorityTier(*score)
-	}
-	row := s.dbx.QueryRowContext(ctx, `
-		UPDATE v2_tasks
-		SET manual_priority_score=$1,
-			manual_priority_tier=NULLIF($2, ''),
-			updated_by=$3,
-			updated_at=NOW()
-		WHERE id=$4 AND workspace_id=$5
-		RETURNING
-			id, workspace_id, course_id, tactical_plan_id, workstream_id, department_id, project_id, risk_id,
-			opportunity_id, title, description, expected_result, success_criteria, why_now,
-			status, blocked, backlog_category, priority_order, manual_priority_score, manual_priority_tier, owner_user_id,
-			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
-			updated_at, started_at, completed_at, archived_at,
-			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step
-	`, nullableInt(score), tier, userID, taskID, workspaceID)
-	task, err := scanTask(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Task{}, ErrForbidden
-	}
 	if err != nil {
 		return Task{}, err
 	}
@@ -1248,14 +1227,6 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		tasks[i].BlockingTasks = []BlockingTask{}
 		tasks[i].EvaluationStatus = "not_evaluated"
 		tasks[i].PrioritySource = "none"
-		if tasks[i].ManualPriorityScore != nil {
-			tasks[i].EffectivePriorityScore = *tasks[i].ManualPriorityScore
-			tasks[i].EffectivePriorityTier = tasks[i].ManualPriorityTier
-			if tasks[i].EffectivePriorityTier == "" {
-				tasks[i].EffectivePriorityTier = PriorityTier(*tasks[i].ManualPriorityScore)
-			}
-			tasks[i].PrioritySource = "manual"
-		}
 	}
 	secondaryRows, err := s.dbx.QueryContext(ctx, `
 		SELECT task_id, workstream_id
@@ -1302,6 +1273,62 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		dependenciesByTask[taskID] = append(dependenciesByTask[taskID], blocker)
 	}
 	if err := dependencyRows.Close(); err != nil {
+		return nil, err
+	}
+
+	completionFilesByTask := map[int][]TaskCompletionFile{}
+	completionFileRows, err := s.dbx.QueryContext(ctx, `
+		SELECT link.task_id, file.id, file.filename, file.content_type, file.size_bytes, file.status, link.created_at
+		FROM v2_task_completion_files link
+		JOIN strategic_openai_files file
+			ON file.id=link.strategic_file_id AND file.workspace_id=link.workspace_id
+		WHERE link.workspace_id=$1 AND link.task_id=ANY($2)
+		ORDER BY link.task_id, link.created_at, file.id
+	`, workspaceID, pq.Array(taskIDs))
+	if err != nil {
+		return nil, err
+	}
+	for completionFileRows.Next() {
+		var taskID int
+		var item TaskCompletionFile
+		if err := completionFileRows.Scan(&taskID, &item.ID, &item.Filename, &item.ContentType, &item.SizeBytes, &item.Status, &item.CreatedAt); err != nil {
+			_ = completionFileRows.Close()
+			return nil, err
+		}
+		completionFilesByTask[taskID] = append(completionFilesByTask[taskID], item)
+	}
+	if err := completionFileRows.Close(); err != nil {
+		return nil, err
+	}
+
+	completionEvaluations := map[int]TaskCompletionEvaluation{}
+	completionEvaluationStatuses := map[int]string{}
+	completionRows, err := s.dbx.QueryContext(ctx, `
+		SELECT DISTINCT ON (task_id)
+			task_id, id, status, sufficient, quality_score, reason, missing_information_json, created_at
+		FROM v2_task_completion_evaluations
+		WHERE workspace_id=$1 AND task_id=ANY($2)
+		ORDER BY task_id, created_at DESC, id DESC
+	`, workspaceID, pq.Array(taskIDs))
+	if err != nil {
+		return nil, err
+	}
+	for completionRows.Next() {
+		var taskID int
+		var status string
+		var missingRaw json.RawMessage
+		var item TaskCompletionEvaluation
+		if err := completionRows.Scan(&taskID, &item.ID, &status, &item.Sufficient, &item.QualityScore, &item.Reason, &missingRaw, &item.CreatedAt); err != nil {
+			_ = completionRows.Close()
+			return nil, err
+		}
+		completionEvaluationStatuses[taskID] = status
+		if status == EvaluationReady {
+			item.MissingInformation = decodeStringList(missingRaw)
+			completionEvaluations[taskID] = item
+		}
+	}
+	if err := completionRows.Close(); err != nil {
 		return nil, err
 	}
 
@@ -1367,6 +1394,17 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 	}
 
 	for i := range tasks {
+		tasks[i].CompletionFiles = completionFilesByTask[tasks[i].ID]
+		if tasks[i].CompletionFiles == nil {
+			tasks[i].CompletionFiles = []TaskCompletionFile{}
+		}
+		if evaluation, ok := completionEvaluations[tasks[i].ID]; ok {
+			tasks[i].CompletionEvaluation = &evaluation
+		}
+		tasks[i].CompletionEvaluationStatus = completionEvaluationStatuses[tasks[i].ID]
+		if tasks[i].CompletionEvaluationStatus == "" {
+			tasks[i].CompletionEvaluationStatus = "not_evaluated"
+		}
 		if linked, ok := secondaryByTask[tasks[i].ID]; ok {
 			tasks[i].SecondaryWorkstreamIDs = linked
 		}
@@ -1390,11 +1428,9 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 				tasks[i].BacklogCategory = evaluation.BacklogCategory
 			}
 			tasks[i].EvaluationStatus = EvaluationReady
-			if tasks[i].ManualPriorityScore == nil {
-				tasks[i].EffectivePriorityScore = evaluation.PriorityScore
-				tasks[i].EffectivePriorityTier = evaluation.PriorityTier
-				tasks[i].PrioritySource = "ai"
-			}
+			tasks[i].EffectivePriorityScore = evaluation.PriorityScore
+			tasks[i].EffectivePriorityTier = evaluation.PriorityTier
+			tasks[i].PrioritySource = "ai"
 		}
 		if status := jobStatuses[tasks[i].ID]; tasks[i].Evaluation == nil && status != "" && status != EvaluationReady {
 			tasks[i].EvaluationStatus = status

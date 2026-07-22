@@ -1,6 +1,6 @@
 package tasks
 
-const taskEvaluatorPromptVersion = "task_evaluator_v4_0_0"
+const taskEvaluatorPromptVersion = "task_evaluator_v5_0_0"
 
 const taskEvaluatorPrompt = `You are the task evaluation engine inside REUP.goals.
 
@@ -8,7 +8,7 @@ Evaluate one task primarily against the supplied global company goal, active str
 
 Use only the available evidence. A task is valuable when it can produce a meaningful result, decision, evidence, or business change that advances the company's global goal. Being useful inside a project is not enough for a high score when the causal contribution to the global goal is weak. If the task is vague or poorly described, reflect that in confidence and the final score instead of starting an interview.
 
-Score every dimension from 0 to 100:
+Score every dimension from 0 to 1000. Use the full scale and reserve values above 900 for unusually strong, well-supported cases:
 - strategic_relevance: contribution to the recorded strategy;
 - course_alignment: contribution to the active course and its key result;
 - tactical_alignment: direct contribution to the selected direction/project or coverage of a linked risk/opportunity; this is secondary to company-level relevance;

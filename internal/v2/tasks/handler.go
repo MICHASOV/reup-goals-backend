@@ -10,6 +10,7 @@ import (
 
 	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/auth"
+	"reup-goals-backend/internal/security"
 	"reup-goals-backend/internal/v2/api"
 	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/workspaces"
@@ -20,7 +21,10 @@ type Handler struct {
 	workspaces *workspaces.Store
 	brainstorm *BrainstormService
 	evaluator  *TaskEvaluatorService
+	completion *TaskCompletionService
 }
+
+const maxTaskCompletionFileBytes = 25 << 20
 
 func (h *Handler) WithContextIndex(index *contextindex.Service) *Handler {
 	h.brainstorm.SetContextIndex(index)
@@ -35,6 +39,7 @@ func NewHandler(dbx *sql.DB, brainstormAI ai.Provider, evaluatorAI ai.Provider, 
 		workspaces: workspaces.NewStore(dbx),
 		brainstorm: NewBrainstormService(dbx, brainstormAI, evaluator, compactThreshold),
 		evaluator:  evaluator,
+		completion: NewTaskCompletionService(dbx, evaluatorAI, evaluator, compactThreshold),
 	}
 }
 
@@ -55,6 +60,8 @@ func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 		h.brainstormMessage(w, r, workspace.ID, userID)
 	case r.URL.Path == "/api/v2/tasks/brainstorm/actions/apply":
 		h.applyBrainstormActions(w, r, workspace.ID, userID)
+	case r.URL.Path == "/api/v2/tasks/completion-files":
+		h.completionFile(w, r, workspace.ID, userID)
 	case strings.HasPrefix(r.URL.Path, "/api/v2/tasks/workstreams/"):
 		h.workstream(w, r, workspace.ID)
 	case strings.HasPrefix(r.URL.Path, "/api/v2/tasks/"):
@@ -62,6 +69,35 @@ func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) completionFile(w http.ResponseWriter, r *http.Request, workspaceID int, userID int) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxTaskCompletionFileBytes+(2<<20))
+	// #nosec G120 -- MaxBytesReader above enforces a hard request limit.
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_multipart")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest, "file_required")
+		return
+	}
+	defer file.Close()
+	if err := security.ValidateBusinessDocument(header.Filename, header.Size, maxTaskCompletionFileBytes); err != nil {
+		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	response, err := h.completion.UploadFile(r.Context(), workspaceID, userID, security.SafeFilename(header.Filename), header.Header.Get("Content-Type"), header.Size, file)
+	if err != nil {
+		api.WriteError(w, http.StatusBadGateway, "task_completion_file_upload_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) brainstormHistory(w http.ResponseWriter, r *http.Request, workspaceID int) {
@@ -233,6 +269,16 @@ func (h *Handler) tasks(w http.ResponseWriter, r *http.Request, workspaceID int,
 
 func (h *Handler) task(w http.ResponseWriter, r *http.Request, workspaceID int, userID int) {
 	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v2/tasks/")
+	if strings.HasSuffix(trimmed, "/complete") {
+		idPart := strings.TrimSuffix(trimmed, "/complete")
+		taskID, err := strconv.Atoi(strings.Trim(idPart, "/"))
+		if err != nil || taskID <= 0 {
+			api.WriteError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		h.completeTask(w, r, workspaceID, userID, taskID)
+		return
+	}
 	if strings.HasSuffix(trimmed, "/evaluate") {
 		idPart := strings.TrimSuffix(trimmed, "/evaluate")
 		taskID, err := strconv.Atoi(strings.Trim(idPart, "/"))
@@ -310,7 +356,6 @@ func taskEvaluationInputChanged(before Task, after Task) bool {
 	return before.Title != after.Title ||
 		before.Description != after.Description ||
 		before.ExpectedResult != after.ExpectedResult ||
-		before.SuccessCriteria != after.SuccessCriteria ||
 		before.WorkstreamID != after.WorkstreamID ||
 		!sameOptionalInt(before.ProjectID, after.ProjectID) ||
 		!sameIntSet(blockingTaskIDs(before.BlockingTasks), blockingTaskIDs(after.BlockingTasks))
@@ -382,6 +427,20 @@ func (h *Handler) updateStatus(w http.ResponseWriter, r *http.Request, workspace
 	writeTask(w, task, err, "task_status_failed")
 }
 
+func (h *Handler) completeTask(w http.ResponseWriter, r *http.Request, workspaceID int, userID int, taskID int) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	var request CompleteTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	task, err := h.completion.Complete(r.Context(), workspaceID, userID, taskID, request)
+	writeTask(w, task, err, "task_completion_failed")
+}
+
 func (h *Handler) currentWorkspace(w http.ResponseWriter, r *http.Request) (workspaces.Workspace, int, bool) {
 	userID, ok := auth.UserIDFromContext(r.Context())
 	if !ok {
@@ -432,6 +491,10 @@ func writeTask(w http.ResponseWriter, task Task, err error, fallback string) {
 		return
 	}
 	if errors.Is(err, ErrInvalidDependency) || errors.Is(err, ErrDependencyCycle) {
+		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if errors.Is(err, ErrCompletionResultRequired) || errors.Is(err, ErrInvalidCompletionFile) {
 		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}

@@ -122,51 +122,72 @@ type Opportunity struct {
 }
 
 type Task struct {
-	ID                     int             `json:"id"`
-	WorkspaceID            int             `json:"workspace_id"`
-	CourseID               int             `json:"course_id"`
-	TacticalPlanID         int             `json:"tactical_plan_id"`
-	WorkstreamID           int             `json:"workstream_id"`
-	DepartmentID           int             `json:"department_id"`
-	ProjectID              *int            `json:"project_id"`
-	RiskID                 *int            `json:"risk_id"`
-	OpportunityID          *int            `json:"opportunity_id"`
-	Title                  string          `json:"title"`
-	Description            string          `json:"description"`
-	ExpectedResult         string          `json:"expected_result"`
-	SuccessCriteria        string          `json:"success_criteria"`
-	WhyNow                 string          `json:"why_now"`
-	Status                 string          `json:"status"`
-	Blocked                bool            `json:"blocked"`
-	DependencyBlocked      bool            `json:"dependency_blocked"`
-	BlockingTasks          []BlockingTask  `json:"blocking_tasks"`
-	BacklogCategory        string          `json:"backlog_category"`
-	Flags                  []string        `json:"flags"`
-	SecondaryWorkstreamIDs []int           `json:"secondary_workstream_ids"`
-	PriorityOrder          *int            `json:"priority_order"`
-	OwnerUserID            *int            `json:"owner_user_id"`
-	DueDate                *string         `json:"due_date"`
-	SourceType             string          `json:"source_type"`
-	SourceID               *int            `json:"source_id"`
-	CreatedBy              *int            `json:"created_by,omitempty"`
-	UpdatedBy              *int            `json:"updated_by,omitempty"`
-	CreatedAt              time.Time       `json:"created_at"`
-	UpdatedAt              time.Time       `json:"updated_at"`
-	StartedAt              *time.Time      `json:"started_at"`
-	CompletedAt            *time.Time      `json:"completed_at"`
-	ArchivedAt             *time.Time      `json:"archived_at"`
-	CompletionResult       string          `json:"completion_result"`
-	CompletionEvidence     string          `json:"completion_evidence"`
-	CompletionLearning     string          `json:"completion_learning"`
-	HypothesisOutcome      string          `json:"hypothesis_outcome"`
-	NextStep               string          `json:"next_step"`
-	Evaluation             *TaskEvaluation `json:"evaluation,omitempty"`
-	EvaluationStatus       string          `json:"evaluation_status"`
-	ManualPriorityScore    *int            `json:"manual_priority_score,omitempty"`
-	ManualPriorityTier     string          `json:"manual_priority_tier,omitempty"`
-	EffectivePriorityScore int             `json:"effective_priority_score"`
-	EffectivePriorityTier  string          `json:"effective_priority_tier"`
-	PrioritySource         string          `json:"priority_source"`
+	ID                         int                       `json:"id"`
+	WorkspaceID                int                       `json:"workspace_id"`
+	CourseID                   int                       `json:"course_id"`
+	TacticalPlanID             int                       `json:"tactical_plan_id"`
+	WorkstreamID               int                       `json:"workstream_id"`
+	DepartmentID               int                       `json:"department_id"`
+	ProjectID                  *int                      `json:"project_id"`
+	RiskID                     *int                      `json:"risk_id"`
+	OpportunityID              *int                      `json:"opportunity_id"`
+	Title                      string                    `json:"title"`
+	Description                string                    `json:"description"`
+	ExpectedResult             string                    `json:"expected_result"`
+	SuccessCriteria            string                    `json:"success_criteria"`
+	WhyNow                     string                    `json:"why_now"`
+	Status                     string                    `json:"status"`
+	Blocked                    bool                      `json:"blocked"`
+	DependencyBlocked          bool                      `json:"dependency_blocked"`
+	BlockingTasks              []BlockingTask            `json:"blocking_tasks"`
+	BacklogCategory            string                    `json:"backlog_category"`
+	Flags                      []string                  `json:"flags"`
+	SecondaryWorkstreamIDs     []int                     `json:"secondary_workstream_ids"`
+	PriorityOrder              *int                      `json:"priority_order"`
+	OwnerUserID                *int                      `json:"owner_user_id"`
+	DueDate                    *string                   `json:"due_date"`
+	SourceType                 string                    `json:"source_type"`
+	SourceID                   *int                      `json:"source_id"`
+	CreatedBy                  *int                      `json:"created_by,omitempty"`
+	UpdatedBy                  *int                      `json:"updated_by,omitempty"`
+	CreatedAt                  time.Time                 `json:"created_at"`
+	UpdatedAt                  time.Time                 `json:"updated_at"`
+	StartedAt                  *time.Time                `json:"started_at"`
+	CompletedAt                *time.Time                `json:"completed_at"`
+	ArchivedAt                 *time.Time                `json:"archived_at"`
+	CompletionResult           string                    `json:"completion_result"`
+	CompletionEvidence         string                    `json:"completion_evidence"`
+	CompletionLearning         string                    `json:"completion_learning"`
+	HypothesisOutcome          string                    `json:"hypothesis_outcome"`
+	NextStep                   string                    `json:"next_step"`
+	CompletionFiles            []TaskCompletionFile      `json:"completion_files"`
+	CompletionEvaluation       *TaskCompletionEvaluation `json:"completion_evaluation,omitempty"`
+	CompletionEvaluationStatus string                    `json:"completion_evaluation_status"`
+	Evaluation                 *TaskEvaluation           `json:"evaluation,omitempty"`
+	EvaluationStatus           string                    `json:"evaluation_status"`
+	ManualPriorityScore        *int                      `json:"manual_priority_score,omitempty"`
+	ManualPriorityTier         string                    `json:"manual_priority_tier,omitempty"`
+	EffectivePriorityScore     int                       `json:"effective_priority_score"`
+	EffectivePriorityTier      string                    `json:"effective_priority_tier"`
+	PrioritySource             string                    `json:"priority_source"`
+}
+
+type TaskCompletionFile struct {
+	ID          int       `json:"id"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"content_type"`
+	SizeBytes   int64     `json:"size_bytes"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type TaskCompletionEvaluation struct {
+	ID                 int       `json:"id"`
+	Sufficient         bool      `json:"sufficient"`
+	QualityScore       int       `json:"quality_score"`
+	Reason             string    `json:"reason"`
+	MissingInformation []string  `json:"missing_information"`
+	CreatedAt          time.Time `json:"created_at"`
 }
 
 type BlockingTask struct {
@@ -319,6 +340,18 @@ type TaskEvaluationJob struct {
 	RequestedBy *int
 	Attempts    int
 	Revision    int
+}
+
+type CompleteTaskRequest struct {
+	Result  string `json:"result"`
+	FileIDs []int  `json:"file_ids"`
+}
+
+type taskCompletionModelOutput struct {
+	Sufficient         bool     `json:"sufficient"`
+	QualityScore       int      `json:"quality_score"`
+	Reason             string   `json:"reason"`
+	MissingInformation []string `json:"missing_information"`
 }
 
 type taskEvaluatorModelOutput struct {

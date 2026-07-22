@@ -114,7 +114,7 @@ func (s *TaskEvaluatorService) execute(ctx context.Context, job TaskEvaluationJo
 	aiCtx := ai.WithScenario(ctx, job.WorkspaceID, 0, "task_evaluator_v2", taskEvaluatorPromptVersion)
 	started := time.Now()
 	result, err := s.ai.GenerateJSONNative(aiCtx, taskEvaluatorPrompt, string(rawInput), ai.ResponseContextOptions{
-		PromptCacheKey:  fmt.Sprintf("reupgoals-task-evaluator-workspace-%d-v4", job.WorkspaceID),
+		PromptCacheKey:  fmt.Sprintf("reupgoals-task-evaluator-workspace-%d-v5", job.WorkspaceID),
 		MaxOutputTokens: 900, RequestTimeout: taskEvaluationTimeout,
 	})
 	duration := time.Since(started).Milliseconds()
@@ -209,8 +209,8 @@ func (s *TaskEvaluatorService) buildEvaluationInput(ctx context.Context, workspa
 	input := map[string]any{
 		"task": map[string]any{
 			"id": task.ID, "title": task.Title, "description": task.Description,
-			"expected_result": task.ExpectedResult, "success_criteria": task.SuccessCriteria,
-			"blocking_tasks": task.BlockingTasks,
+			"expected_result": task.ExpectedResult,
+			"blocking_tasks":  task.BlockingTasks,
 		},
 		"global_company_goal": map[string]any{
 			"strategy_title": strategyTitle, "strategy_summary": truncateRunes(strategySummary, 1200),
@@ -293,13 +293,13 @@ func normalizeTaskFlags(output taskEvaluatorModelOutput) []string {
 	for _, flag := range output.Flags {
 		add(flag)
 	}
-	if output.StrategicRelevance < 50 || output.CourseAlignment < 50 || output.TacticalAlignment < 50 {
+	if output.StrategicRelevance < 500 || output.CourseAlignment < 500 || output.TacticalAlignment < 500 {
 		add(TaskFlagWeakStrategyLink)
 	}
-	if output.ExpectedImpact < 40 {
+	if output.ExpectedImpact < 400 {
 		add(TaskFlagLowImpact)
 	}
-	if output.Effort >= 75 {
+	if output.Effort >= 750 {
 		add(TaskFlagHighEffort)
 	}
 	if output.Recommendation == RecommendationClarify || len(output.MissingInformation) > 0 {
@@ -327,24 +327,24 @@ func CalculateTaskPriority(output taskEvaluatorModelOutput) int {
 		float64(output.Urgency)*0.10 +
 		float64(output.Confidence)*0.1
 	score := int(math.Round(gross - float64(output.Effort)*0.15))
-	if output.Recommendation == RecommendationRemove && score > 25 {
-		score = 25
+	if output.Recommendation == RecommendationRemove && score > 250 {
+		score = 250
 	}
-	if output.Recommendation == RecommendationRework && score > 65 {
-		score = 65
+	if output.Recommendation == RecommendationRework && score > 650 {
+		score = 650
 	}
 	return clampScore(score)
 }
 
 func PriorityTier(score int) string {
 	switch {
-	case score >= 85:
+	case score >= 850:
 		return "P1"
-	case score >= 70:
+	case score >= 700:
 		return "P2"
-	case score >= 55:
+	case score >= 550:
 		return "P3"
-	case score >= 40:
+	case score >= 400:
 		return "P4"
 	default:
 		return "P5"
@@ -355,8 +355,8 @@ func clampScore(value int) int {
 	if value < 0 {
 		return 0
 	}
-	if value > 100 {
-		return 100
+	if value > 1000 {
+		return 1000
 	}
 	return value
 }

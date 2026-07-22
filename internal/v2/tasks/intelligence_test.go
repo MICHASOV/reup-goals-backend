@@ -76,18 +76,18 @@ func TestParseBrainstormOutputRejectsSerializedMessage(t *testing.T) {
 
 func TestTaskPriorityUsesFiveTiersAndCapsRemoveRecommendation(t *testing.T) {
 	high := taskEvaluatorModelOutput{
-		StrategicRelevance: 95, CourseAlignment: 95, TacticalAlignment: 95,
-		ExpectedImpact: 95, Urgency: 90, Effort: 20, Confidence: 90,
+		StrategicRelevance: 950, CourseAlignment: 950, TacticalAlignment: 950,
+		ExpectedImpact: 950, Urgency: 900, Effort: 200, Confidence: 900,
 		Recommendation: RecommendationKeep,
 	}
 	highScore := CalculateTaskPriority(high)
-	if highScore < 85 || PriorityTier(highScore) != "P1" {
+	if highScore < 850 || PriorityTier(highScore) != "P1" {
 		t.Fatalf("expected P1, got score=%d tier=%s", highScore, PriorityTier(highScore))
 	}
 
 	high.Recommendation = RecommendationRemove
 	removeScore := CalculateTaskPriority(high)
-	if removeScore != 25 || PriorityTier(removeScore) != "P5" {
+	if removeScore != 250 || PriorityTier(removeScore) != "P5" {
 		t.Fatalf("remove recommendation must be capped, got score=%d tier=%s", removeScore, PriorityTier(removeScore))
 	}
 }
@@ -117,12 +117,6 @@ func TestTaskEvaluationInputChangedOnlyForMeaningfulEvaluationFields(t *testing.
 	}
 
 	changed = baseline
-	changed.SuccessCriteria = "Five paying customers interviewed"
-	if !taskEvaluationInputChanged(baseline, changed) {
-		t.Fatal("success criteria change must trigger AI evaluation")
-	}
-
-	changed = baseline
 	changed.BlockingTasks = []BlockingTask{{ID: 5}}
 	if !taskEvaluationInputChanged(baseline, changed) {
 		t.Fatal("dependency change must trigger AI evaluation")
@@ -131,13 +125,13 @@ func TestTaskEvaluationInputChangedOnlyForMeaningfulEvaluationFields(t *testing.
 
 func TestParseTaskEvaluatorOutputNormalizesValues(t *testing.T) {
 	raw := `{
-		"strategic_relevance":120,
-		"course_alignment":80,
-		"tactical_alignment":75,
-		"expected_impact":70,
+		"strategic_relevance":1200,
+		"course_alignment":800,
+		"tactical_alignment":750,
+		"expected_impact":700,
 		"urgency":-5,
-		"effort":40,
-		"confidence":65,
+		"effort":400,
+		"confidence":650,
 		"recommendation":"UNKNOWN",
 		"priority_reason":" Нужна проверка результата. ",
 		"clarification_question":" Какой результат должен появиться? ",
@@ -147,7 +141,7 @@ func TestParseTaskEvaluatorOutputNormalizesValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse evaluator output: %v", err)
 	}
-	if result.StrategicRelevance != 100 || result.Urgency != 0 {
+	if result.StrategicRelevance != 1000 || result.Urgency != 0 {
 		t.Fatalf("scores were not clamped: %#v", result)
 	}
 	if result.Recommendation != RecommendationClarify {
@@ -161,6 +155,24 @@ func TestParseTaskEvaluatorOutputNormalizesValues(t *testing.T) {
 	}
 	if !containsString(result.Flags, TaskFlagNeedsClarification) {
 		t.Fatalf("clarification flag was not derived: %#v", result.Flags)
+	}
+}
+
+func TestParseTaskCompletionOutput(t *testing.T) {
+	result, err := parseTaskCompletionOutput(`{
+		"sufficient":false,
+		"quality_score":1200,
+		"reason":" Непонятно, что изменилось. ",
+		"missing_information":[" конкретный результат ",""]
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.QualityScore != 1000 || result.Reason != "Непонятно, что изменилось." {
+		t.Fatalf("unexpected completion result: %#v", result)
+	}
+	if len(result.MissingInformation) != 1 || result.MissingInformation[0] != "конкретный результат" {
+		t.Fatalf("unexpected missing information: %#v", result.MissingInformation)
 	}
 }
 

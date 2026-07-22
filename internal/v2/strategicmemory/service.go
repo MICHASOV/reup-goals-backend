@@ -314,6 +314,16 @@ func hasStructuredKnowledgeContext(state StateResponse) bool {
 }
 
 func (s *Service) UploadFile(ctx context.Context, workspaceID int, userID int, filename string, contentType string, sizeBytes int64, file io.Reader) (FileUploadResponse, error) {
+	return s.uploadFile(ctx, workspaceID, userID, filename, contentType, sizeBytes, file, true)
+}
+
+// UploadReferenceFile stores a workspace file without treating it as a new
+// knowledge-base interview turn. Callers decide how the file is linked.
+func (s *Service) UploadReferenceFile(ctx context.Context, workspaceID int, userID int, filename string, contentType string, sizeBytes int64, file io.Reader) (FileUploadResponse, error) {
+	return s.uploadFile(ctx, workspaceID, userID, filename, contentType, sizeBytes, file, false)
+}
+
+func (s *Service) uploadFile(ctx context.Context, workspaceID int, userID int, filename string, contentType string, sizeBytes int64, file io.Reader, recordKnowledgeTurn bool) (FileUploadResponse, error) {
 	session, err := s.store.OpenAISession(ctx, workspaceID, s.compactThreshold)
 	if err != nil {
 		return FileUploadResponse{}, err
@@ -376,8 +386,10 @@ func (s *Service) UploadFile(ctx context.Context, workspaceID int, userID int, f
 	if errorText != "" {
 		return FileUploadResponse{WorkspaceID: workspaceID, File: item}, fmt.Errorf("%s", errorText)
 	}
-	if _, err := s.store.RecordKnowledgeUserTurn(ctx, workspaceID, rawSourceID); err != nil {
-		return FileUploadResponse{}, err
+	if recordKnowledgeTurn {
+		if _, err := s.store.RecordKnowledgeUserTurn(ctx, workspaceID, rawSourceID); err != nil {
+			return FileUploadResponse{}, err
+		}
 	}
 	return FileUploadResponse{WorkspaceID: workspaceID, File: item}, nil
 }

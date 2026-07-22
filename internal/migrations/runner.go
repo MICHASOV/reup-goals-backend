@@ -2487,6 +2487,65 @@ var migrations = []Migration{
 				ON v2_task_dependencies (workspace_id, blocker_task_id);
 		`,
 	},
+	{
+		ID: "20260722_042_task_completion_review_and_priority_scale",
+		SQL: `
+			UPDATE v2_task_evaluations
+			SET strategic_relevance=strategic_relevance * 10,
+				course_alignment=course_alignment * 10,
+				tactical_alignment=tactical_alignment * 10,
+				expected_impact=expected_impact * 10,
+				urgency=urgency * 10,
+				effort=effort * 10,
+				confidence=confidence * 10,
+				priority_score=priority_score * 10
+			WHERE strategic_relevance <= 100
+				AND course_alignment <= 100
+				AND tactical_alignment <= 100
+				AND expected_impact <= 100
+				AND urgency <= 100
+				AND effort <= 100
+				AND confidence <= 100
+				AND priority_score <= 100;
+
+			UPDATE v2_tasks
+			SET manual_priority_score=NULL,
+				manual_priority_tier=''
+			WHERE manual_priority_score IS NOT NULL OR manual_priority_tier <> '';
+
+			CREATE TABLE IF NOT EXISTS v2_task_completion_files (
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				strategic_file_id INTEGER NOT NULL REFERENCES strategic_openai_files(id) ON DELETE CASCADE,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (task_id, strategic_file_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_v2_task_completion_files_workspace_task
+				ON v2_task_completion_files (workspace_id, task_id);
+
+			CREATE TABLE IF NOT EXISTS v2_task_completion_evaluations (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				model TEXT NOT NULL DEFAULT '',
+				prompt_version TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'ready',
+				sufficient BOOLEAN NOT NULL DEFAULT false,
+				quality_score INTEGER NOT NULL DEFAULT 0,
+				reason TEXT NOT NULL DEFAULT '',
+				missing_information_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				duration_ms BIGINT NOT NULL DEFAULT 0,
+				error_text TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				CHECK (status IN ('ready', 'failed')),
+				CHECK (quality_score BETWEEN 0 AND 1000)
+			);
+			CREATE INDEX IF NOT EXISTS idx_v2_task_completion_evaluations_latest
+				ON v2_task_completion_evaluations (workspace_id, task_id, created_at DESC, id DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
