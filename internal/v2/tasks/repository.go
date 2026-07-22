@@ -18,6 +18,7 @@ var (
 	ErrNoTacticalPlan = errors.New("no_tactical_plan")
 	ErrForbidden      = errors.New("forbidden")
 	ErrInvalidOwner   = errors.New("invalid_task_owner")
+	ErrInvalidInput   = errors.New("invalid_task_input")
 )
 
 type Store struct {
@@ -254,8 +255,11 @@ func (s *Store) Get(ctx context.Context, workspaceID int, taskID int) (Task, err
 
 func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input TaskInput) (Task, error) {
 	input.normalize()
-	if input.WorkstreamID <= 0 || input.Title == nil || strings.TrimSpace(*input.Title) == "" {
-		return Task{}, ErrForbidden
+	if input.WorkstreamID <= 0 || input.ProjectID == nil || *input.ProjectID <= 0 ||
+		input.Title == nil || strings.TrimSpace(*input.Title) == "" ||
+		input.Description == nil || strings.TrimSpace(*input.Description) == "" ||
+		input.ExpectedResult == nil || strings.TrimSpace(*input.ExpectedResult) == "" {
+		return Task{}, ErrInvalidInput
 	}
 	status := StatusFree
 	if input.Status != nil && *input.Status != "" {

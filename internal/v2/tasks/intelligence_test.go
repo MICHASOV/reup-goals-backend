@@ -92,6 +92,31 @@ func TestTaskPriorityUsesFiveTiersAndCapsRemoveRecommendation(t *testing.T) {
 	}
 }
 
+func TestTaskEvaluationInputChangedOnlyForMeaningfulEvaluationFields(t *testing.T) {
+	projectID := 7
+	baseline := Task{Title: "Run interviews", Description: "Interview ten customers", ExpectedResult: "Five validated insights", WorkstreamID: 3, ProjectID: &projectID, DepartmentID: 2}
+
+	unchanged := baseline
+	unchanged.Status = StatusInProgress
+	unchanged.DepartmentID = 9
+	if taskEvaluationInputChanged(baseline, unchanged) {
+		t.Fatal("execution-only changes must not trigger AI evaluation")
+	}
+
+	changed := baseline
+	changed.Description = "Interview ten paying customers"
+	if !taskEvaluationInputChanged(baseline, changed) {
+		t.Fatal("task content change must trigger AI evaluation")
+	}
+
+	otherProjectID := 8
+	changed = baseline
+	changed.ProjectID = &otherProjectID
+	if !taskEvaluationInputChanged(baseline, changed) {
+		t.Fatal("project change must trigger AI evaluation")
+	}
+}
+
 func TestParseTaskEvaluatorOutputNormalizesValues(t *testing.T) {
 	raw := `{
 		"strategic_relevance":120,

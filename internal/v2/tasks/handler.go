@@ -24,17 +24,16 @@ type Handler struct {
 
 func (h *Handler) WithContextIndex(index *contextindex.Service) *Handler {
 	h.brainstorm.SetContextIndex(index)
-	h.evaluator.SetContextIndex(index)
 	return h
 }
 
-func NewHandler(dbx *sql.DB, aiClient ai.Provider, compactThreshold int) *Handler {
-	evaluator := NewTaskEvaluatorService(dbx, aiClient)
+func NewHandler(dbx *sql.DB, brainstormAI ai.Provider, evaluatorAI ai.Provider, compactThreshold int) *Handler {
+	evaluator := NewTaskEvaluatorService(dbx, evaluatorAI)
 	evaluator.StartWorker()
 	return &Handler{
 		store:      NewStore(dbx),
 		workspaces: workspaces.NewStore(dbx),
-		brainstorm: NewBrainstormService(dbx, aiClient, evaluator, compactThreshold),
+		brainstorm: NewBrainstormService(dbx, brainstormAI, evaluator, compactThreshold),
 		evaluator:  evaluator,
 	}
 }
@@ -290,10 +289,16 @@ func (h *Handler) task(w http.ResponseWriter, r *http.Request, workspaceID int, 
 		if !ok {
 			return
 		}
+		current, err := h.store.Get(r.Context(), workspaceID, taskID)
+		if err != nil {
+			writeTask(w, current, err, "task_get_failed")
+			return
+		}
 		task, err := h.store.Update(r.Context(), workspaceID, userID, taskID, input)
-		if err == nil {
-			_ = h.evaluator.Queue(r.Context(), workspaceID, userID, task.ID, true)
-			task, _ = h.store.Get(r.Context(), workspaceID, task.ID)
+		if err == nil && taskEvaluationInputChanged(current, task) {
+			if queueErr := h.evaluator.Queue(r.Context(), workspaceID, userID, taskID, true); queueErr == nil {
+				task, _ = h.store.Get(r.Context(), workspaceID, taskID)
+			}
 		}
 		writeTask(w, task, err, "task_update_failed")
 	default:
@@ -301,33 +306,45 @@ func (h *Handler) task(w http.ResponseWriter, r *http.Request, workspaceID int, 
 	}
 }
 
+func taskEvaluationInputChanged(before Task, after Task) bool {
+	return before.Title != after.Title ||
+		before.Description != after.Description ||
+		before.ExpectedResult != after.ExpectedResult ||
+		before.WorkstreamID != after.WorkstreamID ||
+		!sameOptionalInt(before.ProjectID, after.ProjectID)
+}
+
+func sameOptionalInt(left *int, right *int) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
 func (h *Handler) evaluateTask(w http.ResponseWriter, r *http.Request, workspaceID int, userID int, taskID int) {
 	if r.Method != http.MethodPost {
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	if err := h.evaluator.Queue(r.Context(), workspaceID, userID, taskID, true); err != nil {
+	task, err := h.store.Get(r.Context(), workspaceID, taskID)
+	if err != nil {
+		writeTask(w, task, err, "task_get_failed")
+		return
+	}
+	if task.Evaluation != nil || task.EvaluationStatus == EvaluationQueued || task.EvaluationStatus == EvaluationRunning {
+		api.WriteJSON(w, http.StatusOK, map[string]any{"task": task})
+		return
+	}
+	if err := h.evaluator.Queue(r.Context(), workspaceID, userID, taskID, false); err != nil {
 		writeTask(w, Task{}, err, "task_evaluation_queue_failed")
 		return
 	}
-	task, err := h.store.Get(r.Context(), workspaceID, taskID)
+	task, err = h.store.Get(r.Context(), workspaceID, taskID)
 	writeTask(w, task, err, "task_get_failed")
 }
 
 func (h *Handler) manualPriority(w http.ResponseWriter, r *http.Request, workspaceID int, userID int, taskID int) {
-	if r.Method != http.MethodPatch {
-		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
-		return
-	}
-	var body struct {
-		Score *int `json:"score"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid_json")
-		return
-	}
-	task, err := h.store.SetManualPriority(r.Context(), workspaceID, userID, taskID, body.Score)
-	writeTask(w, task, err, "task_priority_update_failed")
+	api.WriteError(w, http.StatusConflict, "task_priority_is_ai_managed")
 }
 
 func (h *Handler) updateStatus(w http.ResponseWriter, r *http.Request, workspaceID int, userID int, taskID int) {
@@ -394,6 +411,10 @@ func writeTask(w http.ResponseWriter, task Task, err error, fallback string) {
 	}
 	if errors.Is(err, ErrInvalidOwner) {
 		api.WriteError(w, http.StatusUnprocessableEntity, ErrInvalidOwner.Error())
+		return
+	}
+	if errors.Is(err, ErrInvalidInput) {
+		api.WriteError(w, http.StatusUnprocessableEntity, ErrInvalidInput.Error())
 		return
 	}
 	if err != nil {

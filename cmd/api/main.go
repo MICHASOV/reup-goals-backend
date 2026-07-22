@@ -77,6 +77,9 @@ func main() {
 	auditorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIAuditorModel, cfg.OpenAIProxyURL).
 		WithMaxOutputTokens(cfg.OpenAIAuditorMaxOutputTokens).
 		WithGovernance(aiGovernance)
+	taskEvaluatorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITaskModel, cfg.OpenAIProxyURL).
+		WithMaxOutputTokens(900).
+		WithGovernance(aiGovernance)
 	transcriptionAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITranscriptionModel, cfg.OpenAIProxyURL).WithGovernance(aiGovernance)
 	jobManager := jobs.NewManager(database)
 	taskAI := tasks.New(aiClient, database)
@@ -94,7 +97,7 @@ func main() {
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
 	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
 	tacticsHandler := tactics.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
-	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold).WithContextIndex(workspaceContextIndex)
+	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, taskEvaluatorAIClient, cfg.OpenAIAuditorCompactThreshold).WithContextIndex(workspaceContextIndex)
 	operationsHandler := operations.NewHandler(database, jobManager)
 	privacyHandler := privacy.NewHandler(database)
 	profileHandler := profile.NewHandler(database, cfg, emailService, cloudPayments)

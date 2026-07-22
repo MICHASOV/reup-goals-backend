@@ -2,7 +2,9 @@ package tasks
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +13,6 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/ai"
-	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
@@ -21,22 +22,16 @@ const (
 )
 
 type TaskEvaluatorService struct {
-	store        *Store
-	context      *taskContextBuilder
-	memory       *strategicmemory.Store
-	ai           ai.Provider
-	wake         chan struct{}
-	slots        chan struct{}
-	contextIndex *contextindex.Service
-}
-
-func (s *TaskEvaluatorService) SetContextIndex(index *contextindex.Service) {
-	s.contextIndex = index
+	store  *Store
+	memory *strategicmemory.Store
+	ai     ai.Provider
+	wake   chan struct{}
+	slots  chan struct{}
 }
 
 func NewTaskEvaluatorService(dbx *sql.DB, aiClient ai.Provider) *TaskEvaluatorService {
 	return &TaskEvaluatorService{
-		store: NewStore(dbx), context: newTaskContextBuilder(dbx),
+		store:  NewStore(dbx),
 		memory: strategicmemory.NewStore(dbx), ai: aiClient, wake: make(chan struct{}, 1),
 		slots: make(chan struct{}, 3),
 	}
@@ -111,43 +106,16 @@ func (s *TaskEvaluatorService) execute(ctx context.Context, job TaskEvaluationJo
 	if task.Status == StatusArchived {
 		return s.store.CompleteTaskEvaluationJob(ctx, job.ID)
 	}
-	pack, vectorStoreIDs, fingerprint, err := s.context.Build(ctx, job.WorkspaceID, task.WorkstreamID, 0)
+	input, fingerprint, err := s.buildEvaluationInput(ctx, job.WorkspaceID, task)
 	if err != nil {
 		return err
-	}
-	var target *taskContextItem
-	for i := range pack.ExistingTasks {
-		if pack.ExistingTasks[i].ID == task.ID {
-			pack.ExistingTasks[i].EffectivePriorityScore = 0
-			pack.ExistingTasks[i].EffectivePriorityTier = ""
-			pack.ExistingTasks[i].Recommendation = ""
-			copy := pack.ExistingTasks[i]
-			target = &copy
-			break
-		}
-	}
-	if target == nil {
-		return ErrForbidden
-	}
-	input := map[string]any{"task": target, "context": pack}
-	if s.contextIndex != nil {
-		indexedIDs, indexErr := s.contextIndex.Ensure(ctx, job.WorkspaceID)
-		if indexErr == nil && len(indexedIDs) > 0 {
-			vectorStoreIDs = indexedIDs
-			input = map[string]any{
-				"task":                      target,
-				"active_workstream_id":      task.WorkstreamID,
-				"current_workspace_context": "Use file_search to evaluate this task against the current strategy, course, tactics, related entities, constraints, and existing tasks.",
-			}
-		}
 	}
 	rawInput, _ := json.Marshal(input)
 	aiCtx := ai.WithScenario(ctx, job.WorkspaceID, 0, "task_evaluator_v2", taskEvaluatorPromptVersion)
 	started := time.Now()
-	result, err := s.ai.GenerateJSONNative(aiCtx, taskEvaluatorPrompt+contextindex.RetrievalInstructions, string(rawInput), ai.ResponseContextOptions{
-		VectorStoreIDs: vectorStoreIDs, MaxFileSearchResults: 10,
-		PromptCacheKey:  fmt.Sprintf("reupgoals-task-evaluator-workspace-%d-v2", job.WorkspaceID),
-		MaxOutputTokens: 4000, RequestTimeout: taskEvaluationTimeout,
+	result, err := s.ai.GenerateJSONNative(aiCtx, taskEvaluatorPrompt, string(rawInput), ai.ResponseContextOptions{
+		PromptCacheKey:  fmt.Sprintf("reupgoals-task-evaluator-workspace-%d-v4", job.WorkspaceID),
+		MaxOutputTokens: 900, RequestTimeout: taskEvaluationTimeout,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
@@ -172,6 +140,92 @@ func (s *TaskEvaluatorService) execute(ctx context.Context, job TaskEvaluationJo
 	}
 	s.memory.LogAIRunWithUsage(ctx, job.WorkspaceID, "task_evaluator_v2", s.ai.ModelName(), taskEvaluatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	return nil
+}
+
+func (s *TaskEvaluatorService) buildEvaluationInput(ctx context.Context, workspaceID int, task Task) (map[string]any, string, error) {
+	state, err := s.store.Workstream(ctx, workspaceID, task.WorkstreamID)
+	if err != nil {
+		return nil, "", err
+	}
+	if state.Course == nil || state.Workstream == nil || state.TacticalPlan == nil || task.ProjectID == nil {
+		return nil, "", ErrInvalidInput
+	}
+
+	var project *Project
+	for index := range state.Projects {
+		if state.Projects[index].ID == *task.ProjectID {
+			copy := state.Projects[index]
+			project = &copy
+			break
+		}
+	}
+	if project == nil {
+		return nil, "", ErrForbidden
+	}
+
+	var strategyTitle string
+	var strategySummary string
+	err = s.store.dbx.QueryRowContext(ctx, `
+		SELECT title, summary
+		FROM v2_strategies
+		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
+	`, state.TacticalPlan.StrategyID, workspaceID).Scan(&strategyTitle, &strategySummary)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, "", err
+	}
+
+	businessStage := ""
+	businessSnapshot := ""
+	snapshot, err := s.memory.LatestSnapshot(ctx, workspaceID)
+	if err != nil {
+		return nil, "", err
+	}
+	if snapshot != nil {
+		businessStage = snapshot.BusinessStage
+		businessSnapshot = truncateRunes(string(snapshot.Snapshot), 3500)
+	}
+
+	workstream := *state.Workstream
+	workstream.Projects = nil
+	workstream.Risks = nil
+	workstream.Opportunities = nil
+	workstream.TopTasks = nil
+
+	siblings := make([]taskContextItem, 0, 20)
+	for _, candidate := range state.Tasks {
+		if candidate.ID == task.ID || candidate.ProjectID == nil || *candidate.ProjectID != *task.ProjectID {
+			continue
+		}
+		siblings = append(siblings, taskContextItem{
+			ID: candidate.ID, ProjectID: candidate.ProjectID, Title: candidate.Title,
+			Description: truncateRunes(candidate.Description, 320), ExpectedResult: truncateRunes(candidate.ExpectedResult, 240),
+			Status: candidate.Status,
+		})
+		if len(siblings) == 20 {
+			break
+		}
+	}
+
+	input := map[string]any{
+		"task": map[string]any{
+			"id": task.ID, "title": task.Title, "description": task.Description,
+			"expected_result": task.ExpectedResult,
+		},
+		"global_company_goal": map[string]any{
+			"strategy_title": strategyTitle, "strategy_summary": truncateRunes(strategySummary, 1200),
+			"course_direction": state.Course.Direction, "strategic_goal": state.Course.StrategicGoal,
+			"key_metric": state.Course.KeyMetric, "success_criterion": state.Course.SuccessCriterion,
+		},
+		"company_context": map[string]any{
+			"business_stage": businessStage, "snapshot_excerpt": businessSnapshot,
+		},
+		"tactical_direction": workstream,
+		"project_context":    project,
+		"sibling_tasks":      siblings,
+	}
+	raw, _ := json.Marshal(input)
+	hash := sha256.Sum256(raw)
+	return input, hex.EncodeToString(hash[:]), nil
 }
 
 func parseTaskEvaluatorOutput(raw string) (taskEvaluatorModelOutput, error) {
@@ -264,12 +318,12 @@ func normalizeBacklogCategory(value string) string {
 }
 
 func CalculateTaskPriority(output taskEvaluatorModelOutput) int {
-	alignment := float64(output.StrategicRelevance)*0.4 +
-		float64(output.CourseAlignment)*0.25 +
-		float64(output.TacticalAlignment)*0.35
-	gross := alignment*0.4 +
-		float64(output.ExpectedImpact)*0.3 +
-		float64(output.Urgency)*0.2 +
+	alignment := float64(output.StrategicRelevance)*0.45 +
+		float64(output.CourseAlignment)*0.35 +
+		float64(output.TacticalAlignment)*0.20
+	gross := alignment*0.55 +
+		float64(output.ExpectedImpact)*0.25 +
+		float64(output.Urgency)*0.10 +
 		float64(output.Confidence)*0.1
 	score := int(math.Round(gross - float64(output.Effort)*0.15))
 	if output.Recommendation == RecommendationRemove && score > 25 {

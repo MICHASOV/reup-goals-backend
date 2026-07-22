@@ -24,6 +24,7 @@ type Config struct {
 	OpenAIKey                     string
 	OpenAIModel                   string
 	OpenAIAuditorModel            string
+	OpenAITaskModel               string
 	OpenAITranscriptionModel      string
 	OpenAIAuditorMaxOutputTokens  int
 	OpenAIAuditorCompactThreshold int
@@ -97,6 +98,10 @@ func Load() *Config {
 	auditorModel := os.Getenv("OPENAI_AUDITOR_MODEL")
 	if auditorModel == "" {
 		auditorModel = model
+	}
+	taskModel := os.Getenv("OPENAI_TASK_MODEL")
+	if taskModel == "" {
+		taskModel = "gpt-4o-mini"
 	}
 	transcriptionModel := os.Getenv("OPENAI_TRANSCRIPTION_MODEL")
 	if transcriptionModel == "" {
@@ -185,6 +190,7 @@ func Load() *Config {
 		OpenAIKey:                     os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:                   model,
 		OpenAIAuditorModel:            auditorModel,
+		OpenAITaskModel:               taskModel,
 		OpenAITranscriptionModel:      transcriptionModel,
 		OpenAIAuditorMaxOutputTokens:  auditorMaxOutputTokens,
 		OpenAIAuditorCompactThreshold: auditorCompactThreshold,
