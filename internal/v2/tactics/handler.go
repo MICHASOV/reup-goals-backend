@@ -229,7 +229,15 @@ func (h *Handler) advisorMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, response)
+	api.WriteJSON(w, http.StatusOK, map[string]any{
+		"workspace_id":        response.WorkspaceID,
+		"assistant_message":   response.AssistantMessage,
+		"recent_messages":     response.RecentMessages,
+		"openai_response_id":  response.OpenAIResponseID,
+		"proposal_message_id": response.ProposalMessageID,
+		"proposed_changes":    response.ProposedChanges,
+		"applied_changes":     response.AppliedChanges,
+	})
 }
 
 func (h *Handler) facilitatorApplyActions(w http.ResponseWriter, r *http.Request) {
