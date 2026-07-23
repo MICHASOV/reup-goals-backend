@@ -139,12 +139,20 @@ func (s *FacilitatorService) History(ctx context.Context, workspaceID int, scope
 	}, nil
 }
 
-func (s *FacilitatorService) HistoryThread(ctx context.Context, workspaceID int, userID int, threadID int) (TacticsFacilitatorHistoryState, error) {
+func (s *FacilitatorService) HistoryThread(ctx context.Context, workspaceID int, userID int, threadID int) (AdvisorThreadState, error) {
 	thread, err := s.store.AdvisorThread(ctx, workspaceID, userID, threadID)
 	if err != nil {
-		return TacticsFacilitatorHistoryState{}, err
+		return AdvisorThreadState{}, err
 	}
-	return s.History(ctx, workspaceID, thread.ConversationScope())
+	messages, err := s.store.ScopedChatMessages(ctx, workspaceID, thread.ConversationScope(), 300)
+	if err != nil {
+		return AdvisorThreadState{}, err
+	}
+	return AdvisorThreadState{
+		WorkspaceID:    workspaceID,
+		Thread:         thread,
+		RecentMessages: messages,
+	}, nil
 }
 
 func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int, userID int, request TacticsFacilitatorMessageRequest) (TacticsFacilitatorMessageResponse, error) {

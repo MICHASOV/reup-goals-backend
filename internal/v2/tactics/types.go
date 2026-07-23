@@ -308,6 +308,12 @@ type AdvisorThread struct {
 	ArchivedAt  *time.Time `json:"archived_at,omitempty"`
 }
 
+type AdvisorThreadState struct {
+	WorkspaceID    int                  `json:"workspace_id"`
+	Thread         AdvisorThread        `json:"thread"`
+	RecentMessages []TacticsChatMessage `json:"recent_messages"`
+}
+
 type CreateAdvisorThreadRequest struct {
 	ScopeType  string `json:"scope_type"`
 	ScopeID    int    `json:"scope_id"`
