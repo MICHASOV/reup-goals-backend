@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
 	"reup-goals-backend/internal/v2/aiactions"
+	"reup-goals-backend/internal/v2/strategicmemory"
 )
 
 const maxDraftChangesPerTurn = 16
@@ -179,11 +181,66 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 		}
 		response.AppliedIndices = append(response.AppliedIndices, index)
 		response.AppliedChanges = append(response.AppliedChanges, item)
+		s.captureAppliedTacticsEntity(ctx, workspaceID, userID, item)
 	}
 	if len(response.AppliedChanges) > 0 && s.contextIndex != nil {
 		s.contextIndex.RefreshAsync(workspaceID)
 	}
 	return response, nil
+}
+
+func (s *FacilitatorService) captureAppliedTacticsEntity(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	change AppliedTacticsChange,
+) {
+	var sourceType string
+	var value any
+	switch change.EntityType {
+	case EntityWorkstream:
+		item, err := s.store.workstreamByID(ctx, workspaceID, change.EntityID)
+		if err != nil {
+			return
+		}
+		sourceType = strategicmemory.SourceTypeWorkstream
+		value = item
+	case EntityProject:
+		item, err := s.store.projectByID(ctx, workspaceID, change.EntityID)
+		if err != nil {
+			return
+		}
+		sourceType = strategicmemory.SourceTypeProject
+		value = item
+	case EntityRisk:
+		item, err := s.store.riskByID(ctx, workspaceID, change.EntityID)
+		if err != nil {
+			return
+		}
+		sourceType = strategicmemory.SourceTypeRisk
+		value = item
+	case EntityOpportunity:
+		item, err := s.store.opportunityByID(ctx, workspaceID, change.EntityID)
+		if err != nil {
+			return
+		}
+		sourceType = strategicmemory.SourceTypeOpportunity
+		value = item
+	default:
+		return
+	}
+	content := strategicmemory.JSONSourceContent(value)
+	if content == "" {
+		return
+	}
+	if _, _, err := s.memoryService.CaptureSource(ctx, workspaceID, userID, strategicmemory.SourceCapture{
+		SourceType: sourceType,
+		EntityKey:  fmt.Sprintf("%s:%d", sourceType, change.EntityID),
+		Content:    content,
+		Metadata:   map[string]any{"entity_id": change.EntityID, "source": "confirmed_ai_action"},
+	}); err != nil {
+		log.Printf("[WARN] capture applied tactics entity workspace_id=%d type=%s id=%d: %v", workspaceID, sourceType, change.EntityID, err)
+	}
 }
 
 func (s *Store) applyFacilitatorDraftChange(

@@ -71,10 +71,11 @@ type documentDesignerDocument struct {
 }
 
 const (
-	jobTypeKnowledgeQualityAudit = "knowledge_base.quality_audit"
-	jobTypeKnowledgeCandidate    = "knowledge_base.audit_candidate"
-	knowledgeExtractionModel     = "gpt-5.4-mini"
-	knowledgeDocumentModel       = "gpt-5.4-mini"
+	jobTypeKnowledgeQualityAudit   = "knowledge_base.quality_audit"
+	jobTypeKnowledgeCandidate      = "knowledge_base.audit_candidate"
+	jobTypeKnowledgeContextRefresh = "knowledge_base.context_refresh"
+	knowledgeExtractionModel       = "gpt-5.4-nano"
+	knowledgeDocumentModel         = "gpt-5.4-mini"
 )
 
 type qualityAuditJobPayload struct {
@@ -83,6 +84,12 @@ type qualityAuditJobPayload struct {
 }
 
 func (s *Service) registerJobHandlers() {
+	s.jobs.Register(jobTypeKnowledgeContextRefresh, func(ctx context.Context, job jobs.Job) error {
+		if job.WorkspaceID == nil {
+			return fmt.Errorf("knowledge context refresh job has no workspace")
+		}
+		return s.runKnowledgeContextRefresh(ctx, *job.WorkspaceID)
+	})
 	s.jobs.Register(jobTypeKnowledgeCandidate, func(ctx context.Context, job jobs.Job) error {
 		if job.WorkspaceID == nil {
 			return fmt.Errorf("knowledge candidate job has no workspace")
@@ -160,6 +167,7 @@ func materializerItemsToClaims(items []materializerItem) []aiMemoryResponseClaim
 			TopicKey:      normalizeDocumentType(item.PrimaryDocument),
 			EvidenceLevel: item.EvidenceLevel,
 			Confidence:    item.Confidence,
+			Importance:    item.Importance,
 			Relation:      item.RelationToExisting,
 			ExistingID:    item.ExistingClaimID,
 			SourceIDs:     item.SourceIDs,

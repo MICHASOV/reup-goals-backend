@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type BrainstormService struct {
 	evaluator        *TaskEvaluatorService
 	compactThreshold int
 	contextIndex     *contextindex.Service
+	recorder         *strategicmemory.SourceRecorder
 }
 
 func (s *BrainstormService) SetContextIndex(index *contextindex.Service) {
@@ -33,14 +35,19 @@ func NewBrainstormService(
 	aiClient ai.Provider,
 	evaluator *TaskEvaluatorService,
 	compactThreshold int,
+	recorders ...*strategicmemory.SourceRecorder,
 ) *BrainstormService {
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
 	}
-	return &BrainstormService{
+	service := &BrainstormService{
 		store: NewStore(dbx), context: newTaskContextBuilder(dbx), memory: strategicmemory.NewStore(dbx),
 		ai: aiClient, evaluator: evaluator, compactThreshold: compactThreshold,
 	}
+	if len(recorders) > 0 {
+		service.recorder = recorders[0]
+	}
+	return service
 }
 
 func (s *BrainstormService) History(ctx context.Context, workspaceID int, workstreamID int) (BrainstormHistoryResponse, error) {
@@ -81,6 +88,21 @@ func (s *BrainstormService) HandleMessage(
 	)
 	if err != nil {
 		return BrainstormMessageResponse{}, err
+	}
+	if s.recorder != nil {
+		_, _, captureErr := s.recorder.Capture(ctx, workspaceID, userID, strategicmemory.SourceCapture{
+			SourceType: strategicmemory.SourceTypeTaskDiscussion,
+			EntityKey:  fmt.Sprintf("task_discussion_message:%d", userMessage.ID),
+			Content:    request.Message,
+			FactsOnly:  true,
+			Metadata: map[string]any{
+				"task_discussion_message_id": userMessage.ID,
+				"workstream_id":              request.WorkstreamID,
+			},
+		})
+		if captureErr != nil {
+			log.Printf("[WARN] capture task discussion workspace_id=%d message_id=%d: %v", workspaceID, userMessage.ID, captureErr)
+		}
 	}
 	session, err := s.store.BrainstormSession(ctx, workspaceID, request.WorkstreamID, s.compactThreshold, fingerprint)
 	if err != nil {

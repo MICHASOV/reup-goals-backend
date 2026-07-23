@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"reup-goals-backend/internal/v2/api"
 	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
+	"reup-goals-backend/internal/v2/strategicmemory"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -37,6 +40,7 @@ func (h *Handler) WithContextIndex(index *contextindex.Service) *Handler {
 func NewHandler(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *Handler {
 	synthesis := NewSynthesisService(dbx, aiClient, compactThreshold, managers...)
 	readiness := NewReadinessService(dbx, aiClient, compactThreshold)
+	readiness.SetSynthesisService(synthesis)
 	facilitator := NewFacilitatorService(dbx, aiClient, compactThreshold, managers...)
 	facilitator.SetReadinessService(readiness)
 	readiness.StartWorker()
@@ -194,6 +198,23 @@ func (h *Handler) ResearchRequests(w http.ResponseWriter, r *http.Request) {
 		case err != nil:
 			api.WriteError(w, http.StatusInternalServerError, "strategy_research_request_update_failed")
 		default:
+			if item.Status == ResearchStatusCompleted && strings.TrimSpace(item.ResultText) != "" {
+				content := strategicmemory.JSONSourceContent(item)
+				if _, _, captureErr := h.facilitator.memoryService.CaptureSource(
+					r.Context(), workspace.ID, userID, strategicmemory.SourceCapture{
+						SourceType: strategicmemory.SourceTypeResearchResult,
+						EntityKey:  fmt.Sprintf("strategy_research_result:%d", item.ID),
+						Content:    content,
+						FactsOnly:  true,
+						Metadata: map[string]any{
+							"research_request_id": item.ID,
+							"strategy_id":         item.StrategyID,
+						},
+					},
+				); captureErr != nil {
+					log.Printf("[WARN] capture strategy research result workspace_id=%d request_id=%d: %v", workspace.ID, item.ID, captureErr)
+				}
+			}
 			api.WriteJSON(w, http.StatusOK, map[string]any{"request": item})
 		}
 	default:
@@ -273,7 +294,7 @@ func (h *Handler) Facilitator(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) strategyReadiness(w http.ResponseWriter, r *http.Request) {
-	workspace, userID, ok := h.currentWorkspace(w, r)
+	workspace, _, ok := h.currentWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -286,24 +307,13 @@ func (h *Handler) strategyReadiness(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		api.WriteJSON(w, http.StatusOK, map[string]any{"run": run})
-	case http.MethodPost:
-		item, err := h.readiness.ForceCurrent(r.Context(), workspace.ID, userID)
-		if err != nil {
-			if err.Error() == "strategy_readiness_no_session" {
-				api.WriteError(w, http.StatusUnprocessableEntity, "strategy_readiness_no_session")
-				return
-			}
-			api.WriteError(w, http.StatusInternalServerError, "strategy_readiness_start_failed")
-			return
-		}
-		api.WriteJSON(w, http.StatusAccepted, map[string]any{"queued": item})
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
 }
 
 func (h *Handler) strategySynthesis(w http.ResponseWriter, r *http.Request) {
-	workspace, userID, ok := h.currentWorkspace(w, r)
+	workspace, _, ok := h.currentWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -316,25 +326,6 @@ func (h *Handler) strategySynthesis(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		api.WriteJSON(w, http.StatusOK, response)
-	case http.MethodPost:
-		response, err := h.synthesis.Start(r.Context(), workspace.ID, userID)
-		if err != nil {
-			if err.Error() == "strategy_synthesis_no_session" {
-				api.WriteError(w, http.StatusUnprocessableEntity, "strategy_synthesis_no_session")
-				return
-			}
-			if err.Error() == "strategy_synthesis_not_ready" {
-				api.WriteError(w, http.StatusConflict, "strategy_synthesis_not_ready")
-				return
-			}
-			if err.Error() == "strategy_synthesis_stale_revision" {
-				api.WriteError(w, http.StatusConflict, "strategy_synthesis_stale_revision")
-				return
-			}
-			api.WriteError(w, http.StatusInternalServerError, "strategy_synthesis_start_failed")
-			return
-		}
-		api.WriteJSON(w, http.StatusAccepted, response)
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}

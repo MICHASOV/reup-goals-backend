@@ -32,6 +32,44 @@ func (s *Store) CreateRawSource(ctx context.Context, workspaceID int, userID *in
 	return id, err
 }
 
+func (s *Store) CreateRawSourceOnce(
+	ctx context.Context,
+	workspaceID int,
+	userID *int,
+	sourceType string,
+	entityKey string,
+	contentHash string,
+	content string,
+	metadata any,
+) (int, bool, error) {
+	meta := mustJSON(metadata)
+	var id int
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO strategic_raw_sources (
+			workspace_id, user_id, source_type, entity_key, content_hash, content, metadata_json
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (workspace_id, source_type, entity_key, content_hash)
+			WHERE entity_key <> '' AND content_hash <> ''
+		DO NOTHING
+		RETURNING id
+	`, workspaceID, userID, sourceType, entityKey, contentHash, content, meta).Scan(&id)
+	if err == nil {
+		return id, true, nil
+	}
+	if err != sql.ErrNoRows {
+		return 0, false, err
+	}
+	err = s.dbx.QueryRowContext(ctx, `
+		SELECT id
+		FROM strategic_raw_sources
+		WHERE workspace_id=$1 AND source_type=$2 AND entity_key=$3 AND content_hash=$4
+		ORDER BY id DESC
+		LIMIT 1
+	`, workspaceID, sourceType, entityKey, contentHash).Scan(&id)
+	return id, false, err
+}
+
 func (s *Store) OpenAISession(ctx context.Context, workspaceID int, compactThreshold int) (OpenAISession, error) {
 	if compactThreshold <= 0 {
 		compactThreshold = 60000
@@ -142,6 +180,30 @@ func (s *Store) RecordKnowledgeUserTurn(ctx context.Context, workspaceID int, so
 				WHEN strategic_knowledge_pipeline_state.status='ready' THEN 'collecting'
 				ELSE strategic_knowledge_pipeline_state.status
 			END,
+			updated_at=NOW()
+		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
+			last_extracted_source_id, last_audited_source_id, candidate_revision,
+			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision, updated_at
+	`, workspaceID, sourceID).Scan(
+		&item.WorkspaceID, &item.Status, &item.ConversationRevision, &item.LastUserSourceID,
+		&item.LastExtractedSourceID, &item.LastAuditedSourceID, &item.CandidateRevision,
+		&item.CandidateSourceID, &item.ReadyRevision, &item.CompiledRevision,
+		&item.CandidateReason, &item.AuditFeedback, &item.CandidateReport, &item.FeedbackDeliveredRevision,
+		&item.UpdatedAt,
+	)
+	return item, err
+}
+
+func (s *Store) RecordDeferredKnowledgeSource(ctx context.Context, workspaceID int, sourceID int) (KnowledgePipelineState, error) {
+	var item KnowledgePipelineState
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO strategic_knowledge_pipeline_state (
+			workspace_id, conversation_revision, last_user_source_id
+		) VALUES ($1, 1, $2)
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			conversation_revision=strategic_knowledge_pipeline_state.conversation_revision + 1,
+			last_user_source_id=GREATEST(strategic_knowledge_pipeline_state.last_user_source_id, EXCLUDED.last_user_source_id),
 			updated_at=NOW()
 		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
 			last_extracted_source_id, last_audited_source_id, candidate_revision,
@@ -283,7 +345,7 @@ func (s *Store) RelevantMessages(ctx context.Context, workspaceID int, query str
 func (s *Store) ListClaims(ctx context.Context, workspaceID int, limit int) ([]Claim, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, workspace_id, claim_text, claim_type, topic_key, evidence_level,
-			confidence, source_ids_json, status, status_reason, superseded_by,
+			confidence, importance, source_ids_json, status, status_reason, superseded_by,
 			reviewed_by, reviewed_at, created_at, updated_at
 		FROM strategic_claims
 		WHERE workspace_id=$1 AND status IN ($2, $3, $4)
@@ -300,7 +362,7 @@ func (s *Store) ListClaims(ctx context.Context, workspaceID int, limit int) ([]C
 func (s *Store) ListAllClaims(ctx context.Context, workspaceID int, limit int) ([]Claim, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, workspace_id, claim_text, claim_type, topic_key, evidence_level,
-			confidence, source_ids_json, status, status_reason, superseded_by,
+			confidence, importance, source_ids_json, status, status_reason, superseded_by,
 			reviewed_by, reviewed_at, created_at, updated_at
 		FROM strategic_claims
 		WHERE workspace_id=$1
@@ -326,6 +388,7 @@ func scanClaims(rows *sql.Rows) ([]Claim, error) {
 			&item.TopicKey,
 			&item.EvidenceLevel,
 			&item.Confidence,
+			&item.Importance,
 			&item.SourceIDs,
 			&item.Status,
 			&item.StatusReason,
@@ -366,7 +429,20 @@ func (s *Store) InsertClaims(ctx context.Context, workspaceID int, sourceID int,
 			continue
 		}
 		key := claimKey(text)
-		if existing[key] {
+		if current, found := existing[key]; found {
+			importance := normalizeImportance(claim.Importance)
+			if importanceRank(importance) > importanceRank(current.Importance) {
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE strategic_claims
+					SET importance=$1, updated_at=NOW()
+					WHERE id=$2 AND workspace_id=$3
+				`, importance, current.ID, workspaceID); err != nil {
+					return added, skipped, err
+				}
+				current.Importance = importance
+				existing[key] = current
+				added += 1
+			}
 			skipped += 1
 			continue
 		}
@@ -376,9 +452,9 @@ func (s *Store) InsertClaims(ctx context.Context, workspaceID int, sourceID int,
 		err := tx.QueryRowContext(ctx, `
 			INSERT INTO strategic_claims (
 				workspace_id, claim_text, claim_type, topic_key, evidence_level,
-				confidence, source_ids_json, status, status_reason
+				confidence, importance, source_ids_json, status, status_reason
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			RETURNING id
 		`,
 			workspaceID,
@@ -387,6 +463,7 @@ func (s *Store) InsertClaims(ctx context.Context, workspaceID int, sourceID int,
 			normalizeTopicKey(claim.TopicKey),
 			normalizeEvidenceLevel(claim.EvidenceLevel),
 			normalizeConfidence(claim.Confidence),
+			normalizeImportance(claim.Importance),
 			sourceIDs,
 			status,
 			claimLifecycleReason(claim),
@@ -399,7 +476,7 @@ func (s *Store) InsertClaims(ctx context.Context, workspaceID int, sourceID int,
 				return added, skipped, err
 			}
 		}
-		existing[key] = true
+		existing[key] = existingClaimIndex{ID: claimID, Importance: normalizeImportance(claim.Importance)}
 		added += 1
 	}
 	if err := tx.Commit(); err != nil {
@@ -414,6 +491,7 @@ type aiMemoryResponseClaim struct {
 	TopicKey      string
 	EvidenceLevel string
 	Confidence    string
+	Importance    string
 	Relation      string
 	ExistingID    int
 	SourceIDs     []int
@@ -461,9 +539,14 @@ type strategicExecQueryer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-func claimKeys(ctx context.Context, dbx claimQueryer, workspaceID int) (map[string]bool, error) {
+type existingClaimIndex struct {
+	ID         int
+	Importance string
+}
+
+func claimKeys(ctx context.Context, dbx claimQueryer, workspaceID int) (map[string]existingClaimIndex, error) {
 	rows, err := dbx.QueryContext(ctx, `
-		SELECT claim_text FROM strategic_claims
+		SELECT id, claim_text, importance FROM strategic_claims
 		WHERE workspace_id=$1 AND status IN ($2, $3, $4)
 	`, workspaceID, ClaimStatusConfirmed, ClaimStatusSuggested, ClaimStatusConflicted)
 	if err != nil {
@@ -471,15 +554,30 @@ func claimKeys(ctx context.Context, dbx claimQueryer, workspaceID int) (map[stri
 	}
 	defer rows.Close()
 
-	result := map[string]bool{}
+	result := map[string]existingClaimIndex{}
 	for rows.Next() {
+		var id int
 		var text string
-		if err := rows.Scan(&text); err != nil {
+		var importance string
+		if err := rows.Scan(&id, &text, &importance); err != nil {
 			return nil, err
 		}
-		result[claimKey(text)] = true
+		result[claimKey(text)] = existingClaimIndex{ID: id, Importance: importance}
 	}
 	return result, rows.Err()
+}
+
+func importanceRank(value string) int {
+	switch normalizeImportance(value) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	default:
+		return 1
+	}
 }
 
 func claimStatusForMaterializedClaim(claim aiMemoryResponseClaim) string {
@@ -588,7 +686,7 @@ func (s *Store) UpdateClaimLifecycle(
 			reviewed_at=NOW(), updated_at=NOW()
 		WHERE id=$5 AND workspace_id=$6
 		RETURNING id, workspace_id, claim_text, claim_type, topic_key, evidence_level,
-			confidence, source_ids_json, status, status_reason, superseded_by,
+			confidence, importance, source_ids_json, status, status_reason, superseded_by,
 			reviewed_by, reviewed_at, created_at, updated_at
 	`, status, cleanText(reason), supersededBy, userID, claimID, workspaceID).Scan(
 		&item.ID,
@@ -598,6 +696,7 @@ func (s *Store) UpdateClaimLifecycle(
 		&item.TopicKey,
 		&item.EvidenceLevel,
 		&item.Confidence,
+		&item.Importance,
 		&item.SourceIDs,
 		&item.Status,
 		&item.StatusReason,

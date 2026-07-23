@@ -21,7 +21,7 @@ const (
 
 	SourceManual = "manual"
 
-	StrategyFacilitatorPromptVersion       = "strategy_facilitator_openai_native_v0_2_0"
+	StrategyFacilitatorPromptVersion       = "strategy_facilitator_openai_native_v0_3_0"
 	StrategySynthesizerPromptVersion       = "strategy_synthesizer_v0_1_0"
 	StrategyArtifactFormatterPromptVersion = "strategy_artifact_formatter_v0_1_0"
 
@@ -206,6 +206,8 @@ type StrategyReadinessRun struct {
 type StrategyReadinessReport struct {
 	Verdict                   string                              `json:"verdict"`
 	CanSynthesize             bool                                `json:"can_synthesize"`
+	OverallScore              int                                 `json:"overall_score"`
+	ReadinessPercent          float64                             `json:"readiness_percent"`
 	ValidatedThroughMessageID int                                 `json:"validated_through_message_id"`
 	SessionRevision           int                                 `json:"session_revision"`
 	Confidence                string                              `json:"confidence"`
@@ -221,10 +223,14 @@ type StrategyReadinessReport struct {
 }
 
 type StrategyReadinessCriterion struct {
-	Area       string   `json:"area"`
-	Status     string   `json:"status"`
-	Assessment string   `json:"assessment"`
-	SourceKeys []string `json:"source_keys"`
+	CriterionCode string   `json:"criterion_code"`
+	Area          string   `json:"area"`
+	Score         int      `json:"score"`
+	Status        string   `json:"status"`
+	Assessment    string   `json:"assessment"`
+	Strengths     []string `json:"strengths"`
+	Gaps          []string `json:"gaps"`
+	SourceKeys    []string `json:"source_keys"`
 }
 
 type StrategyReadinessIssue struct {

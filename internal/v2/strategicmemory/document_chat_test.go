@@ -120,6 +120,19 @@ func TestClaimStatusForMaterializedClaim(t *testing.T) {
 	}
 }
 
+func TestMaterializerClaimPreservesImportance(t *testing.T) {
+	claims := materializerItemsToClaims([]materializerItem{{
+		Text: "Cash runway is six weeks", Type: "constraint",
+		PrimaryDocument: "finance_economics", Importance: "critical",
+	}})
+	if len(claims) != 1 || claims[0].Importance != "critical" {
+		t.Fatalf("importance was lost during materialization: %#v", claims)
+	}
+	if normalizeImportance("unexpected") != "medium" {
+		t.Fatal("unknown importance must use the safe medium default")
+	}
+}
+
 func TestValidClaimStatus(t *testing.T) {
 	for _, status := range []string{
 		ClaimStatusSuggested,

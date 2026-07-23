@@ -48,6 +48,7 @@ func TestBuildResponsesRequestKeepsInstructionsForOneShotCall(t *testing.T) {
 	resolved := ResolvedCall{Model: "gpt-test", Instructions: "one-shot prompt"}
 	request := buildResponsesRequest(resolved, "target delta", nil, ResponseContextOptions{
 		PreviousResponseID: "resp_previous",
+		ReasoningEffort:    "none",
 	}, 4000, "")
 
 	if request.Conversation != "" {
@@ -58,6 +59,9 @@ func TestBuildResponsesRequestKeepsInstructionsForOneShotCall(t *testing.T) {
 	}
 	if request.PreviousResponseID != "resp_previous" {
 		t.Fatalf("previous_response_id = %q", request.PreviousResponseID)
+	}
+	if request.Reasoning["effort"] != "none" {
+		t.Fatalf("reasoning = %#v", request.Reasoning)
 	}
 }
 

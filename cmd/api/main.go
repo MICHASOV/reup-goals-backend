@@ -77,11 +77,15 @@ func main() {
 	auditorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIAuditorModel, cfg.OpenAIProxyURL).
 		WithMaxOutputTokens(cfg.OpenAIAuditorMaxOutputTokens).
 		WithGovernance(aiGovernance)
+	advisorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIAdvisorModel, cfg.OpenAIProxyURL).
+		WithMaxOutputTokens(2600).
+		WithGovernance(aiGovernance)
 	taskEvaluatorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITaskModel, cfg.OpenAIProxyURL).
 		WithMaxOutputTokens(900).
 		WithGovernance(aiGovernance)
 	transcriptionAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITranscriptionModel, cfg.OpenAIProxyURL).WithGovernance(aiGovernance)
 	jobManager := jobs.NewManager(database)
+	strategicSourceRecorder := strategicmemory.NewSourceRecorder(database, jobManager)
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)
 	cloudPayments := subscriptions.NewCloudPaymentsClient(cfg)
@@ -91,13 +95,13 @@ func main() {
 	aiPlatformHandler := aiplatform.NewHandler(database, cfg.AIAdminKey)
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
-	departmentHandler := departments.NewHandler(database)
-	workspaceDocumentsHandler := workspacedocs.NewHandler(database)
+	departmentHandler := departments.NewHandler(database, strategicSourceRecorder)
+	workspaceDocumentsHandler := workspacedocs.NewHandler(database, strategicSourceRecorder)
 	workspaceContextIndex := contextindex.New(database, auditorAIClient)
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
 	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
-	tacticsHandler := tactics.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
-	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, taskEvaluatorAIClient, cfg.OpenAIAuditorCompactThreshold).WithContextIndex(workspaceContextIndex)
+	tacticsHandler := tactics.NewHandler(database, advisorAIClient, cfg.OpenAIAdvisorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
+	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, taskEvaluatorAIClient, cfg.OpenAIAuditorCompactThreshold, strategicSourceRecorder).WithContextIndex(workspaceContextIndex)
 	operationsHandler := operations.NewHandler(database, jobManager)
 	privacyHandler := privacy.NewHandler(database)
 	profileHandler := profile.NewHandler(database, cfg, emailService, cloudPayments)
@@ -208,6 +212,11 @@ func main() {
 	mux.Handle("/api/v2/tactics-facilitator/actions/apply", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Facilitator))
 	mux.Handle("/api/v2/tactics-facilitator/files", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Facilitator))
 	mux.Handle("/api/v2/tactics-facilitator/readiness", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-advisor/threads", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Advisor))
+	mux.Handle("/api/v2/tactics-advisor/threads/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Advisor))
+	mux.Handle("/api/v2/tactics-advisor/state", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Advisor))
+	mux.Handle("/api/v2/tactics-advisor/messages", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Advisor))
+	mux.Handle("/api/v2/tactics-advisor/files", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Advisor))
 	mux.Handle("/api/v2/tactics/workstreams", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Workstreams))
 	mux.Handle("/api/v2/tactics/workstreams/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Workstreams))
 	mux.Handle("/api/v2/tactics/projects", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Projects))

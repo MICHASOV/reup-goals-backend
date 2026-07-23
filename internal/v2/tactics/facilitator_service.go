@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -138,6 +139,14 @@ func (s *FacilitatorService) History(ctx context.Context, workspaceID int, scope
 	}, nil
 }
 
+func (s *FacilitatorService) HistoryThread(ctx context.Context, workspaceID int, userID int, threadID int) (TacticsFacilitatorHistoryState, error) {
+	thread, err := s.store.AdvisorThread(ctx, workspaceID, userID, threadID)
+	if err != nil {
+		return TacticsFacilitatorHistoryState{}, err
+	}
+	return s.History(ctx, workspaceID, thread.ConversationScope())
+}
+
 func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int, userID int, request TacticsFacilitatorMessageRequest) (TacticsFacilitatorMessageResponse, error) {
 	message := strings.TrimSpace(request.Message)
 	if len([]rune(message)) < 2 {
@@ -147,40 +156,67 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		return TacticsFacilitatorMessageResponse{}, fmt.Errorf("message_too_long")
 	}
 
+	personalThread := request.ThreadID > 0
+	contextScope := request.Scope
+	conversationScope := request.Scope
+	if personalThread {
+		thread, err := s.store.AdvisorThread(ctx, workspaceID, userID, request.ThreadID)
+		if err != nil {
+			return TacticsFacilitatorMessageResponse{}, err
+		}
+		contextScope = thread.Scope()
+		conversationScope = thread.ConversationScope()
+		request.Scope = contextScope
+	}
+
 	state, err := s.State(ctx, workspaceID, userID)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
-	if state.Current.Strategy == nil {
+	if !personalThread && state.Current.Strategy == nil {
 		return TacticsFacilitatorMessageResponse{}, fmt.Errorf("tactics_strategy_required")
 	}
-	if state.Current.Course == nil {
+	if !personalThread && state.Current.Course == nil {
 		return TacticsFacilitatorMessageResponse{}, fmt.Errorf("tactics_course_required")
 	}
-	state.RecentMessages, err = s.store.ScopedChatMessages(ctx, workspaceID, request.Scope, 100)
+	state.RecentMessages, err = s.store.ScopedChatMessages(ctx, workspaceID, conversationScope, 100)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
 
-	scopeContext, err := s.store.ScopeContext(ctx, workspaceID, request.Scope)
+	scopeContext, err := s.store.ScopeContext(ctx, workspaceID, contextScope)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
 	userMessageID, err := s.store.CreateScopedChatMessage(ctx, workspaceID, &userID, "user", message, map[string]any{
-		"participant_role": normalizeParticipantRole(request.ParticipantRole),
-		"scope":            request.Scope,
-	}, request.Scope)
+		"participant_role":  normalizeParticipantRole(request.ParticipantRole),
+		"context_scope":     contextScope,
+		"advisor_thread_id": request.ThreadID,
+	}, conversationScope)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
-	sessionState, err := s.store.BeginFacilitatorTurn(ctx, workspaceID, userID, userMessageID)
-	if err != nil {
-		return TacticsFacilitatorMessageResponse{}, err
+	if personalThread {
+		if err := s.store.TouchAdvisorThread(ctx, workspaceID, userID, request.ThreadID, message); err != nil {
+			return TacticsFacilitatorMessageResponse{}, err
+		}
 	}
-	state.Session = sessionState
+	if err := s.memoryService.CaptureTacticsFacts(
+		ctx, workspaceID, userID, userMessageID, message, contextScope,
+	); err != nil {
+		log.Printf("[WARN] capture tactics context workspace_id=%d message_id=%d: %v", workspaceID, userMessageID, err)
+	}
+	sessionState := state.Session
+	if !personalThread {
+		sessionState, err = s.store.BeginFacilitatorTurn(ctx, workspaceID, userID, userMessageID)
+		if err != nil {
+			return TacticsFacilitatorMessageResponse{}, err
+		}
+		state.Session = sessionState
+	}
 
 	fingerprint := tacticsContextFingerprint(state)
-	openAISession, err := s.store.OpenAITacticsScopeSession(ctx, workspaceID, request.Scope, s.compactThreshold, fingerprint)
+	openAISession, err := s.store.OpenAITacticsScopeSession(ctx, workspaceID, conversationScope, s.compactThreshold, fingerprint)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
@@ -194,11 +230,11 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		}
 	}
 	input := buildTacticsTurnInput(message, request)
-	if strings.TrimSpace(openAISession.ConversationID) == "" && strings.TrimSpace(openAISession.PreviousResponseID) != "" {
+	if strings.TrimSpace(openAISession.ConversationID) == "" {
 		input = buildTacticsFreshInput(message, request, scopeContext, state)
 	}
 
-	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "tactics_facilitator_openai_native", TacticsFacilitatorPromptVersion)
+	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "tactics_advisor_openai_native", TacticsFacilitatorPromptVersion)
 	started := time.Now()
 	prompt := tacticsFacilitatorPrompt + contextindex.RetrievalInstructions
 	result, err := s.ai.GenerateJSONNative(aiCtx, prompt, input, ai.ResponseContextOptions{
@@ -208,11 +244,11 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		CompactThreshold:     openAISession.CompactThreshold,
 		PromptCacheKey:       openAISession.PromptCacheKey,
 		MaxFileSearchResults: 8,
-		MaxOutputTokens:      5000,
+		MaxOutputTokens:      2600,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil && strings.TrimSpace(openAISession.ConversationID) != "" && ai.IsConversationStateError(err) {
-		_ = s.store.UpdateOpenAITacticsScopeConversationID(ctx, workspaceID, request.Scope, "")
+		_ = s.store.UpdateOpenAITacticsScopeConversationID(ctx, workspaceID, conversationScope, "")
 		started = time.Now()
 		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, buildTacticsFreshInput(message, request, scopeContext, state), ai.ResponseContextOptions{
 			UseConversation:      true,
@@ -220,16 +256,16 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			CompactThreshold:     openAISession.CompactThreshold,
 			PromptCacheKey:       openAISession.PromptCacheKey,
 			MaxFileSearchResults: 8,
-			MaxOutputTokens:      5000,
+			MaxOutputTokens:      2600,
 		})
 		duration = time.Since(started).Milliseconds()
 	}
 	if err != nil {
 		s.logAIRun(ctx, workspaceID, duration, 0, 0, "failed", err.Error())
-		return s.fallbackResponse(ctx, workspaceID, userMessageID, state, request.Scope), nil
+		return s.fallbackResponse(ctx, workspaceID, userMessageID, state, conversationScope, personalThread), nil
 	}
 	if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != openAISession.ConversationID {
-		_ = s.store.UpdateOpenAITacticsScopeConversationID(ctx, workspaceID, request.Scope, result.ConversationID)
+		_ = s.store.UpdateOpenAITacticsScopeConversationID(ctx, workspaceID, conversationScope, result.ConversationID)
 	}
 
 	modelOutput, parseErr := parseTacticsFacilitatorOutput(result.Text)
@@ -243,7 +279,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			CompactThreshold:     openAISession.CompactThreshold,
 			PromptCacheKey:       openAISession.PromptCacheKey,
 			MaxFileSearchResults: 8,
-			MaxOutputTokens:      5000,
+			MaxOutputTokens:      2600,
 		})
 		duration = time.Since(started).Milliseconds()
 		if err == nil {
@@ -257,7 +293,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 				errorText = parseErr.Error()
 			}
 			s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
-			return s.fallbackResponse(ctx, workspaceID, userMessageID, state, request.Scope), nil
+			return s.fallbackResponse(ctx, workspaceID, userMessageID, state, conversationScope, personalThread), nil
 		}
 	}
 	s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
@@ -275,7 +311,9 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		"open_questions":        modelOutput.OpenQuestions,
 		"needs_strategy_review": modelOutput.NeedsStrategyReview,
 		"draft_changes":         modelOutput.DraftChanges,
-	}, request.Scope)
+		"context_scope":         contextScope,
+		"advisor_thread_id":     request.ThreadID,
+	}, conversationScope)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
@@ -291,17 +329,19 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		}
 	}
 
-	sessionState, err = s.store.RecordFacilitatorAssessment(ctx, workspaceID, userMessageID, modelOutput)
-	if err != nil {
-		return TacticsFacilitatorMessageResponse{}, err
-	}
-	if s.readiness != nil && sessionState.FacilitatorStatus == FacilitatorStatusCandidateReady && state.Current.TacticalPlan != nil {
-		plan, planErr := s.store.planByID(ctx, workspaceID, state.Current.TacticalPlan.ID)
-		if planErr == nil {
-			_, _ = s.readiness.QueueCandidate(ctx, sessionState, plan, false)
+	if !personalThread {
+		sessionState, err = s.store.RecordFacilitatorAssessment(ctx, workspaceID, userMessageID, modelOutput)
+		if err != nil {
+			return TacticsFacilitatorMessageResponse{}, err
+		}
+		if s.readiness != nil && sessionState.FacilitatorStatus == FacilitatorStatusCandidateReady && state.Current.TacticalPlan != nil {
+			plan, planErr := s.store.planByID(ctx, workspaceID, state.Current.TacticalPlan.ID)
+			if planErr == nil {
+				_, _ = s.readiness.QueueCandidate(ctx, sessionState, plan, false)
+			}
 		}
 	}
-	messages, err := s.store.ScopedChatMessages(ctx, workspaceID, request.Scope, 100)
+	messages, err := s.store.ScopedChatMessages(ctx, workspaceID, conversationScope, 100)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
@@ -327,36 +367,91 @@ func (s *FacilitatorService) UploadFile(ctx context.Context, workspaceID int, us
 }
 
 func buildTacticsFreshInput(message string, request TacticsFacilitatorMessageRequest, scopeContext any, state TacticsFacilitatorState) string {
+	contextMode := "business_context_only"
+	if state.Current.Strategy != nil {
+		contextMode = "strategy_available"
+		if state.Current.Strategy.Status == "active" {
+			contextMode = "active_strategy"
+		}
+	}
 	contextPack := map[string]any{
 		"latest_user_message": message,
 		"participant_role":    normalizeParticipantRole(request.ParticipantRole),
+		"context_mode":        contextMode,
 		"active_scope": map[string]any{
 			"request": request.Scope,
 			"entity":  scopeContext,
 		},
 		"active_course": state.Current.Course,
 		"strategy": map[string]any{
-			"record":    state.Current.Strategy,
-			"documents": state.StrategyDocs,
+			"record":         state.Current.Strategy,
+			"document_index": compactTacticsStrategyDocumentIndex(state.StrategyDocs),
 		},
 		"knowledge_base": map[string]any{
-			"documents":             state.KnowledgeDocs,
+			"document_index":        compactTacticsKnowledgeDocumentIndex(state.KnowledgeDocs),
 			"latest_quality_report": compactTacticsKnowledgeQuality(state.KnowledgeAudit),
 			"uploaded_files":        compactTacticsFiles(state.Files),
 		},
 		"current_tactical_plan": map[string]any{
 			"plan":          state.Current.TacticalPlan,
-			"changes":       state.Current.Workstreams,
+			"change_index":  compactTacticsWorkstreamIndex(state.Current.Workstreams),
 			"uncovered":     state.Current.Uncovered,
 			"session_state": state.Session,
 		},
 		"communication_profile":   state.Communication,
 		"recent_dialogue":         state.RecentMessages,
 		"latest_quality_feedback": compactTacticsReadinessFeedback(state.Readiness),
-		"instruction":             "Continue as a tactical consultant. Reply naturally to the latest user message and make the next move that most improves the company's system of changes for realizing its active course.",
+		"instruction":             "Continue as the company's business development advisor. Use an approved strategy as the primary decision frame when it exists; otherwise advise from the available business context and state uncertainty honestly.",
 	}
 	raw, _ := json.Marshal(contextPack)
 	return "Context for the tactical session in JSON:\n" + string(raw)
+}
+
+func compactTacticsStrategyDocumentIndex(documents []TacticsStrategyDocument) []map[string]any {
+	result := make([]map[string]any, 0, len(documents))
+	for _, document := range documents {
+		result = append(result, map[string]any{
+			"type":   document.DocumentType,
+			"title":  document.Title,
+			"status": document.Status,
+		})
+	}
+	return result
+}
+
+func compactTacticsKnowledgeDocumentIndex(documents []strategicmemory.StrategicDocument) []map[string]any {
+	result := make([]map[string]any, 0, len(documents))
+	for _, document := range documents {
+		result = append(result, map[string]any{
+			"id":      document.ID,
+			"type":    document.DocumentType,
+			"title":   document.Title,
+			"status":  document.Status,
+			"version": document.Version,
+		})
+	}
+	return result
+}
+
+func compactTacticsWorkstreamIndex(workstreams []Workstream) []map[string]any {
+	result := make([]map[string]any, 0, len(workstreams))
+	for _, workstream := range workstreams {
+		projects := make([]map[string]any, 0, len(workstream.Projects))
+		for _, project := range workstream.Projects {
+			projects = append(projects, map[string]any{
+				"id":     project.ID,
+				"title":  project.Title,
+				"status": project.Status,
+			})
+		}
+		result = append(result, map[string]any{
+			"id":       workstream.ID,
+			"title":    workstream.Title,
+			"status":   workstream.Status,
+			"projects": projects,
+		})
+	}
+	return result
 }
 
 func buildTacticsTurnInput(message string, request TacticsFacilitatorMessageRequest) string {
@@ -493,11 +588,11 @@ func (s *FacilitatorService) vectorStoreIDs(ctx context.Context, workspaceID int
 }
 
 func (s *FacilitatorService) logAIRun(ctx context.Context, workspaceID int, duration int64, inputTokens int, outputTokens int, status string, errorText string) {
-	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "tactics_facilitator_openai_native", s.ai.ModelName(), TacticsFacilitatorPromptVersion, duration, inputTokens, outputTokens, status, errorText)
+	s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "tactics_advisor_openai_native", s.ai.ModelName(), TacticsFacilitatorPromptVersion, duration, inputTokens, outputTokens, status, errorText)
 }
 
-func (s *FacilitatorService) fallbackResponse(ctx context.Context, workspaceID int, userMessageID int, state TacticsFacilitatorState, scope *TacticsMessageScope) TacticsFacilitatorMessageResponse {
-	message := "Не получилось обработать ответ с первого раза. Давайте продолжим с последней точки: какое изменение в бизнесе вы сейчас считаете главным для реализации курса?"
+func (s *FacilitatorService) fallbackResponse(ctx context.Context, workspaceID int, userMessageID int, state TacticsFacilitatorState, scope *TacticsMessageScope, personalThread bool) TacticsFacilitatorMessageResponse {
+	message := "Не получилось обработать ответ с первого раза. Продолжим с последней точки: какое решение или гипотезу вы хотите сейчас проверить?"
 	output := tacticsFacilitatorModelOutput{
 		Message:       message,
 		SessionStatus: FacilitatorStatusInProgress,
@@ -509,7 +604,10 @@ func (s *FacilitatorService) fallbackResponse(ctx context.Context, workspaceID i
 		"fallback":       true,
 		"user_source_id": userMessageID,
 	}, scope)
-	session, _ := s.store.RecordFacilitatorAssessment(ctx, workspaceID, userMessageID, output)
+	session := state.Session
+	if !personalThread {
+		session, _ = s.store.RecordFacilitatorAssessment(ctx, workspaceID, userMessageID, output)
+	}
 	messages, _ := s.store.ScopedChatMessages(ctx, workspaceID, scope, 100)
 	return TacticsFacilitatorMessageResponse{
 		WorkspaceID:      workspaceID,

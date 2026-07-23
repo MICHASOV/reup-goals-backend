@@ -11,6 +11,17 @@ const (
 	SourceTypeFileUpload       = "file_upload"
 	SourceTypeDocumentMessage  = "document_user_message"
 	SourceTypeStrategyMessage  = "strategy_user_message"
+	SourceTypeTacticsMessage   = "tactics_user_message"
+	SourceTypeTaskDiscussion   = "task_discussion_user_message"
+	SourceTypeWorkspaceDoc     = "workspace_document"
+	SourceTypeTaskCompletion   = "task_completion"
+	SourceTypeDepartment       = "department"
+	SourceTypeTacticalPlan     = "tactical_plan"
+	SourceTypeWorkstream       = "tactical_workstream"
+	SourceTypeProject          = "tactical_project"
+	SourceTypeRisk             = "tactical_risk"
+	SourceTypeOpportunity      = "tactical_opportunity"
+	SourceTypeResearchResult   = "strategy_research_result"
 
 	ConversationStateCollectingContext = "collecting_context"
 	ConversationStateProcessingContext = "processing_context"
@@ -57,6 +68,7 @@ type Claim struct {
 	TopicKey      string          `json:"topic_key"`
 	EvidenceLevel string          `json:"evidence_level"`
 	Confidence    string          `json:"confidence"`
+	Importance    string          `json:"importance"`
 	SourceIDs     json.RawMessage `json:"source_ids_json,omitempty"`
 	Status        string          `json:"status"`
 	StatusReason  string          `json:"status_reason,omitempty"`

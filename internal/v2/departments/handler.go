@@ -1,25 +1,34 @@
 package departments
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"reup-goals-backend/internal/auth"
 	"reup-goals-backend/internal/v2/api"
+	"reup-goals-backend/internal/v2/strategicmemory"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
 type Handler struct {
 	store      *Store
 	workspaces *workspaces.Store
+	recorder   *strategicmemory.SourceRecorder
 }
 
-func NewHandler(dbx *sql.DB) *Handler {
-	return &Handler{store: NewStore(dbx), workspaces: workspaces.NewStore(dbx)}
+func NewHandler(dbx *sql.DB, recorders ...*strategicmemory.SourceRecorder) *Handler {
+	handler := &Handler{store: NewStore(dbx), workspaces: workspaces.NewStore(dbx)}
+	if len(recorders) > 0 {
+		handler.recorder = recorders[0]
+	}
+	return handler
 }
 
 func (h *Handler) Departments(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +64,7 @@ func (h *Handler) Departments(w http.ResponseWriter, r *http.Request) {
 			if writeDepartmentError(w, err) {
 				return
 			}
+			h.captureDepartment(r.Context(), workspace.ID, membership.UserID, item.Department, item)
 			api.WriteJSON(w, http.StatusCreated, item)
 		default:
 			api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -88,6 +98,7 @@ func (h *Handler) Departments(w http.ResponseWriter, r *http.Request) {
 		if writeDepartmentError(w, err) {
 			return
 		}
+		h.captureDepartment(r.Context(), workspace.ID, membership.UserID, item.Department, item)
 		api.WriteJSON(w, http.StatusOK, item)
 	case http.MethodDelete:
 		if !canManage(membership) {
@@ -97,9 +108,38 @@ func (h *Handler) Departments(w http.ResponseWriter, r *http.Request) {
 		if writeDepartmentError(w, h.store.Archive(r.Context(), workspace.ID, departmentID)) {
 			return
 		}
+		archived := Department{ID: departmentID, WorkspaceID: workspace.ID, Status: StatusArchived}
+		h.captureDepartment(r.Context(), workspace.ID, membership.UserID, archived, archived)
 		api.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
+}
+
+func (h *Handler) captureDepartment(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	department Department,
+	value any,
+) {
+	if h.recorder == nil {
+		return
+	}
+	content := strategicmemory.JSONSourceContent(value)
+	if content == "" {
+		return
+	}
+	if _, _, err := h.recorder.Capture(ctx, workspaceID, userID, strategicmemory.SourceCapture{
+		SourceType: strategicmemory.SourceTypeDepartment,
+		EntityKey:  fmt.Sprintf("department:%d", department.ID),
+		Content:    content,
+		Metadata: map[string]any{
+			"department_id": department.ID,
+			"status":        department.Status,
+		},
+	}); err != nil {
+		log.Printf("[WARN] capture department workspace_id=%d department_id=%d: %v", workspaceID, department.ID, err)
 	}
 }
 
@@ -130,9 +170,37 @@ func (h *Handler) Responsibilities(w http.ResponseWriter, r *http.Request) {
 		if writeDepartmentError(w, err) {
 			return
 		}
+		h.captureResponsibility(r.Context(), workspace.ID, membership.UserID, input, item)
 		api.WriteJSON(w, http.StatusOK, map[string]any{"responsibility": item})
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
+}
+
+func (h *Handler) captureResponsibility(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	responsibility Responsibility,
+	value any,
+) {
+	if h.recorder == nil {
+		return
+	}
+	content := strategicmemory.JSONSourceContent(value)
+	if content == "" {
+		return
+	}
+	if _, _, err := h.recorder.Capture(ctx, workspaceID, userID, strategicmemory.SourceCapture{
+		SourceType: strategicmemory.SourceTypeDepartment,
+		EntityKey:  fmt.Sprintf("responsibility:%s:%d", responsibility.EntityType, responsibility.EntityID),
+		Content:    content,
+		Metadata: map[string]any{
+			"entity_type": responsibility.EntityType,
+			"entity_id":   responsibility.EntityID,
+		},
+	}); err != nil {
+		log.Printf("[WARN] capture responsibility workspace_id=%d type=%s id=%d: %v", workspaceID, responsibility.EntityType, responsibility.EntityID, err)
 	}
 }
 

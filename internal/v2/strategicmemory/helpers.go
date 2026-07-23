@@ -213,6 +213,15 @@ func normalizeConfidence(value string) string {
 	}
 }
 
+func normalizeImportance(value string) string {
+	switch strings.TrimSpace(value) {
+	case "low", "medium", "high", "critical":
+		return value
+	default:
+		return "medium"
+	}
+}
+
 func normalizeBusinessStage(value string) string {
 	switch strings.TrimSpace(value) {
 	case "idea", "launch", "validation", "early_traction", "growth", "scale", "mature", "turnaround":

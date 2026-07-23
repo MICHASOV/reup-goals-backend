@@ -13,6 +13,7 @@ import (
 	"reup-goals-backend/internal/security"
 	"reup-goals-backend/internal/v2/api"
 	"reup-goals-backend/internal/v2/contextindex"
+	"reup-goals-backend/internal/v2/strategicmemory"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -31,15 +32,25 @@ func (h *Handler) WithContextIndex(index *contextindex.Service) *Handler {
 	return h
 }
 
-func NewHandler(dbx *sql.DB, brainstormAI ai.Provider, evaluatorAI ai.Provider, compactThreshold int) *Handler {
+func NewHandler(
+	dbx *sql.DB,
+	brainstormAI ai.Provider,
+	evaluatorAI ai.Provider,
+	compactThreshold int,
+	recorders ...*strategicmemory.SourceRecorder,
+) *Handler {
 	evaluator := NewTaskEvaluatorService(dbx, evaluatorAI)
 	evaluator.StartWorker()
+	var recorder *strategicmemory.SourceRecorder
+	if len(recorders) > 0 {
+		recorder = recorders[0]
+	}
 	return &Handler{
 		store:      NewStore(dbx),
 		workspaces: workspaces.NewStore(dbx),
-		brainstorm: NewBrainstormService(dbx, brainstormAI, evaluator, compactThreshold),
+		brainstorm: NewBrainstormService(dbx, brainstormAI, evaluator, compactThreshold, recorder),
 		evaluator:  evaluator,
-		completion: NewTaskCompletionService(dbx, evaluatorAI, evaluator, compactThreshold),
+		completion: NewTaskCompletionService(dbx, evaluatorAI, evaluator, compactThreshold, recorder),
 	}
 }
 

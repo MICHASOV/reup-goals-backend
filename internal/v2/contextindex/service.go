@@ -58,8 +58,22 @@ var snapshotSections = []snapshotSection{
 		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.id), '[]'::jsonb)::text
 		FROM (
 			SELECT id, claim_text, claim_type, topic_key, evidence_level, confidence,
-				status, status_reason, superseded_by, created_at, updated_at
+				importance, status, status_reason, superseded_by, source_ids_json,
+				created_at, updated_at
 			FROM strategic_claims WHERE workspace_id=$1
+		) item`},
+	{Title: "Raw business sources", Query: `
+		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.id), '[]'::jsonb)::text
+		FROM (
+			SELECT id, user_id, source_type, entity_key, content, metadata_json, created_at
+			FROM strategic_raw_sources
+			WHERE workspace_id=$1
+				AND source_type <> 'assistant_message'
+				AND id <= COALESCE((
+					SELECT last_extracted_source_id
+					FROM strategic_knowledge_pipeline_state
+					WHERE workspace_id=$1
+				), 0)
 		) item`},
 	{Title: "Latest knowledge snapshot", Query: `
 		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.id), '[]'::jsonb)::text
@@ -96,6 +110,23 @@ var snapshotSections = []snapshotSection{
 				report_json, created_at
 			FROM strategic_quality_reports WHERE workspace_id=$1
 			ORDER BY created_at DESC, id DESC LIMIT 1
+		) item`},
+	{Title: "Workspace documents", Query: `
+		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.id), '[]'::jsonb)::text
+		FROM (
+			SELECT id, parent_id, title, content, status, favorite,
+				linked_department_ids, linked_workstream_ids, linked_project_ids,
+				version, created_by, updated_by, created_at, updated_at
+			FROM workspace_documents
+			WHERE workspace_id=$1 AND archived_at IS NULL
+		) item`},
+	{Title: "Departments", Query: `
+		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.sort_order, item.id), '[]'::jsonb)::text
+		FROM (
+			SELECT id, name, description, responsibility, manager_user_id, kpis_json,
+				status, sort_order, created_at, updated_at
+			FROM v2_departments
+			WHERE workspace_id=$1 AND archived_at IS NULL
 		) item`},
 	{Title: "Strategies", Query: `
 		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.version), '[]'::jsonb)::text
@@ -182,6 +213,16 @@ var snapshotSections = []snapshotSection{
 		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.id), '[]'::jsonb)::text
 		FROM (
 			SELECT * FROM v2_tasks WHERE workspace_id=$1 AND archived_at IS NULL
+		) item`},
+	{Title: "Task completion evaluations", Query: `
+		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.task_id, item.id), '[]'::jsonb)::text
+		FROM (
+			SELECT DISTINCT ON (task_id)
+				id, task_id, status, sufficient, quality_score, reason,
+				missing_information_json, created_at
+			FROM v2_task_completion_evaluations
+			WHERE workspace_id=$1
+			ORDER BY task_id, created_at DESC, id DESC
 		) item`},
 	{Title: "Task secondary workstream links", Query: `
 		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.task_id, item.workstream_id), '[]'::jsonb)::text

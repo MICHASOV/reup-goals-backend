@@ -165,7 +165,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		}
 	}
 
-	input := buildStrategyFacilitatorTurnInput(message)
+	input := buildStrategyFacilitatorTurnInput(message, state)
 	if strings.TrimSpace(session.ConversationID) == "" {
 		if strings.TrimSpace(session.PreviousResponseID) != "" {
 			input = buildStrategyFacilitatorFreshInput(workspaceID, message, state)
@@ -262,7 +262,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		return StrategyFacilitatorMessageResponse{}, err
 	}
 	if sessionState.FacilitatorStatus == FacilitatorStatusCandidateReady && s.readiness != nil {
-		_, _ = s.readiness.QueueCandidate(ctx, sessionState, state.Strategy.ID, false)
+		_, _ = s.readiness.QueueCandidate(ctx, sessionState, state.Strategy.ID)
 	}
 
 	messages, err := s.store.RecentChatMessages(ctx, workspaceID, 40)
@@ -345,10 +345,20 @@ func buildStrategyFacilitatorFreshInput(workspaceID int, message string, state S
 	return "Context for the strategic session in JSON:\n" + string(rawInput)
 }
 
-func buildStrategyFacilitatorTurnInput(message string) string {
+func buildStrategyFacilitatorTurnInput(message string, state StrategyFacilitatorState) string {
 	turn := map[string]any{"latest_user_message": message}
+	if shouldDeliverReadinessFeedback(state.Session, state.Readiness) {
+		turn["independent_readiness_feedback"] = compactReadinessFeedback(state.Readiness)
+	}
 	raw, _ := json.Marshal(turn)
 	return string(raw)
+}
+
+func shouldDeliverReadinessFeedback(state StrategySessionState, run *StrategyReadinessRun) bool {
+	return run != nil &&
+		run.Status == ReadinessRunCompleted &&
+		run.Report != nil &&
+		run.SessionRevision+1 == state.Revision
 }
 
 func buildStrategyFacilitatorInitialInput(message string, state StrategyFacilitatorState) string {
@@ -373,7 +383,10 @@ func compactReadinessFeedback(run *StrategyReadinessRun) any {
 		"audited_session_revision": run.SessionRevision,
 		"verdict":                  run.Report.Verdict,
 		"can_synthesize":           run.Report.CanSynthesize,
+		"overall_score":            run.Report.OverallScore,
+		"readiness_percent":        run.Report.ReadinessPercent,
 		"executive_summary":        run.Report.ExecutiveSummary,
+		"criteria_assessment":      run.Report.CriteriaAssessment,
 		"blocking_gaps":            run.Report.BlockingGaps,
 		"weak_zones":               run.Report.WeakZones,
 		"additional_perspectives":  run.Report.AdditionalPerspectives,

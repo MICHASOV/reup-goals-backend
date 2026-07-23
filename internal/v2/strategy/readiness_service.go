@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -18,7 +19,76 @@ const (
 	strategyReadinessMaxOutputTokens = 12000
 	strategyReadinessTimeout         = 4 * time.Minute
 	strategyReadinessPollInterval    = 5 * time.Second
+
+	strategyReadinessConditionalThreshold = 750
+	strategyReadinessReadyThreshold       = 800
+	strategyReadinessCoreMinimum          = 700
 )
+
+var strategyReadinessWeights = map[string]int{
+	"current_reality":                6,
+	"business_stage":                 3,
+	"owner_intent":                   3,
+	"target_state":                   8,
+	"long_term_transition":           8,
+	"strategic_challenge":            8,
+	"strategic_choice":               9,
+	"customer_and_market":            6,
+	"way_to_win":                     8,
+	"economic_engine":                10,
+	"causal_logic":                   10,
+	"resources_and_capabilities":     6,
+	"governance_and_owner_role":      4,
+	"long_term_goals_and_metrics":    4,
+	"risks_assumptions_and_evidence": 4,
+	"alternatives_and_scenarios":     3,
+}
+
+var strategyReadinessCriterionOrder = []string{
+	"current_reality",
+	"business_stage",
+	"owner_intent",
+	"target_state",
+	"long_term_transition",
+	"strategic_challenge",
+	"strategic_choice",
+	"customer_and_market",
+	"way_to_win",
+	"economic_engine",
+	"causal_logic",
+	"resources_and_capabilities",
+	"governance_and_owner_role",
+	"long_term_goals_and_metrics",
+	"risks_assumptions_and_evidence",
+	"alternatives_and_scenarios",
+}
+
+var strategyReadinessCriterionLabels = map[string]string{
+	"current_reality":                "Current business reality",
+	"business_stage":                 "Company stage and condition",
+	"owner_intent":                   "Owner intent",
+	"target_state":                   "Long-term target state",
+	"long_term_transition":           "Long-term transition",
+	"strategic_challenge":            "Central strategic challenge",
+	"strategic_choice":               "Strategic choice and conscious refusals",
+	"customer_and_market":            "Customer and market",
+	"way_to_win":                     "Way to win",
+	"economic_engine":                "Economic engine",
+	"causal_logic":                   "Causal logic",
+	"resources_and_capabilities":     "Resources and capabilities",
+	"governance_and_owner_role":      "Governance and owner role",
+	"long_term_goals_and_metrics":    "Long-term goals and metrics",
+	"risks_assumptions_and_evidence": "Risks, assumptions, and evidence",
+	"alternatives_and_scenarios":     "Alternatives and scenarios",
+}
+
+var strategyReadinessCoreCriteria = map[string]bool{
+	"target_state":         true,
+	"long_term_transition": true,
+	"strategic_choice":     true,
+	"economic_engine":      true,
+	"causal_logic":         true,
+}
 
 type ReadinessService struct {
 	store            *Store
@@ -27,6 +97,11 @@ type ReadinessService struct {
 	compactThreshold int
 	wake             chan struct{}
 	contextIndex     *contextindex.Service
+	synthesis        *SynthesisService
+}
+
+func (s *ReadinessService) SetSynthesisService(synthesis *SynthesisService) {
+	s.synthesis = synthesis
 }
 
 func (s *ReadinessService) SetContextIndex(index *contextindex.Service) {
@@ -79,12 +154,11 @@ func (s *ReadinessService) QueueCandidate(
 	ctx context.Context,
 	state StrategySessionState,
 	strategyID int,
-	force bool,
 ) (StrategyReadinessQueueItem, error) {
 	if state.Revision <= 0 || state.LastUserMessageID <= 0 {
 		return StrategyReadinessQueueItem{}, fmt.Errorf("strategy_readiness_no_session")
 	}
-	item, err := s.store.QueueReadinessAudit(ctx, state, strategyID, force)
+	item, err := s.store.QueueReadinessAudit(ctx, state, strategyID)
 	if err != nil {
 		return StrategyReadinessQueueItem{}, err
 	}
@@ -92,18 +166,6 @@ func (s *ReadinessService) QueueCandidate(
 		s.signalWorker()
 	}
 	return item, nil
-}
-
-func (s *ReadinessService) ForceCurrent(ctx context.Context, workspaceID int, userID int) (StrategyReadinessQueueItem, error) {
-	strategy, _, _, err := s.store.Current(ctx, workspaceID, userID)
-	if err != nil {
-		return StrategyReadinessQueueItem{}, err
-	}
-	state, err := s.store.SessionState(ctx, workspaceID)
-	if err != nil {
-		return StrategyReadinessQueueItem{}, err
-	}
-	return s.QueueCandidate(ctx, state, strategy.ID, true)
 }
 
 func (s *ReadinessService) signalWorker() {
@@ -200,7 +262,7 @@ func (s *ReadinessService) execute(ctx context.Context, run StrategyReadinessRun
 			delete(input, "knowledge_base_documents")
 			delete(input, "knowledge_base_quality")
 			delete(input, "uploaded_files")
-			input["current_workspace_context"] = "Use file_search for the complete current Knowledge Base, uploaded files, strategy, course, tactics, and tasks."
+			input["current_workspace_context"] = "Use file_search for the current Knowledge Base, uploaded files, existing strategy materials, and any other evidence relevant to the long-term strategy."
 		}
 	}
 	rawInput, err := json.Marshal(input)
@@ -235,6 +297,22 @@ func (s *ReadinessService) execute(ctx context.Context, run StrategyReadinessRun
 		return err
 	}
 	s.memoryStore.LogAIRunWithUsage(ctx, run.WorkspaceID, "strategy_readiness_auditor", s.ai.ModelName(), StrategyReadinessPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	if report.CanSynthesize && s.synthesis != nil && run.CreatedBy != nil {
+		if _, synthesisErr := s.synthesis.StartForRevision(
+			ctx,
+			run.WorkspaceID,
+			*run.CreatedBy,
+			run.SessionRevision,
+			run.ValidatedThroughMessageID,
+		); synthesisErr != nil {
+			log.Printf(
+				"[WARN] automatic strategy synthesis failed workspace_id=%d revision=%d: %v",
+				run.WorkspaceID,
+				run.SessionRevision,
+				synthesisErr,
+			)
+		}
+	}
 	if s.contextIndex != nil {
 		s.contextIndex.RefreshAsync(run.WorkspaceID)
 	}
@@ -262,16 +340,8 @@ func normalizeReadinessReport(
 ) StrategyReadinessReport {
 	report.SessionRevision = run.SessionRevision
 	report.ValidatedThroughMessageID = run.ValidatedThroughMessageID
-	report.Verdict = normalizeReadinessVerdict(report.Verdict)
 	report.Confidence = normalizeReadinessConfidence(report.Confidence)
-	if len(report.BlockingGaps) > 0 {
-		report.Verdict = ReadinessVerdictNotReady
-		report.CanSynthesize = false
-	} else if report.Verdict == ReadinessVerdictReady {
-		report.CanSynthesize = true
-	} else if report.Verdict == ReadinessVerdictNotReady {
-		report.CanSynthesize = false
-	}
+	report.ExecutiveSummary = strings.TrimSpace(report.ExecutiveSummary)
 
 	cleanSources := func(items []string) []string {
 		result := []string{}
@@ -284,9 +354,55 @@ func normalizeReadinessReport(
 		}
 		return result
 	}
-	for index := range report.CriteriaAssessment {
-		report.CriteriaAssessment[index].SourceKeys = cleanSources(report.CriteriaAssessment[index].SourceKeys)
+
+	criteriaByCode := map[string]StrategyReadinessCriterion{}
+	for _, criterion := range report.CriteriaAssessment {
+		code := strings.TrimSpace(strings.ToLower(criterion.CriterionCode))
+		if _, ok := strategyReadinessWeights[code]; !ok {
+			continue
+		}
+		criterion.CriterionCode = code
+		criterion.Area = strings.TrimSpace(criterion.Area)
+		if criterion.Area == "" {
+			criterion.Area = strategyReadinessCriterionLabels[code]
+		}
+		criterion.Score = clampStrategyReadinessScore(criterion.Score)
+		criterion.Status = strategyReadinessStatusForScore(criterion.Score)
+		criterion.Assessment = strings.TrimSpace(criterion.Assessment)
+		criterion.Strengths = cleanStringListLocal(criterion.Strengths)
+		criterion.Gaps = cleanStringListLocal(criterion.Gaps)
+		criterion.SourceKeys = cleanSources(criterion.SourceKeys)
+		criteriaByCode[code] = criterion
 	}
+
+	report.CriteriaAssessment = make([]StrategyReadinessCriterion, 0, len(strategyReadinessCriterionOrder))
+	weightedTotal := 0
+	missingRequiredCriterion := false
+	coreCriterionBelowMinimum := false
+	for _, code := range strategyReadinessCriterionOrder {
+		criterion, ok := criteriaByCode[code]
+		if !ok {
+			missingRequiredCriterion = true
+			criterion = StrategyReadinessCriterion{
+				CriterionCode: code,
+				Area:          strategyReadinessCriterionLabels[code],
+				Score:         1,
+				Status:        "missing",
+				Assessment:    "The auditor did not return an assessment for this required criterion.",
+				Strengths:     []string{},
+				Gaps:          []string{"Required criterion was not assessed."},
+				SourceKeys:    []string{},
+			}
+		}
+		if strategyReadinessCoreCriteria[code] && criterion.Score < strategyReadinessCoreMinimum {
+			coreCriterionBelowMinimum = true
+		}
+		weightedTotal += criterion.Score * strategyReadinessWeights[code]
+		report.CriteriaAssessment = append(report.CriteriaAssessment, criterion)
+	}
+	report.OverallScore = (weightedTotal + 50) / 100
+	report.ReadinessPercent = float64(report.OverallScore) / 10
+
 	for index := range report.BlockingGaps {
 		report.BlockingGaps[index].SourceKeys = cleanSources(report.BlockingGaps[index].SourceKeys)
 	}
@@ -304,9 +420,6 @@ func normalizeReadinessReport(
 	}
 	report.SynthesisGuidance.ImportantSourceKeys = cleanSources(report.SynthesisGuidance.ImportantSourceKeys)
 
-	if report.CriteriaAssessment == nil {
-		report.CriteriaAssessment = []StrategyReadinessCriterion{}
-	}
 	if report.BlockingGaps == nil {
 		report.BlockingGaps = []StrategyReadinessIssue{}
 	}
@@ -325,6 +438,19 @@ func normalizeReadinessReport(
 	if report.FacilitatorGuidance == nil {
 		report.FacilitatorGuidance = []StrategyReadinessFacilitatorGuide{}
 	}
+
+	switch {
+	case len(report.BlockingGaps) > 0 || missingRequiredCriterion || report.OverallScore < strategyReadinessConditionalThreshold:
+		report.Verdict = ReadinessVerdictNotReady
+		report.CanSynthesize = false
+	case report.OverallScore < strategyReadinessReadyThreshold || coreCriterionBelowMinimum:
+		report.Verdict = ReadinessVerdictConditionallyReady
+		report.CanSynthesize = false
+	default:
+		report.Verdict = ReadinessVerdictReady
+		report.CanSynthesize = true
+	}
+
 	report.FacilitatorGuidance = normalizeFacilitatorGuidance(report.FacilitatorGuidance, report.Verdict)
 	if len(report.FacilitatorGuidance) == 0 {
 		report.FacilitatorGuidance = defaultFacilitatorGuidance(report)
@@ -338,6 +464,29 @@ func normalizeReadinessReport(
 	report.SynthesisGuidance.AssumptionsToPreserve = cleanStringListLocal(report.SynthesisGuidance.AssumptionsToPreserve)
 	report.SynthesisGuidance.ResearchToInclude = cleanStringListLocal(report.SynthesisGuidance.ResearchToInclude)
 	return report
+}
+
+func clampStrategyReadinessScore(value int) int {
+	if value < 1 {
+		return 1
+	}
+	if value > 1000 {
+		return 1000
+	}
+	return value
+}
+
+func strategyReadinessStatusForScore(score int) string {
+	switch {
+	case score < 200:
+		return "missing"
+	case score < 600:
+		return "weak"
+	case score < 850:
+		return "sufficient"
+	default:
+		return "strong"
+	}
 }
 
 func normalizeFacilitatorGuidance(
@@ -363,17 +512,6 @@ func normalizeFacilitatorGuidance(
 		result = append(result, item)
 	}
 	return result
-}
-
-func normalizeReadinessVerdict(value string) string {
-	switch strings.TrimSpace(strings.ToLower(value)) {
-	case ReadinessVerdictReady:
-		return ReadinessVerdictReady
-	case ReadinessVerdictConditionallyReady:
-		return ReadinessVerdictConditionallyReady
-	default:
-		return ReadinessVerdictNotReady
-	}
 }
 
 func normalizeReadinessConfidence(value string) string {

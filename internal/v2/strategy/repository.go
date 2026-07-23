@@ -384,7 +384,7 @@ func (s *Store) OpenAIStrategySession(ctx context.Context, workspaceID int, comp
 	if compactThreshold <= 0 {
 		compactThreshold = 120000
 	}
-	promptCacheKey := fmt.Sprintf("reupgoals-strategy-facilitator-workspace-%d-v1", workspaceID)
+	promptCacheKey := fmt.Sprintf("reupgoals-strategy-facilitator-workspace-%d-v3", workspaceID)
 
 	var item StrategyOpenAISession
 	err := s.dbx.QueryRowContext(ctx, `

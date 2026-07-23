@@ -133,22 +133,19 @@ func (s *Store) QueueReadinessAudit(
 	ctx context.Context,
 	state StrategySessionState,
 	strategyID int,
-	force bool,
 ) (StrategyReadinessQueueItem, error) {
 	notBefore := time.Now()
-	if !force {
-		var lastCompleted sql.NullTime
-		err := s.dbx.QueryRowContext(ctx, `
-			SELECT MAX(completed_at)
-			FROM v2_strategy_readiness_runs
-			WHERE workspace_id=$1 AND status IN ($2, $3)
-		`, state.WorkspaceID, ReadinessRunCompleted, ReadinessRunSuperseded).Scan(&lastCompleted)
-		if err != nil {
-			return StrategyReadinessQueueItem{}, err
-		}
-		if lastCompleted.Valid && lastCompleted.Time.Add(readinessAuditCooldown).After(notBefore) {
-			notBefore = lastCompleted.Time.Add(readinessAuditCooldown)
-		}
+	var lastCompleted sql.NullTime
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT MAX(completed_at)
+		FROM v2_strategy_readiness_runs
+		WHERE workspace_id=$1 AND status IN ($2, $3)
+	`, state.WorkspaceID, ReadinessRunCompleted, ReadinessRunSuperseded).Scan(&lastCompleted)
+	if err != nil {
+		return StrategyReadinessQueueItem{}, err
+	}
+	if lastCompleted.Valid && lastCompleted.Time.Add(readinessAuditCooldown).After(notBefore) {
+		notBefore = lastCompleted.Time.Add(readinessAuditCooldown)
 	}
 
 	row := s.dbx.QueryRowContext(ctx, `

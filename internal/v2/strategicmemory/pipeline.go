@@ -115,8 +115,16 @@ func (s *Service) runKnowledgeCandidate(ctx context.Context, workspaceID int, pa
 		if len(sources) == 0 {
 			return fmt.Errorf("knowledge candidate has no new sources")
 		}
+		contextChanged := false
 		for _, chunk := range chunkKnowledgeSources(sources, knowledgeSourceChunkRunes) {
-			if err := s.extractKnowledgeSourceChunk(ctx, workspaceID, chunk); err != nil {
+			changed, err := s.extractKnowledgeSourceChunk(ctx, workspaceID, chunk)
+			if err != nil {
+				return err
+			}
+			contextChanged = contextChanged || changed
+		}
+		if contextChanged {
+			if err := s.refreshMaterialContextSnapshot(ctx, workspaceID); err != nil {
 				return err
 			}
 		}
@@ -188,26 +196,26 @@ func (s *Service) runKnowledgeCandidate(ctx context.Context, workspaceID int, pa
 	return nil
 }
 
-func (s *Service) extractKnowledgeSourceChunk(ctx context.Context, workspaceID int, sources []RawSource) error {
+func (s *Service) extractKnowledgeSourceChunk(ctx context.Context, workspaceID int, sources []RawSource) (bool, error) {
 	claims, err := s.store.ListClaims(ctx, workspaceID, 2000)
 	if err != nil {
-		return err
+		return false, err
 	}
 	agenda, err := s.store.ListAgenda(ctx, workspaceID, 500)
 	if err != nil {
-		return err
+		return false, err
 	}
 	snapshot, err := s.store.LatestSnapshot(ctx, workspaceID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	files, err := s.store.ListFiles(ctx, workspaceID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	session, err := s.store.OpenAISession(ctx, workspaceID, s.compactThreshold)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	input := map[string]any{
@@ -232,6 +240,7 @@ func (s *Service) extractKnowledgeSourceChunk(ctx context.Context, workspaceID i
 		delete(input, "existing_claims")
 		delete(input, "existing_agenda")
 		delete(input, "existing_snapshot")
+		input["sources"] = compilationSourcesForIndexedContext(sources)
 		input["current_workspace_context"] = "Use file_search to compare the new sources with current claims, open questions, and the latest snapshot. Extract only new or changed information and avoid duplicates."
 	}
 	rawInput, _ := json.Marshal(input)
@@ -244,34 +253,36 @@ func (s *Service) extractKnowledgeSourceChunk(ctx context.Context, workspaceID i
 		MaxFileSearchResults: 12,
 		MaxOutputTokens:      knowledgeExtractionMaxOutputTokens,
 		RequestTimeout:       materializerTimeout,
+		ReasoningEffort:      "none",
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
 		s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_deferred_extractor", workerAI.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
-		return err
+		return false, err
 	}
 	s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_deferred_extractor", workerAI.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 
 	var materialized materializerOutput
 	if err := json.Unmarshal([]byte(result.Text), &materialized); err != nil {
-		return fmt.Errorf("deferred extractor json decode error: %w", err)
+		return false, fmt.Errorf("deferred extractor json decode error: %w", err)
 	}
 	if policy.FactsOnly {
 		materialized = factsOnlyMaterialization(materialized)
 	}
 	fallbackSourceID := lastEvidenceSourceID(sources)
-	if _, _, err := s.store.InsertClaims(ctx, workspaceID, fallbackSourceID, materializerItemsToClaims(materialized.ExtractedItems)); err != nil {
-		return err
+	added, _, err := s.store.InsertClaims(ctx, workspaceID, fallbackSourceID, materializerItemsToClaims(materialized.ExtractedItems))
+	if err != nil {
+		return false, err
 	}
 	if _, err := s.store.UpsertAgenda(ctx, workspaceID, materializerQuestionsToAgenda(materialized.OpenQuestions, materialized.Contradictions)); err != nil {
-		return err
+		return false, err
 	}
 	if len(materialized.Snapshot) > 0 {
 		if _, err := s.store.SaveSnapshot(ctx, workspaceID, materialized.BusinessStage, materialized.Snapshot); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return added > 0, nil
 }
 
 func (s *Service) compileKnowledgeDocuments(ctx context.Context, workspaceID int, report QualityReport) ([]StrategicDocument, error) {
@@ -388,12 +399,17 @@ func compilationSources(sources []RawSource) []knowledgeCompilationSource {
 	for _, source := range sources {
 		role := "context"
 		switch source.SourceType {
-		case SourceTypeUserMessage, SourceTypeStrategyMessage, SourceTypeDocumentMessage:
+		case SourceTypeUserMessage, SourceTypeStrategyMessage, SourceTypeDocumentMessage,
+			SourceTypeTacticsMessage, SourceTypeTaskDiscussion:
 			role = "user"
 		case SourceTypeAssistantMessage:
 			role = "assistant"
 		case SourceTypeFileUpload:
 			role = "uploaded_file"
+		case SourceTypeWorkspaceDoc, SourceTypeTaskCompletion, SourceTypeDepartment,
+			SourceTypeTacticalPlan, SourceTypeWorkstream, SourceTypeProject,
+			SourceTypeRisk, SourceTypeOpportunity, SourceTypeResearchResult:
+			role = "business_record"
 		}
 		result = append(result, knowledgeCompilationSource{
 			SourceID: source.ID, SourceType: source.SourceType, Role: role,
@@ -403,12 +419,45 @@ func compilationSources(sources []RawSource) []knowledgeCompilationSource {
 	return result
 }
 
+func compilationSourcesForIndexedContext(sources []RawSource) []knowledgeCompilationSource {
+	result := compilationSources(sources)
+	for index, source := range sources {
+		if !structuredSourceAvailableInWorkspaceIndex(source.SourceType) {
+			continue
+		}
+		result[index].Content = "The complete current record is available through file_search. Use its source_type and metadata to locate it."
+	}
+	return result
+}
+
+func structuredSourceAvailableInWorkspaceIndex(sourceType string) bool {
+	switch sourceType {
+	case SourceTypeWorkspaceDoc, SourceTypeTaskCompletion, SourceTypeDepartment,
+		SourceTypeTacticalPlan, SourceTypeWorkstream, SourceTypeProject,
+		SourceTypeRisk, SourceTypeOpportunity, SourceTypeResearchResult:
+		return true
+	default:
+		return false
+	}
+}
+
 func lastEvidenceSourceID(sources []RawSource) int {
 	for index := len(sources) - 1; index >= 0; index-- {
 		if sources[index].SourceType == SourceTypeUserMessage ||
 			sources[index].SourceType == SourceTypeFileUpload ||
 			sources[index].SourceType == SourceTypeStrategyMessage ||
-			sources[index].SourceType == SourceTypeDocumentMessage {
+			sources[index].SourceType == SourceTypeDocumentMessage ||
+			sources[index].SourceType == SourceTypeTacticsMessage ||
+			sources[index].SourceType == SourceTypeTaskDiscussion ||
+			sources[index].SourceType == SourceTypeWorkspaceDoc ||
+			sources[index].SourceType == SourceTypeTaskCompletion ||
+			sources[index].SourceType == SourceTypeDepartment ||
+			sources[index].SourceType == SourceTypeTacticalPlan ||
+			sources[index].SourceType == SourceTypeWorkstream ||
+			sources[index].SourceType == SourceTypeProject ||
+			sources[index].SourceType == SourceTypeRisk ||
+			sources[index].SourceType == SourceTypeOpportunity ||
+			sources[index].SourceType == SourceTypeResearchResult {
 			return sources[index].ID
 		}
 	}

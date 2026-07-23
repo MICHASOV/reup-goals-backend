@@ -2546,6 +2546,65 @@ var migrations = []Migration{
 				ON v2_task_completion_evaluations (workspace_id, task_id, created_at DESC, id DESC);
 		`,
 	},
+	{
+		ID: "20260723_043_strategic_claim_importance",
+		SQL: `
+			ALTER TABLE strategic_claims
+				ADD COLUMN IF NOT EXISTS importance TEXT NOT NULL DEFAULT 'medium';
+
+			ALTER TABLE strategic_claims
+				DROP CONSTRAINT IF EXISTS strategic_claims_importance_check;
+			ALTER TABLE strategic_claims
+				ADD CONSTRAINT strategic_claims_importance_check
+				CHECK (importance IN ('low', 'medium', 'high', 'critical'));
+
+			CREATE INDEX IF NOT EXISTS idx_strategic_claims_workspace_importance
+				ON strategic_claims (workspace_id, status, importance, updated_at DESC, id DESC);
+
+			ALTER TABLE strategic_raw_sources
+				ADD COLUMN IF NOT EXISTS entity_key TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS content_hash TEXT NOT NULL DEFAULT '';
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_strategic_raw_sources_entity_content
+				ON strategic_raw_sources (workspace_id, source_type, entity_key, content_hash)
+				WHERE entity_key <> '' AND content_hash <> '';
+		`,
+	},
+	{
+		ID: "20260723_044_knowledge_extractor_nano",
+		SQL: `
+			UPDATE v2_ai_prompt_configs
+			SET model='gpt-5.4-nano', updated_at=NOW()
+			WHERE prompt_name='knowledge_base_deferred_extractor'
+				AND provider='openai'
+				AND model='gpt-5.4-mini';
+		`,
+	},
+	{
+		ID: "20260723_045_personal_tactics_advisor_threads",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_tactics_advisor_threads (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id BIGINT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				scope_type TEXT NOT NULL DEFAULT 'workspace',
+				scope_id BIGINT NOT NULL DEFAULT 0,
+				scope_label TEXT NOT NULL DEFAULT '',
+				title TEXT NOT NULL DEFAULT 'Новый разговор',
+				status TEXT NOT NULL DEFAULT 'active',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				archived_at TIMESTAMPTZ,
+				CHECK (scope_type IN ('workspace', 'workstream', 'project', 'department')),
+				CHECK (status IN ('active', 'archived'))
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactics_advisor_threads_owner
+				ON v2_tactics_advisor_threads (workspace_id, user_id, status, updated_at DESC, id DESC);
+			CREATE INDEX IF NOT EXISTS idx_v2_tactics_advisor_threads_scope
+				ON v2_tactics_advisor_threads (workspace_id, user_id, scope_type, scope_id, updated_at DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

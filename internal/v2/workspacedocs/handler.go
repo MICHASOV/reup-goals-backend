@@ -1,25 +1,34 @@
 package workspacedocs
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"reup-goals-backend/internal/auth"
 	"reup-goals-backend/internal/v2/api"
+	"reup-goals-backend/internal/v2/strategicmemory"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
 type Handler struct {
 	store      *Store
 	workspaces *workspaces.Store
+	recorder   *strategicmemory.SourceRecorder
 }
 
-func NewHandler(dbx *sql.DB) *Handler {
-	return &Handler{store: NewStore(dbx), workspaces: workspaces.NewStore(dbx)}
+func NewHandler(dbx *sql.DB, recorders ...*strategicmemory.SourceRecorder) *Handler {
+	handler := &Handler{store: NewStore(dbx), workspaces: workspaces.NewStore(dbx)}
+	if len(recorders) > 0 {
+		handler.recorder = recorders[0]
+	}
+	return handler
 }
 
 func (h *Handler) Documents(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +59,7 @@ func (h *Handler) Documents(w http.ResponseWriter, r *http.Request) {
 			if writeDocumentError(w, err) {
 				return
 			}
+			h.captureDocument(r.Context(), workspace.ID, membership.UserID, document)
 			api.WriteJSON(w, http.StatusCreated, map[string]any{"document": document})
 		default:
 			api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
@@ -88,6 +98,7 @@ func (h *Handler) Documents(w http.ResponseWriter, r *http.Request) {
 		if writeDocumentError(w, err) {
 			return
 		}
+		h.captureDocument(r.Context(), workspace.ID, membership.UserID, document)
 		api.WriteJSON(w, http.StatusOK, map[string]any{"document": document})
 	case http.MethodDelete:
 		if membership.Role != workspaces.MembershipRoleOwner {
@@ -98,9 +109,32 @@ func (h *Handler) Documents(w http.ResponseWriter, r *http.Request) {
 		if writeDocumentError(w, err) {
 			return
 		}
+		h.captureDocument(r.Context(), workspace.ID, membership.UserID, document)
 		api.WriteJSON(w, http.StatusOK, map[string]any{"document": document})
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
+}
+
+func (h *Handler) captureDocument(ctx context.Context, workspaceID int, userID int, document Document) {
+	if h.recorder == nil {
+		return
+	}
+	content := strategicmemory.JSONSourceContent(document)
+	if content == "" {
+		return
+	}
+	if _, _, err := h.recorder.Capture(ctx, workspaceID, userID, strategicmemory.SourceCapture{
+		SourceType: strategicmemory.SourceTypeWorkspaceDoc,
+		EntityKey:  fmt.Sprintf("workspace_document:%d", document.ID),
+		Content:    content,
+		Metadata: map[string]any{
+			"workspace_document_id": document.ID,
+			"version":               document.Version,
+			"status":                document.Status,
+		},
+	}); err != nil {
+		log.Printf("[WARN] capture workspace document workspace_id=%d document_id=%d: %v", workspaceID, document.ID, err)
 	}
 }
 

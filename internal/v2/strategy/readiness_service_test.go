@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -15,7 +16,7 @@ func TestStrategyConversationInputsStayCompactAfterInitialization(t *testing.T) 
 		t.Fatalf("unexpected initial context: %#v", initial)
 	}
 	var turn map[string]any
-	if err := json.Unmarshal([]byte(buildStrategyFacilitatorTurnInput("Продолжим")), &turn); err != nil {
+	if err := json.Unmarshal([]byte(buildStrategyFacilitatorTurnInput("Продолжим", StrategyFacilitatorState{})), &turn); err != nil {
 		t.Fatal(err)
 	}
 	if len(turn) != 1 || turn["latest_user_message"] != "Продолжим" {
@@ -26,16 +27,11 @@ func TestStrategyConversationInputsStayCompactAfterInitialization(t *testing.T) 
 func TestNormalizeReadinessReportAlwaysAddsFeedbackForReady(t *testing.T) {
 	run := StrategyReadinessRun{SessionRevision: 7, ValidatedThroughMessageID: 42}
 	report := StrategyReadinessReport{
-		Verdict:          ReadinessVerdictReady,
-		CanSynthesize:    false,
-		Confidence:       "HIGH",
-		ExecutiveSummary: "The core strategic logic is coherent.",
-		CriteriaAssessment: []StrategyReadinessCriterion{{
-			Area:       "choice",
-			Status:     "strong",
-			SourceKeys: []string{"strategy_message:42", "invented:9"},
-		}},
+		Confidence:         "HIGH",
+		ExecutiveSummary:   "The core strategic logic is coherent.",
+		CriteriaAssessment: strategyReadinessCriteriaWithScore(850),
 	}
+	report.CriteriaAssessment[0].SourceKeys = []string{"strategy_message:42", "invented:9"}
 	sources := map[string]strategySynthesisSourceCatalogItem{
 		"strategy_message:42": {Key: "strategy_message:42"},
 	}
@@ -51,6 +47,9 @@ func TestNormalizeReadinessReportAlwaysAddsFeedbackForReady(t *testing.T) {
 	if normalized.Confidence != "high" {
 		t.Fatalf("expected normalized confidence, got %q", normalized.Confidence)
 	}
+	if normalized.OverallScore != 850 || normalized.ReadinessPercent != 85 {
+		t.Fatalf("unexpected calculated readiness score: score=%d percent=%v", normalized.OverallScore, normalized.ReadinessPercent)
+	}
 	if len(normalized.FacilitatorGuidance) == 0 {
 		t.Fatal("ready reports must always contain facilitator feedback")
 	}
@@ -64,8 +63,7 @@ func TestNormalizeReadinessReportAlwaysAddsFeedbackForReady(t *testing.T) {
 
 func TestNormalizeReadinessReportBlockingGapPreventsSynthesis(t *testing.T) {
 	report := StrategyReadinessReport{
-		Verdict:       ReadinessVerdictReady,
-		CanSynthesize: true,
+		CriteriaAssessment: strategyReadinessCriteriaWithScore(950),
 		BlockingGaps: []StrategyReadinessIssue{{
 			Area:        "economics",
 			Issue:       "No viable economic logic",
@@ -80,6 +78,115 @@ func TestNormalizeReadinessReportBlockingGapPreventsSynthesis(t *testing.T) {
 	}
 	if len(normalized.FacilitatorGuidance) == 0 || !normalized.FacilitatorGuidance[0].Blocking {
 		t.Fatal("not-ready reports must provide blocking facilitator guidance")
+	}
+}
+
+func TestNormalizeReadinessReportUsesConditionalBandWithoutSynthesis(t *testing.T) {
+	report := StrategyReadinessReport{
+		CriteriaAssessment: strategyReadinessCriteriaWithScore(780),
+	}
+
+	normalized := normalizeReadinessReport(report, StrategyReadinessRun{}, map[string]strategySynthesisSourceCatalogItem{})
+
+	if normalized.OverallScore != 780 {
+		t.Fatalf("expected score 780, got %d", normalized.OverallScore)
+	}
+	if normalized.Verdict != ReadinessVerdictConditionallyReady || normalized.CanSynthesize {
+		t.Fatalf("conditional strategy must continue before synthesis, got verdict=%q can_synthesize=%v", normalized.Verdict, normalized.CanSynthesize)
+	}
+}
+
+func TestNormalizeReadinessReportCoreCriterionFloorBlocksReadyVerdict(t *testing.T) {
+	criteria := strategyReadinessCriteriaWithScore(950)
+	for index := range criteria {
+		if criteria[index].CriterionCode == "economic_engine" {
+			criteria[index].Score = 650
+		}
+	}
+	report := StrategyReadinessReport{CriteriaAssessment: criteria}
+
+	normalized := normalizeReadinessReport(report, StrategyReadinessRun{}, map[string]strategySynthesisSourceCatalogItem{})
+
+	if normalized.OverallScore < strategyReadinessReadyThreshold {
+		t.Fatalf("test requires a high average score, got %d", normalized.OverallScore)
+	}
+	if normalized.Verdict != ReadinessVerdictConditionallyReady || normalized.CanSynthesize {
+		t.Fatalf("weak core criterion must prevent ready verdict, got verdict=%q can_synthesize=%v", normalized.Verdict, normalized.CanSynthesize)
+	}
+}
+
+func TestNormalizeReadinessReportRequiresAllCriteria(t *testing.T) {
+	criteria := strategyReadinessCriteriaWithScore(900)
+	report := StrategyReadinessReport{CriteriaAssessment: criteria[:len(criteria)-1]}
+
+	normalized := normalizeReadinessReport(report, StrategyReadinessRun{}, map[string]strategySynthesisSourceCatalogItem{})
+
+	if normalized.Verdict != ReadinessVerdictNotReady || normalized.CanSynthesize {
+		t.Fatalf("missing required criterion must prevent synthesis, got verdict=%q can_synthesize=%v", normalized.Verdict, normalized.CanSynthesize)
+	}
+	if len(normalized.CriteriaAssessment) != len(strategyReadinessCriterionOrder) {
+		t.Fatalf("expected all required criteria in normalized report, got %d", len(normalized.CriteriaAssessment))
+	}
+	last := normalized.CriteriaAssessment[len(normalized.CriteriaAssessment)-1]
+	if last.Score != 1 || last.Status != "missing" {
+		t.Fatalf("missing criterion must be explicit, got %+v", last)
+	}
+}
+
+func TestStrategyReadinessWeightsTotalOneHundred(t *testing.T) {
+	total := 0
+	for _, code := range strategyReadinessCriterionOrder {
+		total += strategyReadinessWeights[code]
+	}
+	if total != 100 {
+		t.Fatalf("strategy readiness weights must total 100, got %d", total)
+	}
+}
+
+func TestStrategyPromptsStayLongTermAndContainEveryReadinessCriterion(t *testing.T) {
+	combinedPrompt := strings.ToLower(strategyFacilitatorPrompt + "\n" + strategyReadinessPrompt)
+	for _, forbidden := range []string{"90-day", "90 days", "near-term course", "30 days", "60 days"} {
+		if strings.Contains(combinedPrompt, forbidden) {
+			t.Fatalf("strategy prompts must not contain short-term planning instruction %q", forbidden)
+		}
+	}
+	for _, code := range strategyReadinessCriterionOrder {
+		if !strings.Contains(strategyReadinessPrompt, code) {
+			t.Fatalf("readiness prompt is missing criterion %q", code)
+		}
+	}
+}
+
+func TestStrategyFacilitatorReceivesNewReadinessFeedbackOnNextTurn(t *testing.T) {
+	report := &StrategyReadinessReport{
+		Verdict:          ReadinessVerdictNotReady,
+		OverallScore:     620,
+		ReadinessPercent: 62,
+	}
+	state := StrategyFacilitatorState{
+		Session: StrategySessionState{Revision: 8},
+		Readiness: &StrategyReadinessRun{
+			Status:          ReadinessRunCompleted,
+			SessionRevision: 7,
+			Report:          report,
+		},
+	}
+
+	var turn map[string]any
+	if err := json.Unmarshal([]byte(buildStrategyFacilitatorTurnInput("Продолжим", state)), &turn); err != nil {
+		t.Fatal(err)
+	}
+	if turn["independent_readiness_feedback"] == nil {
+		t.Fatal("the first turn after an audit must deliver independent feedback")
+	}
+
+	state.Session.Revision = 9
+	turn = map[string]any{}
+	if err := json.Unmarshal([]byte(buildStrategyFacilitatorTurnInput("Еще один шаг", state)), &turn); err != nil {
+		t.Fatal(err)
+	}
+	if turn["independent_readiness_feedback"] != nil {
+		t.Fatal("the same audit feedback must not be repeated on later turns")
 	}
 }
 
@@ -136,4 +243,20 @@ func TestMessagesThroughIDExcludesNewerTurns(t *testing.T) {
 	if len(filtered) != 2 || filtered[1].ID != 11 {
 		t.Fatalf("unexpected filtered messages %#v", filtered)
 	}
+}
+
+func strategyReadinessCriteriaWithScore(score int) []StrategyReadinessCriterion {
+	criteria := make([]StrategyReadinessCriterion, 0, len(strategyReadinessCriterionOrder))
+	for _, code := range strategyReadinessCriterionOrder {
+		criteria = append(criteria, StrategyReadinessCriterion{
+			CriterionCode: code,
+			Area:          strategyReadinessCriterionLabels[code],
+			Score:         score,
+			Assessment:    "Evidence-based assessment.",
+			Strengths:     []string{},
+			Gaps:          []string{},
+			SourceKeys:    []string{},
+		})
+	}
+	return criteria
 }

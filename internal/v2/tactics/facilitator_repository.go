@@ -12,6 +12,121 @@ import (
 	"reup-goals-backend/internal/v2/departments"
 )
 
+func (s *Store) CreateAdvisorThread(ctx context.Context, workspaceID int, userID int, input CreateAdvisorThreadRequest) (AdvisorThread, error) {
+	scopeType, scopeID := normalizeAdvisorScope(input.ScopeType, input.ScopeID)
+	scopeLabel := truncateRunes(strings.TrimSpace(input.ScopeLabel), 160)
+	title := truncateRunes(strings.TrimSpace(input.Title), 120)
+	if title == "" {
+		title = "Новый разговор"
+	}
+	row := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO v2_tactics_advisor_threads (
+			workspace_id, user_id, scope_type, scope_id, scope_label, title
+		)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, workspace_id, user_id, scope_type, scope_id, scope_label,
+			title, status, created_at, updated_at, archived_at
+	`, workspaceID, userID, scopeType, scopeID, scopeLabel, title)
+	return scanAdvisorThread(row)
+}
+
+func (s *Store) AdvisorThreads(ctx context.Context, workspaceID int, userID int) ([]AdvisorThread, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT id, workspace_id, user_id, scope_type, scope_id, scope_label,
+			title, status, created_at, updated_at, archived_at
+		FROM v2_tactics_advisor_threads
+		WHERE workspace_id=$1 AND user_id=$2 AND status='active' AND archived_at IS NULL
+		ORDER BY updated_at DESC, id DESC
+	`, workspaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []AdvisorThread{}
+	for rows.Next() {
+		item, scanErr := scanAdvisorThread(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) AdvisorThread(ctx context.Context, workspaceID int, userID int, threadID int) (AdvisorThread, error) {
+	row := s.dbx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, user_id, scope_type, scope_id, scope_label,
+			title, status, created_at, updated_at, archived_at
+		FROM v2_tactics_advisor_threads
+		WHERE id=$1 AND workspace_id=$2 AND user_id=$3 AND status='active' AND archived_at IS NULL
+	`, threadID, workspaceID, userID)
+	return scanAdvisorThread(row)
+}
+
+func (s *Store) UpdateAdvisorThread(ctx context.Context, workspaceID int, userID int, threadID int, title string) (AdvisorThread, error) {
+	title = truncateRunes(strings.TrimSpace(title), 120)
+	if title == "" {
+		return AdvisorThread{}, fmt.Errorf("advisor_thread_title_required")
+	}
+	row := s.dbx.QueryRowContext(ctx, `
+		UPDATE v2_tactics_advisor_threads
+		SET title=$4, updated_at=NOW()
+		WHERE id=$1 AND workspace_id=$2 AND user_id=$3 AND status='active' AND archived_at IS NULL
+		RETURNING id, workspace_id, user_id, scope_type, scope_id, scope_label,
+			title, status, created_at, updated_at, archived_at
+	`, threadID, workspaceID, userID, title)
+	return scanAdvisorThread(row)
+}
+
+func (s *Store) TouchAdvisorThread(ctx context.Context, workspaceID int, userID int, threadID int, firstMessage string) error {
+	autoTitle := truncateRunes(strings.Join(strings.Fields(firstMessage), " "), 72)
+	if autoTitle == "" {
+		autoTitle = "Новый разговор"
+	}
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_tactics_advisor_threads
+		SET title=CASE WHEN title='Новый разговор' THEN $4 ELSE title END,
+			updated_at=NOW()
+		WHERE id=$1 AND workspace_id=$2 AND user_id=$3 AND status='active' AND archived_at IS NULL
+	`, threadID, workspaceID, userID, autoTitle)
+	return err
+}
+
+func (s *Store) ArchiveAdvisorThread(ctx context.Context, workspaceID int, userID int, threadID int) error {
+	result, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_tactics_advisor_threads
+		SET status='archived', archived_at=NOW(), updated_at=NOW()
+		WHERE id=$1 AND workspace_id=$2 AND user_id=$3 AND status='active' AND archived_at IS NULL
+	`, threadID, workspaceID, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (item AdvisorThread) Scope() *TacticsMessageScope {
+	if item.ScopeType == EntityWorkspace || item.ScopeID <= 0 {
+		return nil
+	}
+	return &TacticsMessageScope{
+		EntityType: item.ScopeType,
+		EntityID:   item.ScopeID,
+		Label:      item.ScopeLabel,
+	}
+}
+
+func (item AdvisorThread) ConversationScope() *TacticsMessageScope {
+	return &TacticsMessageScope{EntityType: EntityAdvisorThread, EntityID: item.ID, Label: item.Title}
+}
+
 func (s *Store) CreateChatMessage(ctx context.Context, workspaceID int, userID *int, role string, content string, metadata any) (int, error) {
 	return s.CreateScopedChatMessage(ctx, workspaceID, userID, role, content, metadata, nil)
 }
@@ -466,11 +581,47 @@ func tacticsScopeKey(scope *TacticsMessageScope) (string, int) {
 		return EntityPlan, 0
 	}
 	switch strings.TrimSpace(scope.EntityType) {
-	case EntityWorkstream, EntityProject, EntityDepartment, EntityRisk, EntityOpportunity:
+	case EntityWorkstream, EntityProject, EntityDepartment, EntityRisk, EntityOpportunity, EntityAdvisorThread:
 		return strings.TrimSpace(scope.EntityType), scope.EntityID
 	default:
 		return EntityPlan, 0
 	}
+}
+
+func normalizeAdvisorScope(scopeType string, scopeID int) (string, int) {
+	switch strings.TrimSpace(scopeType) {
+	case EntityWorkstream, EntityProject, EntityDepartment:
+		if scopeID > 0 {
+			return strings.TrimSpace(scopeType), scopeID
+		}
+	}
+	return EntityWorkspace, 0
+}
+
+func scanAdvisorThread(scanner scanner) (AdvisorThread, error) {
+	var item AdvisorThread
+	err := scanner.Scan(
+		&item.ID,
+		&item.WorkspaceID,
+		&item.UserID,
+		&item.ScopeType,
+		&item.ScopeID,
+		&item.ScopeLabel,
+		&item.Title,
+		&item.Status,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+		&item.ArchivedAt,
+	)
+	return item, err
+}
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:limit]))
 }
 
 func scanTacticsSessionState(scanner scanner) (TacticsSessionState, error) {

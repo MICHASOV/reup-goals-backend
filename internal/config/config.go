@@ -24,10 +24,12 @@ type Config struct {
 	OpenAIKey                     string
 	OpenAIModel                   string
 	OpenAIAuditorModel            string
+	OpenAIAdvisorModel            string
 	OpenAITaskModel               string
 	OpenAITranscriptionModel      string
 	OpenAIAuditorMaxOutputTokens  int
 	OpenAIAuditorCompactThreshold int
+	OpenAIAdvisorCompactThreshold int
 	OpenAIProxyURL                string
 	EnableAIBenchmark             bool
 	AIAdminKey                    string
@@ -99,6 +101,10 @@ func Load() *Config {
 	if auditorModel == "" {
 		auditorModel = model
 	}
+	advisorModel := os.Getenv("OPENAI_ADVISOR_MODEL")
+	if advisorModel == "" {
+		advisorModel = "gpt-5.4-mini"
+	}
 	taskModel := os.Getenv("OPENAI_TASK_MODEL")
 	if taskModel == "" {
 		taskModel = "gpt-4o-mini"
@@ -109,6 +115,7 @@ func Load() *Config {
 	}
 	auditorMaxOutputTokens := parseIntEnv("OPENAI_AUDITOR_MAX_OUTPUT_TOKENS", 1800)
 	auditorCompactThreshold := parseIntEnv("OPENAI_AUDITOR_COMPACT_THRESHOLD", 60000)
+	advisorCompactThreshold := parseIntEnv("OPENAI_ADVISOR_COMPACT_THRESHOLD", 60000)
 	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
 	if openAIProxyURL == "" {
 		openAIProxyURL = "socks5://127.0.0.1:10808"
@@ -190,10 +197,12 @@ func Load() *Config {
 		OpenAIKey:                     os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:                   model,
 		OpenAIAuditorModel:            auditorModel,
+		OpenAIAdvisorModel:            advisorModel,
 		OpenAITaskModel:               taskModel,
 		OpenAITranscriptionModel:      transcriptionModel,
 		OpenAIAuditorMaxOutputTokens:  auditorMaxOutputTokens,
 		OpenAIAuditorCompactThreshold: auditorCompactThreshold,
+		OpenAIAdvisorCompactThreshold: advisorCompactThreshold,
 		OpenAIProxyURL:                openAIProxyURL,
 		EnableAIBenchmark:             parseBoolEnv("ENABLE_AI_BENCHMARK"),
 		AIAdminKey:                    strings.TrimSpace(os.Getenv("AI_ADMIN_KEY")),

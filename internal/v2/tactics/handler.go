@@ -1,9 +1,12 @@
 package tactics
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	"reup-goals-backend/internal/v2/api"
 	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
+	"reup-goals-backend/internal/v2/strategicmemory"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -60,6 +64,172 @@ func (h *Handler) Facilitator(w http.ResponseWriter, r *http.Request) {
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) Advisor(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.URL.Path == "/api/v2/tactics-advisor/threads":
+		h.advisorThreads(w, r)
+	case strings.HasPrefix(r.URL.Path, "/api/v2/tactics-advisor/threads/"):
+		h.advisorThread(w, r)
+	case r.URL.Path == "/api/v2/tactics-advisor/state":
+		h.advisorState(w, r)
+	case r.URL.Path == "/api/v2/tactics-advisor/messages":
+		h.advisorMessage(w, r)
+	case r.URL.Path == "/api/v2/tactics-advisor/files":
+		h.facilitatorFile(w, r)
+	default:
+		api.WriteError(w, http.StatusNotFound, "not_found")
+	}
+}
+
+func (h *Handler) advisorThreads(w http.ResponseWriter, r *http.Request) {
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		items, err := h.store.AdvisorThreads(r.Context(), workspace.ID, userID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "advisor_threads_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"threads": items})
+	case http.MethodPost:
+		var body CreateAdvisorThreadRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			api.WriteError(w, http.StatusBadRequest, "invalid_json")
+			return
+		}
+		scopeType, scopeID := normalizeAdvisorScope(body.ScopeType, body.ScopeID)
+		body.ScopeType, body.ScopeID = scopeType, scopeID
+		if scopeType != EntityWorkspace {
+			if _, err := h.store.ScopeContext(r.Context(), workspace.ID, &TacticsMessageScope{EntityType: scopeType, EntityID: scopeID}); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					api.WriteError(w, http.StatusNotFound, "advisor_scope_not_found")
+				} else {
+					api.WriteError(w, http.StatusBadRequest, "invalid_advisor_scope")
+				}
+				return
+			}
+		}
+		item, err := h.store.CreateAdvisorThread(r.Context(), workspace.ID, userID, body)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "advisor_thread_create_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusCreated, map[string]any{"thread": item})
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
+}
+
+func (h *Handler) advisorThread(w http.ResponseWriter, r *http.Request) {
+	threadID, ok := numericSuffix(r.URL.Path, "/api/v2/tactics-advisor/threads/")
+	if !ok {
+		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	workspace, userID, current := h.currentWorkspace(w, r)
+	if !current {
+		return
+	}
+	switch r.Method {
+	case http.MethodPatch:
+		var body struct {
+			Title string `json:"title"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			api.WriteError(w, http.StatusBadRequest, "invalid_json")
+			return
+		}
+		item, err := h.store.UpdateAdvisorThread(r.Context(), workspace.ID, userID, threadID, body.Title)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				api.WriteError(w, http.StatusNotFound, "advisor_thread_not_found")
+			} else if err.Error() == "advisor_thread_title_required" {
+				api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+			} else {
+				api.WriteError(w, http.StatusInternalServerError, "advisor_thread_update_failed")
+			}
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"thread": item})
+	case http.MethodDelete:
+		if err := h.store.ArchiveAdvisorThread(r.Context(), workspace.ID, userID, threadID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				api.WriteError(w, http.StatusNotFound, "advisor_thread_not_found")
+			} else {
+				api.WriteError(w, http.StatusInternalServerError, "advisor_thread_archive_failed")
+			}
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
+}
+
+func (h *Handler) advisorState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+	threadID, _ := strconv.Atoi(r.URL.Query().Get("thread_id"))
+	if threadID <= 0 {
+		api.WriteError(w, http.StatusBadRequest, "advisor_thread_required")
+		return
+	}
+	state, err := h.facilitator.HistoryThread(r.Context(), workspace.ID, userID, threadID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			api.WriteError(w, http.StatusNotFound, "advisor_thread_not_found")
+		} else {
+			api.WriteError(w, http.StatusInternalServerError, "advisor_state_failed")
+		}
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, state)
+}
+
+func (h *Handler) advisorMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+	var body TacticsFacilitatorMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	if body.ThreadID <= 0 {
+		api.WriteError(w, http.StatusBadRequest, "advisor_thread_required")
+		return
+	}
+	response, err := h.facilitator.HandleMessage(r.Context(), workspace.ID, userID, body)
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			api.WriteError(w, http.StatusNotFound, "advisor_thread_not_found")
+		case err.Error() == "message_too_short", err.Error() == "message_too_long":
+			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		case err.Error() == "invalid_tactics_scope":
+			api.WriteError(w, http.StatusBadRequest, err.Error())
+		default:
+			api.WriteError(w, http.StatusInternalServerError, "advisor_message_failed")
+		}
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) facilitatorApplyActions(w http.ResponseWriter, r *http.Request) {
@@ -326,6 +496,7 @@ func (h *Handler) Tactics(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, http.StatusInternalServerError, "tactics_activation_failed")
 			return
 		}
+		h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeTacticalPlan, plan.ID, plan)
 		api.WriteJSON(w, http.StatusOK, map[string]any{"tactical_plan": plan})
 		return
 	}
@@ -340,6 +511,7 @@ func (h *Handler) Tactics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeTacticalPlan, plan.ID, plan)
 	api.WriteJSON(w, http.StatusOK, map[string]any{"tactical_plan": plan})
 }
 
@@ -363,6 +535,9 @@ func (h *Handler) Workstreams(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		workstream, err := h.store.CreateWorkstream(r.Context(), workspace.ID, userID, input)
+		if err == nil {
+			h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeWorkstream, workstream.ID, workstream)
+		}
 		writeEntity(w, err, "workstream", workstream, "workstream_create_failed")
 		return
 	}
@@ -381,6 +556,9 @@ func (h *Handler) Workstreams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workstream, err := h.store.UpdateWorkstream(r.Context(), workspace.ID, workstreamID, input)
+	if err == nil {
+		h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeWorkstream, workstream.ID, workstream)
+	}
 	writeEntity(w, err, "workstream", workstream, "workstream_update_failed")
 }
 
@@ -404,6 +582,9 @@ func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		project, err := h.store.CreateProject(r.Context(), workspace.ID, userID, input)
+		if err == nil {
+			h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeProject, project.ID, project)
+		}
 		writeEntity(w, err, "project", project, "project_create_failed")
 		return
 	}
@@ -422,7 +603,33 @@ func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	project, err := h.store.UpdateProject(r.Context(), workspace.ID, projectID, input)
+	if err == nil {
+		h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeProject, project.ID, project)
+	}
 	writeEntity(w, err, "project", project, "project_update_failed")
+}
+
+func (h *Handler) captureTacticsEntity(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	sourceType string,
+	entityID int,
+	value any,
+) {
+	content := strategicmemory.JSONSourceContent(value)
+	if content == "" {
+		return
+	}
+	_, _, err := h.facilitator.memoryService.CaptureSource(ctx, workspaceID, userID, strategicmemory.SourceCapture{
+		SourceType: sourceType,
+		EntityKey:  fmt.Sprintf("%s:%d", sourceType, entityID),
+		Content:    content,
+		Metadata:   map[string]any{"entity_id": entityID},
+	})
+	if err != nil {
+		log.Printf("[WARN] capture tactics entity workspace_id=%d type=%s id=%d: %v", workspaceID, sourceType, entityID, err)
+	}
 }
 
 func (h *Handler) Risks(w http.ResponseWriter, r *http.Request) {
@@ -445,6 +652,9 @@ func (h *Handler) Risks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		risk, err := h.store.CreateRisk(r.Context(), workspace.ID, userID, input)
+		if err == nil {
+			h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeRisk, risk.ID, risk)
+		}
 		writeEntity(w, err, "risk", risk, "risk_create_failed")
 		return
 	}
@@ -467,6 +677,9 @@ func (h *Handler) Risks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	risk, err := h.store.UpdateRisk(r.Context(), workspace.ID, riskID, input)
+	if err == nil {
+		h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeRisk, risk.ID, risk)
+	}
 	writeEntity(w, err, "risk", risk, "risk_update_failed")
 }
 
@@ -490,6 +703,9 @@ func (h *Handler) Opportunities(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		opportunity, err := h.store.CreateOpportunity(r.Context(), workspace.ID, userID, input)
+		if err == nil {
+			h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeOpportunity, opportunity.ID, opportunity)
+		}
 		writeEntity(w, err, "opportunity", opportunity, "opportunity_create_failed")
 		return
 	}
@@ -512,6 +728,9 @@ func (h *Handler) Opportunities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opportunity, err := h.store.UpdateOpportunity(r.Context(), workspace.ID, opportunityID, input)
+	if err == nil {
+		h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeOpportunity, opportunity.ID, opportunity)
+	}
 	writeEntity(w, err, "opportunity", opportunity, "opportunity_update_failed")
 }
 

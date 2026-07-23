@@ -2,6 +2,7 @@ package tactics
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -89,5 +90,41 @@ func TestParseTacticsFacilitatorOutputRejectsSerializedMessage(t *testing.T) {
 func TestNormalizeTacticsStatusFallsBackToInProgress(t *testing.T) {
 	if got := normalizeTacticsStatus("unknown"); got != FacilitatorStatusInProgress {
 		t.Fatalf("unexpected fallback status: %s", got)
+	}
+}
+
+func TestAdvisorThreadSeparatesConversationFromBusinessScope(t *testing.T) {
+	thread := AdvisorThread{
+		ID:         81,
+		ScopeType:  EntityProject,
+		ScopeID:    17,
+		ScopeLabel: "Проверка B2B-сегмента",
+	}
+	contextScope := thread.Scope()
+	conversationScope := thread.ConversationScope()
+	if contextScope == nil || contextScope.EntityType != EntityProject || contextScope.EntityID != 17 {
+		t.Fatalf("unexpected business scope: %#v", contextScope)
+	}
+	if conversationScope.EntityType != EntityAdvisorThread || conversationScope.EntityID != 81 {
+		t.Fatalf("unexpected private conversation scope: %#v", conversationScope)
+	}
+}
+
+func TestTacticsFreshInputUsesDocumentIndexesInsteadOfDocumentBodies(t *testing.T) {
+	state := TacticsFacilitatorState{
+		Current: CurrentResponse{Workstreams: []Workstream{}},
+		StrategyDocs: []TacticsStrategyDocument{{
+			DocumentType: "strategic_diagnosis",
+			Title:        "Диагноз",
+			Status:       "ready",
+			Content:      "SENSITIVE_FULL_STRATEGY_BODY",
+		}},
+	}
+	input := buildTacticsFreshInput("Проверим идею", TacticsFacilitatorMessageRequest{}, nil, state)
+	if strings.Contains(input, "SENSITIVE_FULL_STRATEGY_BODY") {
+		t.Fatal("fresh advisor context must use file search instead of repeating full documents")
+	}
+	if !strings.Contains(input, "strategic_diagnosis") {
+		t.Fatal("document index should remain available")
 	}
 }

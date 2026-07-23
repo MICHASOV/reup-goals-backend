@@ -149,6 +149,7 @@ type responsesRequest struct {
 	ContextManagement  []map[string]interface{} `json:"context_management,omitempty"`
 	Tools              []map[string]interface{} `json:"tools,omitempty"`
 	PromptCacheKey     string                   `json:"prompt_cache_key,omitempty"`
+	Reasoning          map[string]string        `json:"reasoning,omitempty"`
 }
 
 type conversationRequest struct {
@@ -214,6 +215,7 @@ type ResponseContextOptions struct {
 	MaxOutputTokens      int
 	RequestTimeout       time.Duration
 	Model                string
+	ReasoningEffort      string
 }
 
 type OpenAIFile struct {
@@ -515,6 +517,9 @@ func buildResponsesRequest(
 	}
 	if options.MaxOutputTokens > 0 {
 		reqBody.MaxOutputTokens = options.MaxOutputTokens
+	}
+	if effort := strings.TrimSpace(options.ReasoningEffort); effort != "" {
+		reqBody.Reasoning = map[string]string{"effort": effort}
 	}
 	if options.CompactThreshold > 0 {
 		reqBody.ContextManagement = []map[string]interface{}{{

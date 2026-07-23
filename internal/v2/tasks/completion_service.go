@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 
@@ -40,17 +41,28 @@ type TaskCompletionService struct {
 	memoryService    *strategicmemory.Service
 	ai               ai.Provider
 	compactThreshold int
+	recorder         *strategicmemory.SourceRecorder
 }
 
-func NewTaskCompletionService(dbx *sql.DB, aiClient ai.Provider, evaluator *TaskEvaluatorService, compactThreshold int) *TaskCompletionService {
+func NewTaskCompletionService(
+	dbx *sql.DB,
+	aiClient ai.Provider,
+	evaluator *TaskEvaluatorService,
+	compactThreshold int,
+	recorders ...*strategicmemory.SourceRecorder,
+) *TaskCompletionService {
 	if compactThreshold <= 0 {
 		compactThreshold = 60000
 	}
-	return &TaskCompletionService{
+	service := &TaskCompletionService{
 		store: NewStore(dbx), evaluator: evaluator, memory: strategicmemory.NewStore(dbx),
 		memoryService: strategicmemory.NewService(strategicmemory.NewStore(dbx), aiClient, compactThreshold),
 		ai:            aiClient, compactThreshold: compactThreshold,
 	}
+	if len(recorders) > 0 {
+		service.recorder = recorders[0]
+	}
+	return service
 }
 
 func (s *TaskCompletionService) UploadFile(ctx context.Context, workspaceID int, userID int, filename string, contentType string, sizeBytes int64, file io.Reader) (strategicmemory.FileUploadResponse, error) {
@@ -118,20 +130,64 @@ func (s *TaskCompletionService) Complete(ctx context.Context, workspaceID int, u
 	if generateErr != nil {
 		_ = s.store.SaveCompletionEvaluationFailure(ctx, workspaceID, taskID, s.ai.ModelName(), generateErr.Error(), duration)
 		s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_completion_evaluator", s.ai.ModelName(), taskCompletionPromptVersion, duration, 0, 0, "failed", generateErr.Error())
-		return s.store.Get(ctx, workspaceID, taskID)
+		return s.completedTask(ctx, workspaceID, userID, taskID)
 	}
 
 	output, parseErr := parseTaskCompletionOutput(generated.Text)
 	if parseErr != nil {
 		_ = s.store.SaveCompletionEvaluationFailure(ctx, workspaceID, taskID, s.ai.ModelName(), parseErr.Error(), duration)
 		s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_completion_evaluator", s.ai.ModelName(), taskCompletionPromptVersion, duration, generated.Usage.InputTokens, generated.Usage.OutputTokens, "failed", parseErr.Error())
-		return s.store.Get(ctx, workspaceID, taskID)
+		return s.completedTask(ctx, workspaceID, userID, taskID)
 	}
 	if err := s.store.SaveCompletionEvaluation(ctx, workspaceID, taskID, s.ai.ModelName(), output, generated.Usage.InputTokens, generated.Usage.OutputTokens, duration); err != nil {
+		_, _ = s.completedTask(ctx, workspaceID, userID, taskID)
 		return Task{}, err
 	}
 	s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_completion_evaluator", s.ai.ModelName(), taskCompletionPromptVersion, duration, generated.Usage.InputTokens, generated.Usage.OutputTokens, "success", "")
-	return s.store.Get(ctx, workspaceID, taskID)
+	return s.completedTask(ctx, workspaceID, userID, taskID)
+}
+
+func (s *TaskCompletionService) completedTask(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	taskID int,
+) (Task, error) {
+	task, err := s.store.Get(ctx, workspaceID, taskID)
+	if err != nil {
+		return Task{}, err
+	}
+	if s.recorder == nil {
+		return task, nil
+	}
+	content := strategicmemory.JSONSourceContent(map[string]any{
+		"task": map[string]any{
+			"id": task.ID, "title": task.Title, "description": task.Description,
+			"expected_result": task.ExpectedResult, "project_id": task.ProjectID,
+			"workstream_id": task.WorkstreamID, "department_id": task.DepartmentID,
+			"status": task.Status,
+		},
+		"result": map[string]any{
+			"completion_result": task.CompletionResult,
+			"files":             task.CompletionFiles,
+			"evaluation":        task.CompletionEvaluation,
+		},
+	})
+	if content == "" {
+		return task, nil
+	}
+	if _, _, captureErr := s.recorder.Capture(ctx, workspaceID, userID, strategicmemory.SourceCapture{
+		SourceType: strategicmemory.SourceTypeTaskCompletion,
+		EntityKey:  fmt.Sprintf("task_completion:%d", task.ID),
+		Content:    content,
+		FactsOnly:  true,
+		Metadata: map[string]any{
+			"task_id": task.ID, "status": task.Status,
+		},
+	}); captureErr != nil {
+		log.Printf("[WARN] capture task completion workspace_id=%d task_id=%d: %v", workspaceID, task.ID, captureErr)
+	}
+	return task, nil
 }
 
 func parseTaskCompletionOutput(raw string) (taskCompletionModelOutput, error) {

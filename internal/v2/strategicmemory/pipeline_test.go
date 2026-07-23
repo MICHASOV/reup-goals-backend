@@ -93,6 +93,79 @@ func TestCompilationSourcesTreatsInterviewSourcesAsUserEvidence(t *testing.T) {
 	}
 }
 
+func TestCompilationSourcesClassifiesProductInputs(t *testing.T) {
+	got := compilationSources([]RawSource{
+		{ID: 1, SourceType: SourceTypeTacticsMessage},
+		{ID: 2, SourceType: SourceTypeTaskDiscussion},
+		{ID: 3, SourceType: SourceTypeWorkspaceDoc},
+		{ID: 4, SourceType: SourceTypeTaskCompletion},
+		{ID: 5, SourceType: SourceTypeDepartment},
+		{ID: 6, SourceType: SourceTypeTacticalPlan},
+		{ID: 7, SourceType: SourceTypeWorkstream},
+		{ID: 8, SourceType: SourceTypeProject},
+		{ID: 9, SourceType: SourceTypeRisk},
+		{ID: 10, SourceType: SourceTypeOpportunity},
+		{ID: 11, SourceType: SourceTypeResearchResult},
+	})
+	for index, source := range got {
+		want := "business_record"
+		if index < 2 {
+			want = "user"
+		}
+		if source.Role != want {
+			t.Fatalf("source %d has role %q, want %q", source.SourceID, source.Role, want)
+		}
+	}
+}
+
+func TestIndexedCompilationSourcesAvoidDuplicatingLargeRecords(t *testing.T) {
+	sources := []RawSource{
+		{ID: 1, SourceType: SourceTypeWorkspaceDoc, Content: strings.Repeat("document", 1000)},
+		{ID: 2, SourceType: SourceTypeStrategyMessage, Content: "New user fact"},
+	}
+	got := compilationSourcesForIndexedContext(sources)
+	if strings.Contains(got[0].Content, "documentdocument") {
+		t.Fatal("a structured record already available via file_search was duplicated in the prompt")
+	}
+	if got[1].Content != sources[1].Content {
+		t.Fatal("conversation input not yet indexed must remain in the extraction request")
+	}
+}
+
+func TestDeferredSourceTypesCoverBusinessInputs(t *testing.T) {
+	for _, sourceType := range []string{
+		SourceTypeStrategyMessage, SourceTypeDocumentMessage, SourceTypeTacticsMessage,
+		SourceTypeTaskDiscussion, SourceTypeWorkspaceDoc, SourceTypeTaskCompletion,
+		SourceTypeDepartment, SourceTypeTacticalPlan, SourceTypeWorkstream,
+		SourceTypeProject, SourceTypeRisk, SourceTypeOpportunity, SourceTypeResearchResult,
+	} {
+		if !isDeferredSourceType(sourceType) {
+			t.Fatalf("source type %q is not accepted by the recorder", sourceType)
+		}
+	}
+	if isDeferredSourceType(SourceTypeAssistantMessage) {
+		t.Fatal("assistant messages must not enter the deferred business-input pipeline")
+	}
+}
+
+func TestKnowledgePipelineBusy(t *testing.T) {
+	for _, status := range []string{
+		KnowledgePipelineAuditCandidate, KnowledgePipelineExtracting,
+		KnowledgePipelineReviewing, KnowledgePipelineCompiling,
+	} {
+		if !knowledgePipelineBusy(status) {
+			t.Fatalf("status %q should postpone background context extraction", status)
+		}
+	}
+	for _, status := range []string{
+		KnowledgePipelineCollecting, KnowledgePipelineNeedsMoreContext, KnowledgePipelineReady,
+	} {
+		if knowledgePipelineBusy(status) {
+			t.Fatalf("status %q should allow background context extraction", status)
+		}
+	}
+}
+
 func TestValidClaimSourceIDsFiltersForeignAndDuplicateIDs(t *testing.T) {
 	valid := map[int]bool{2: true, 3: true, 7: true}
 	got := validClaimSourceIDs([]int{3, 999, 3, 2}, 7, valid)

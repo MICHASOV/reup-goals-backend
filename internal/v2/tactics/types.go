@@ -27,12 +27,14 @@ const (
 	ProjectStatusCompleted  = "completed"
 	ProjectStatusFailed     = "failed"
 
-	EntityPlan        = "tactical_plan"
-	EntityWorkstream  = "workstream"
-	EntityProject     = "project"
-	EntityDepartment  = "department"
-	EntityRisk        = "risk"
-	EntityOpportunity = "opportunity"
+	EntityPlan          = "tactical_plan"
+	EntityWorkspace     = "workspace"
+	EntityWorkstream    = "workstream"
+	EntityProject       = "project"
+	EntityDepartment    = "department"
+	EntityRisk          = "risk"
+	EntityOpportunity   = "opportunity"
+	EntityAdvisorThread = "advisor_thread"
 
 	CoverageUncovered        = "uncovered"
 	CoveragePartiallyCovered = "partially_covered"
@@ -43,7 +45,7 @@ const (
 	SourceManual       = "manual"
 	SourceAISuggestion = "ai_suggestion"
 
-	TacticsFacilitatorPromptVersion = "tactics_facilitator_openai_native_v0_1_1"
+	TacticsFacilitatorPromptVersion = "tactics_advisor_openai_native_v0_2_0"
 	TacticsReadinessPromptVersion   = "tactics_quality_readiness_auditor_v0_1_2"
 
 	FacilitatorStatusInProgress     = "in_progress"
@@ -278,6 +280,7 @@ type TacticsFacilitatorMessageRequest struct {
 	Message         string               `json:"message"`
 	ParticipantRole string               `json:"participant_role,omitempty"`
 	Scope           *TacticsMessageScope `json:"scope,omitempty"`
+	ThreadID        int                  `json:"thread_id,omitempty"`
 }
 
 type TacticsFacilitatorMessageResponse struct {
@@ -289,6 +292,27 @@ type TacticsFacilitatorMessageResponse struct {
 	ProposalMessageID int                    `json:"proposal_message_id,omitempty"`
 	ProposedChanges   []TacticsDraftChange   `json:"proposed_changes"`
 	AppliedChanges    []AppliedTacticsChange `json:"applied_changes"`
+}
+
+type AdvisorThread struct {
+	ID          int        `json:"id"`
+	WorkspaceID int        `json:"workspace_id"`
+	UserID      int        `json:"user_id"`
+	ScopeType   string     `json:"scope_type"`
+	ScopeID     int        `json:"scope_id"`
+	ScopeLabel  string     `json:"scope_label"`
+	Title       string     `json:"title"`
+	Status      string     `json:"status"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	ArchivedAt  *time.Time `json:"archived_at,omitempty"`
+}
+
+type CreateAdvisorThreadRequest struct {
+	ScopeType  string `json:"scope_type"`
+	ScopeID    int    `json:"scope_id"`
+	ScopeLabel string `json:"scope_label"`
+	Title      string `json:"title"`
 }
 
 type ApplyTacticsChangesRequest struct {
