@@ -238,6 +238,12 @@ func strategicDocumentDefinitions() []DocumentCatalogItem {
 	}
 }
 
+// DocumentDefinitions exposes the canonical knowledge-base catalog to compact
+// read models without duplicating document names or ordering.
+func DocumentDefinitions() []DocumentCatalogItem {
+	return strategicDocumentDefinitions()
+}
+
 func validStrategicDocumentType(value string) bool {
 	value = strings.TrimSpace(value)
 	for _, definition := range strategicDocumentDefinitions() {

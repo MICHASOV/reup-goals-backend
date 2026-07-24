@@ -96,6 +96,54 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	return response, nil
 }
 
+func (s *Store) WorkstreamDetail(ctx context.Context, workspaceID int, workstreamID int) (Workstream, error) {
+	item, err := s.workstreamByID(ctx, workspaceID, workstreamID)
+	if err != nil {
+		return Workstream{}, err
+	}
+	projects, err := s.listProjects(ctx, workspaceID, []Workstream{item})
+	if err != nil {
+		return Workstream{}, err
+	}
+	item.Projects = projects[item.ID]
+	if item.Projects == nil {
+		item.Projects = []Project{}
+	}
+	risks, err := s.listRisks(ctx, workspaceID, item.TacticalPlanID)
+	if err != nil {
+		return Workstream{}, err
+	}
+	opportunities, err := s.listOpportunities(ctx, workspaceID, item.TacticalPlanID)
+	if err != nil {
+		return Workstream{}, err
+	}
+	hypotheses, err := s.listHypotheses(ctx, workspaceID, item.TacticalPlanID)
+	if err != nil {
+		return Workstream{}, err
+	}
+	items := []Workstream{item}
+	hydrateWorkstreams(items, risks, opportunities, hypotheses)
+	return items[0], nil
+}
+
+func (s *Store) ProjectDetail(ctx context.Context, workspaceID int, projectID int) (Project, Workstream, error) {
+	project, err := s.projectByID(ctx, workspaceID, projectID)
+	if err != nil {
+		return Project{}, Workstream{}, err
+	}
+	workstream, err := s.WorkstreamDetail(ctx, workspaceID, project.WorkstreamID)
+	if err != nil {
+		return Project{}, Workstream{}, err
+	}
+	for _, candidate := range workstream.Projects {
+		if candidate.ID == projectID {
+			project = candidate
+			break
+		}
+	}
+	return project, workstream, nil
+}
+
 func (s *Store) UpdatePlan(ctx context.Context, workspaceID int, planID int, title string, summary string, status string) (TacticalPlan, error) {
 	title = strings.TrimSpace(title)
 	summary = strings.TrimSpace(summary)
@@ -1149,13 +1197,25 @@ func (s *Store) listRisks(ctx context.Context, workspaceID int, planID int) ([]R
 		if err != nil {
 			return nil, err
 		}
-		risk.LinkedTaskIDs, err = s.riskTaskIDs(ctx, workspaceID, risk.ID)
-		if err != nil {
-			return nil, err
-		}
 		risks = append(risks, risk)
 	}
-	return risks, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	links, err := s.riskTaskIDsForPlan(ctx, workspaceID, planID)
+	if err != nil {
+		return nil, err
+	}
+	for index := range risks {
+		risks[index].LinkedTaskIDs = links[risks[index].ID]
+		if risks[index].LinkedTaskIDs == nil {
+			risks[index].LinkedTaskIDs = []int{}
+		}
+	}
+	return risks, nil
 }
 
 func (s *Store) listOpportunities(ctx context.Context, workspaceID int, planID int) ([]Opportunity, error) {
@@ -1201,11 +1261,74 @@ func (s *Store) listHypotheses(ctx context.Context, workspaceID int, planID int)
 		if err != nil {
 			return nil, err
 		}
-		item.LinkedTaskIDs, err = s.hypothesisTaskIDs(ctx, workspaceID, item.ID)
-		if err != nil {
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	links, err := s.hypothesisTaskIDsForPlan(ctx, workspaceID, planID)
+	if err != nil {
+		return nil, err
+	}
+	for index := range result {
+		result[index].LinkedTaskIDs = links[result[index].ID]
+		if result[index].LinkedTaskIDs == nil {
+			result[index].LinkedTaskIDs = []int{}
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) riskTaskIDsForPlan(ctx context.Context, workspaceID int, planID int) (map[int][]int, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT link.risk_id, link.task_id
+		FROM v2_task_risks link
+		JOIN v2_tactical_risks risk
+			ON risk.id=link.risk_id AND risk.workspace_id=link.workspace_id
+		WHERE link.workspace_id=$1 AND risk.tactical_plan_id=$2 AND risk.archived_at IS NULL
+		ORDER BY link.risk_id, link.task_id
+	`, workspaceID, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[int][]int{}
+	for rows.Next() {
+		var riskID int
+		var taskID int
+		if err := rows.Scan(&riskID, &taskID); err != nil {
 			return nil, err
 		}
-		result = append(result, item)
+		result[riskID] = append(result[riskID], taskID)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) hypothesisTaskIDsForPlan(ctx context.Context, workspaceID int, planID int) (map[int64][]int, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT link.hypothesis_id, link.task_id
+		FROM v2_task_hypotheses link
+		JOIN v2_tactical_hypotheses hypothesis
+			ON hypothesis.id=link.hypothesis_id AND hypothesis.workspace_id=link.workspace_id
+		WHERE link.workspace_id=$1 AND hypothesis.tactical_plan_id=$2
+			AND hypothesis.archived_at IS NULL
+		ORDER BY link.hypothesis_id, link.task_id
+	`, workspaceID, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[int64][]int{}
+	for rows.Next() {
+		var hypothesisID int64
+		var taskID int
+		if err := rows.Scan(&hypothesisID, &taskID); err != nil {
+			return nil, err
+		}
+		result[hypothesisID] = append(result[hypothesisID], taskID)
 	}
 	return result, rows.Err()
 }

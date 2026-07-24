@@ -739,7 +739,18 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 		return Task{}, ErrCompletionResultRequired
 	}
 
-	row := s.dbx.QueryRowContext(ctx, `
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, err
+	}
+	defer tx.Rollback()
+	if status == StatusInProgress && current.Status != StatusInProgress {
+		if err := s.recordFocusDecisions(ctx, tx, workspaceID, userID, current); err != nil {
+			return Task{}, err
+		}
+	}
+
+	row := tx.QueryRowContext(ctx, `
 		UPDATE v2_tasks
 		SET status=$1,
 			priority_order=COALESCE($2, priority_order),
@@ -760,6 +771,9 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 
 	task, err := scanTask(row)
 	if err != nil {
+		return Task{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return Task{}, err
 	}
 	items, err := s.decorateTasks(ctx, workspaceID, []Task{task})

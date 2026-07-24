@@ -2866,6 +2866,34 @@ var migrations = []Migration{
 			ON CONFLICT DO NOTHING;
 		`,
 	},
+	{
+		ID: "20260724_047_task_focus_decisions",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_task_focus_decisions (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				strategy_id INTEGER NULL REFERENCES v2_strategies(id) ON DELETE SET NULL,
+				user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				scope_type TEXT NOT NULL CHECK (scope_type IN ('workspace', 'workstream', 'project')),
+				scope_id INTEGER NOT NULL DEFAULT 0,
+				chosen_score INTEGER NOT NULL DEFAULT 0 CHECK (chosen_score BETWEEN 0 AND 1000),
+				top_score INTEGER NOT NULL DEFAULT 0 CHECK (top_score BETWEEN 0 AND 1000),
+				chosen_rank INTEGER NOT NULL DEFAULT 1 CHECK (chosen_rank > 0),
+				aligned BOOLEAN NOT NULL DEFAULT FALSE,
+				top_task_id INTEGER NULL REFERENCES v2_tasks(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_task_focus_decisions_scope
+				ON v2_task_focus_decisions (
+					workspace_id, strategy_id, scope_type, scope_id, created_at DESC, id DESC
+				);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_task_focus_decisions_task
+				ON v2_task_focus_decisions (workspace_id, task_id, created_at DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

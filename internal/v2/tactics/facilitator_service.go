@@ -196,10 +196,15 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
+	request.ResolvedAttachments, err = s.resolveContextAttachments(ctx, workspaceID, request.Attachments)
+	if err != nil {
+		return TacticsFacilitatorMessageResponse{}, err
+	}
 	userMessageID, err := s.store.CreateScopedChatMessage(ctx, workspaceID, &userID, "user", message, map[string]any{
 		"participant_role":  normalizeParticipantRole(request.ParticipantRole),
 		"context_scope":     contextScope,
 		"advisor_thread_id": request.ThreadID,
+		"attachments":       request.Attachments,
 	}, conversationScope)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
@@ -411,6 +416,9 @@ func buildTacticsFreshInput(message string, request TacticsFacilitatorMessageReq
 		"latest_quality_feedback": compactTacticsReadinessFeedback(state.Readiness),
 		"instruction":             "Continue as the company's business development advisor. Use an approved strategy as the primary decision frame when it exists; otherwise advise from the available business context and state uncertainty honestly.",
 	}
+	if len(request.ResolvedAttachments) > 0 {
+		contextPack["attached_context"] = request.ResolvedAttachments
+	}
 	raw, _ := json.Marshal(contextPack)
 	return "Context for the tactical session in JSON:\n" + string(raw)
 }
@@ -467,6 +475,9 @@ func buildTacticsTurnInput(message string, request TacticsFacilitatorMessageRequ
 		"latest_user_message": message,
 		"participant_role":    normalizeParticipantRole(request.ParticipantRole),
 		"active_scope":        request.Scope,
+	}
+	if len(request.ResolvedAttachments) > 0 {
+		turn["attached_context"] = request.ResolvedAttachments
 	}
 	raw, _ := json.Marshal(turn)
 	return string(raw)

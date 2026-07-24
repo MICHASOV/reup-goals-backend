@@ -65,6 +65,8 @@ func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 		h.tasks(w, r, workspace.ID, userID)
 	case r.URL.Path == "/api/v2/tasks/overview":
 		h.overview(w, r, workspace.ID)
+	case r.URL.Path == "/api/v2/tasks/focus":
+		h.focus(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/tasks/brainstorm":
 		h.brainstormHistory(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/tasks/brainstorm/messages":
@@ -80,6 +82,31 @@ func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) focus(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	if r.Method != http.MethodGet {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	scopeType, scopeID, err := focusScopeFromQuery(
+		r.URL.Query().Get("scope_type"),
+		r.URL.Query().Get("scope_id"),
+	)
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_focus_scope")
+		return
+	}
+	response, err := h.store.FocusSummary(r.Context(), workspaceID, scopeType, scopeID)
+	if errors.Is(err, ErrForbidden) {
+		api.WriteError(w, http.StatusBadRequest, "invalid_focus_scope")
+		return
+	}
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "task_focus_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) completionFile(w http.ResponseWriter, r *http.Request, workspaceID int, userID int) {
@@ -269,6 +296,11 @@ func (h *Handler) tasks(w http.ResponseWriter, r *http.Request, workspaceID int,
 		}
 		task, err := h.store.Create(r.Context(), workspaceID, userID, input)
 		if err == nil {
+			if task.Status == StatusInProgress {
+				err = h.store.RecordFocusStart(r.Context(), workspaceID, userID, task)
+			}
+		}
+		if err == nil {
 			_ = h.evaluator.Queue(r.Context(), workspaceID, userID, task.ID, true)
 			task, _ = h.store.Get(r.Context(), workspaceID, task.ID)
 		}
@@ -346,12 +378,26 @@ func (h *Handler) task(w http.ResponseWriter, r *http.Request, workspaceID int, 
 		if !ok {
 			return
 		}
+		if input.Status != nil && !ValidStatus(*input.Status) {
+			api.WriteError(w, http.StatusBadRequest, "invalid_status")
+			return
+		}
 		current, err := h.store.Get(r.Context(), workspaceID, taskID)
 		if err != nil {
 			writeTask(w, current, err, "task_get_failed")
 			return
 		}
+		requestedStatus := ""
+		statusChanged := input.Status != nil && *input.Status != current.Status
+		if statusChanged {
+			requestedStatus = *input.Status
+			currentStatus := current.Status
+			input.Status = &currentStatus
+		}
 		task, err := h.store.Update(r.Context(), workspaceID, userID, taskID, input)
+		if err == nil && statusChanged {
+			task, err = h.store.UpdateStatus(r.Context(), workspaceID, userID, taskID, requestedStatus, nil)
+		}
 		if err == nil && taskEvaluationInputChanged(current, task) {
 			if queueErr := h.evaluator.Queue(r.Context(), workspaceID, userID, taskID, true); queueErr == nil {
 				task, _ = h.store.Get(r.Context(), workspaceID, taskID)

@@ -218,10 +218,14 @@ func (h *Handler) advisorMessage(w http.ResponseWriter, r *http.Request) {
 	response, err := h.facilitator.HandleMessage(r.Context(), workspace.ID, userID, body)
 	if err != nil {
 		switch {
+		case errors.Is(err, ErrInvalidContextAttachment):
+			api.WriteError(w, http.StatusBadRequest, ErrInvalidContextAttachment.Error())
 		case errors.Is(err, sql.ErrNoRows):
 			api.WriteError(w, http.StatusNotFound, "advisor_thread_not_found")
 		case err.Error() == "message_too_short", err.Error() == "message_too_long":
 			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		case err.Error() == "invalid_context_attachment", err.Error() == "too_many_context_attachments":
+			api.WriteError(w, http.StatusBadRequest, err.Error())
 		case err.Error() == "invalid_tactics_scope":
 			api.WriteError(w, http.StatusBadRequest, err.Error())
 		default:
@@ -555,6 +559,11 @@ func (h *Handler) Workstreams(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusNotFound, "not_found")
 		return
 	}
+	if r.Method == http.MethodGet {
+		workstream, err := h.store.WorkstreamDetail(r.Context(), workspace.ID, workstreamID)
+		writeEntity(w, err, "workstream", workstream, "workstream_get_failed")
+		return
+	}
 	if r.Method != http.MethodPatch {
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
@@ -600,6 +609,22 @@ func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := numericSuffix(r.URL.Path, "/api/v2/tactics/projects/")
 	if !ok {
 		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if r.Method == http.MethodGet {
+		project, workstream, err := h.store.ProjectDetail(r.Context(), workspace.ID, projectID)
+		if errors.Is(err, sql.ErrNoRows) {
+			api.WriteError(w, http.StatusNotFound, "project_not_found")
+			return
+		}
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "project_get_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{
+			"project":    project,
+			"workstream": workstream,
+		})
 		return
 	}
 	if r.Method != http.MethodPatch {

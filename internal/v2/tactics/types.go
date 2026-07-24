@@ -309,10 +309,27 @@ type TacticsMessageScope struct {
 }
 
 type TacticsFacilitatorMessageRequest struct {
-	Message         string               `json:"message"`
-	ParticipantRole string               `json:"participant_role,omitempty"`
-	Scope           *TacticsMessageScope `json:"scope,omitempty"`
-	ThreadID        int                  `json:"thread_id,omitempty"`
+	Message             string                      `json:"message"`
+	ParticipantRole     string                      `json:"participant_role,omitempty"`
+	Scope               *TacticsMessageScope        `json:"scope,omitempty"`
+	ThreadID            int                         `json:"thread_id,omitempty"`
+	Attachments         []TacticsContextAttachment  `json:"attachments,omitempty"`
+	ResolvedAttachments []TacticsResolvedAttachment `json:"-"`
+}
+
+type TacticsContextAttachment struct {
+	Type  string `json:"type"`
+	ID    int64  `json:"id,omitempty"`
+	Key   string `json:"key,omitempty"`
+	Label string `json:"label,omitempty"`
+}
+
+type TacticsResolvedAttachment struct {
+	Type    string `json:"type"`
+	ID      int64  `json:"id,omitempty"`
+	Key     string `json:"key,omitempty"`
+	Label   string `json:"label"`
+	Content string `json:"content"`
 }
 
 type TacticsFacilitatorMessageResponse struct {
