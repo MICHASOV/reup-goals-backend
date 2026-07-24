@@ -585,7 +585,7 @@ func (s *Store) ensureDefaultArtifacts(ctx context.Context, strategyID int, work
 	for rows.Next() {
 		var artifactType string
 		if err := rows.Scan(&artifactType); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		existing[artifactType] = struct{}{}
