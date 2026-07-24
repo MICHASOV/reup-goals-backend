@@ -222,7 +222,13 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request, workspaceID int)
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	state, err := h.service.State(r.Context(), workspaceID)
+	var state StateResponse
+	var err error
+	if r.URL.Query().Get("view") == "workspace" {
+		state, err = h.service.WorkspaceState(r.Context(), workspaceID)
+	} else {
+		state, err = h.service.State(r.Context(), workspaceID)
+	}
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "strategic_memory_state_failed")
 		return

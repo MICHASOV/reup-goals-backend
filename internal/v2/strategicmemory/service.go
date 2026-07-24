@@ -60,61 +60,113 @@ func NewService(store *Store, aiClient ai.Provider, compactThreshold int, manage
 }
 
 func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, error) {
-	snapshot, err := s.store.LatestSnapshot(ctx, workspaceID)
-	if err != nil {
-		return StateResponse{}, err
+	var state StateResponse
+	state.WorkspaceID = workspaceID
+	state.DocumentCatalog = strategicDocumentDefinitions()
+	type loadResult struct {
+		err error
 	}
-	claims, err := s.store.ListClaims(ctx, workspaceID, 200)
-	if err != nil {
-		return StateResponse{}, err
+	results := make(chan loadResult, 9)
+	go func() {
+		var err error
+		state.Snapshot, err = s.store.LatestSnapshot(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.Claims, err = s.store.ListClaims(ctx, workspaceID, 200)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.Agenda, err = s.store.ListAgenda(ctx, workspaceID, 80)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.CommunicationProfile, err = s.store.CommunicationProfile(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.DialogueFocus, err = s.store.DialogueFocus(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.Documents, err = s.store.ListDocuments(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.QualityReport, err = s.store.LatestQualityReport(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.RecentMessages, err = s.store.RecentMessages(ctx, workspaceID, 20)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.Files, err = s.store.ListFiles(ctx, workspaceID)
+		if err == nil {
+			state.Pipeline, err = s.store.KnowledgePipelineState(ctx, workspaceID)
+		}
+		results <- loadResult{err}
+	}()
+	for range 9 {
+		if result := <-results; result.err != nil {
+			return StateResponse{}, result.err
+		}
 	}
-	agenda, err := s.store.ListAgenda(ctx, workspaceID, 80)
-	if err != nil {
-		return StateResponse{}, err
-	}
-	profile, err := s.store.CommunicationProfile(ctx, workspaceID)
-	if err != nil {
-		return StateResponse{}, err
-	}
-	focus, err := s.store.DialogueFocus(ctx, workspaceID)
-	if err != nil {
-		return StateResponse{}, err
-	}
-	documents, err := s.store.ListDocuments(ctx, workspaceID)
-	if err != nil {
-		return StateResponse{}, err
-	}
-	qualityReport, err := s.store.LatestQualityReport(ctx, workspaceID)
-	if err != nil {
-		return StateResponse{}, err
-	}
-	messages, err := s.store.RecentMessages(ctx, workspaceID, 20)
-	if err != nil {
-		return StateResponse{}, err
-	}
-	files, err := s.store.ListFiles(ctx, workspaceID)
-	if err != nil {
-		return StateResponse{}, err
-	}
-	pipeline, err := s.store.KnowledgePipelineState(ctx, workspaceID)
-	if err != nil {
-		return StateResponse{}, err
-	}
+	return state, nil
+}
 
-	return StateResponse{
-		WorkspaceID:          workspaceID,
-		DocumentCatalog:      strategicDocumentDefinitions(),
-		Snapshot:             snapshot,
-		Claims:               claims,
-		Agenda:               agenda,
-		QualityReport:        qualityReport,
-		CommunicationProfile: profile,
-		DialogueFocus:        focus,
-		Documents:            documents,
-		RecentMessages:       messages,
-		Files:                files,
-		Pipeline:             pipeline,
-	}, nil
+// WorkspaceState is the read model used by the knowledge-base screen. It avoids
+// loading claims, research agenda and AI-only memory that the UI does not render.
+func (s *Service) WorkspaceState(ctx context.Context, workspaceID int) (StateResponse, error) {
+	state := StateResponse{
+		WorkspaceID:     workspaceID,
+		DocumentCatalog: strategicDocumentDefinitions(),
+		Claims:          []Claim{},
+		Agenda:          []ResearchAgendaItem{},
+	}
+	type loadResult struct {
+		err error
+	}
+	results := make(chan loadResult, 5)
+	go func() {
+		var err error
+		state.Documents, err = s.store.ListDocuments(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.QualityReport, err = s.store.LatestQualityReport(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.RecentMessages, err = s.store.RecentMessages(ctx, workspaceID, 20)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.Files, err = s.store.ListFiles(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.Pipeline, err = s.store.KnowledgePipelineState(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	for range 5 {
+		if result := <-results; result.err != nil {
+			return StateResponse{}, result.err
+		}
+	}
+	return state, nil
 }
 
 func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int, message string) (MessageResponse, error) {

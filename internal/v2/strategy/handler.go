@@ -88,11 +88,45 @@ func (h *Handler) Current(w http.ResponseWriter, r *http.Request) {
 		"knowledge_base": summary,
 	}
 	if r.URL.Query().Get("view") == "active" {
-		if synthesis, synthesisErr := h.store.LatestSynthesis(r.Context(), workspace.ID, strategy.ID); synthesisErr == nil && len(synthesis.Documents) > 0 {
+		var synthesis StrategySynthesisResponse
+		var synthesisErr error
+		if r.URL.Query().Get("compact") == "true" {
+			synthesis, synthesisErr = h.store.LatestSynthesisSummary(r.Context(), workspace.ID, strategy.ID)
+		} else {
+			synthesis, synthesisErr = h.store.LatestSynthesis(r.Context(), workspace.ID, strategy.ID)
+		}
+		if synthesisErr == nil && len(synthesis.Documents) > 0 {
 			response["documents"] = synthesis.Documents
 		}
 	}
 	api.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) SynthesisDocuments(w http.ResponseWriter, r *http.Request) {
+	const prefix = "/api/v2/strategy/documents/"
+	if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, prefix) {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	documentID, err := strconv.Atoi(strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/"))
+	if err != nil || documentID <= 0 {
+		api.WriteError(w, http.StatusNotFound, "strategy_document_not_found")
+		return
+	}
+	workspace, _, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+	document, err := h.store.SynthesisDocument(r.Context(), workspace.ID, documentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusNotFound, "strategy_document_not_found")
+		return
+	}
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "strategy_document_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{"document": document})
 }
 
 func (h *Handler) Strategy(w http.ResponseWriter, r *http.Request) {

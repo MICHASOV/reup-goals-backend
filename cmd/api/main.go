@@ -206,6 +206,7 @@ func main() {
 	mux.Handle("/api/v2/strategy-research-requests/", v2api.RequireAuth(database, jwtSecret, strategyHandler.ResearchRequests))
 	mux.Handle("/api/v2/strategy-versions", v2api.RequireAuth(database, jwtSecret, strategyHandler.Versions))
 	mux.Handle("/api/v2/strategy/artifacts/", v2api.RequireAuth(database, jwtSecret, strategyHandler.Artifacts))
+	mux.Handle("/api/v2/strategy/documents/", v2api.RequireAuth(database, jwtSecret, strategyHandler.SynthesisDocuments))
 	mux.Handle("/api/v2/strategy/", v2api.RequireAuth(database, jwtSecret, strategyHandler.Strategy))
 	mux.Handle("/api/v2/strategy-facilitator/state", v2api.RequireAuth(database, jwtSecret, strategyHandler.Facilitator))
 	mux.Handle("/api/v2/strategy-facilitator/messages", v2api.RequireAuth(database, jwtSecret, strategyHandler.Facilitator))

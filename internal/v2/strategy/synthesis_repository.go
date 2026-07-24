@@ -258,6 +258,14 @@ func (s *Store) RequeueSynthesisRun(ctx context.Context, workspaceID int, runID 
 }
 
 func (s *Store) LatestSynthesis(ctx context.Context, workspaceID int, strategyID int) (StrategySynthesisResponse, error) {
+	return s.latestSynthesis(ctx, workspaceID, strategyID, false)
+}
+
+func (s *Store) LatestSynthesisSummary(ctx context.Context, workspaceID int, strategyID int) (StrategySynthesisResponse, error) {
+	return s.latestSynthesis(ctx, workspaceID, strategyID, true)
+}
+
+func (s *Store) latestSynthesis(ctx context.Context, workspaceID int, strategyID int, summaryOnly bool) (StrategySynthesisResponse, error) {
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT id, workspace_id, strategy_id, version, session_revision, through_message_id, status, model, prompt_version,
 			summary, openai_response_id, input_tokens, output_tokens, duration_ms,
@@ -275,7 +283,7 @@ func (s *Store) LatestSynthesis(ctx context.Context, workspaceID int, strategyID
 		return StrategySynthesisResponse{}, err
 	}
 	documentsRun := run
-	documents, err := s.listSynthesisDocuments(ctx, workspaceID, documentsRun.ID)
+	documents, err := s.listSynthesisDocuments(ctx, workspaceID, documentsRun.ID, summaryOnly)
 	if err != nil {
 		return StrategySynthesisResponse{}, err
 	}
@@ -286,7 +294,7 @@ func (s *Store) LatestSynthesis(ctx context.Context, workspaceID int, strategyID
 		}
 		if completedErr == nil {
 			documentsRun = completed
-			documents, err = s.listSynthesisDocuments(ctx, workspaceID, documentsRun.ID)
+			documents, err = s.listSynthesisDocuments(ctx, workspaceID, documentsRun.ID, summaryOnly)
 			if err != nil {
 				return StrategySynthesisResponse{}, err
 			}
@@ -346,12 +354,16 @@ func (s *Store) ChatMessages(ctx context.Context, workspaceID int, limit int) ([
 	return messages, rows.Err()
 }
 
-func (s *Store) listSynthesisDocuments(ctx context.Context, workspaceID int, runID int) ([]StrategySynthesisDocument, error) {
+func (s *Store) listSynthesisDocuments(ctx context.Context, workspaceID int, runID int, summaryOnly bool) ([]StrategySynthesisDocument, error) {
+	contentColumns := `content_json, source_refs_json, formatted_markdown, open_questions_json`
+	if summaryOnly {
+		contentColumns = `'[]'::jsonb, '[]'::jsonb, ''::text, '[]'::jsonb`
+	}
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, run_id, workspace_id, document_type, title, status,
-			content_json, source_refs_json,
+			`+contentColumns+`,
 			display_title, frame_title, frame_subtitle, primary_signal,
-			visual_status, formatted_markdown, open_questions_json,
+			visual_status,
 			sort_order, created_at
 		FROM v2_strategy_synthesis_documents
 		WHERE workspace_id=$1 AND run_id=$2
@@ -377,13 +389,13 @@ func (s *Store) listSynthesisDocuments(ctx context.Context, workspaceID int, run
 			&document.Status,
 			&contentRaw,
 			&sourcesRaw,
+			&document.FormattedDocument,
+			&openQuestionsRaw,
 			&document.DisplayTitle,
 			&document.FrameTitle,
 			&document.FrameSubtitle,
 			&document.PrimarySignal,
 			&document.VisualStatus,
-			&document.FormattedDocument,
-			&openQuestionsRaw,
 			&document.SortOrder,
 			&document.CreatedAt,
 		); err != nil {
@@ -401,6 +413,38 @@ func (s *Store) listSynthesisDocuments(ctx context.Context, workspaceID int, run
 		documents = append(documents, document)
 	}
 	return documents, rows.Err()
+}
+
+func (s *Store) SynthesisDocument(ctx context.Context, workspaceID int, documentID int) (StrategySynthesisDocument, error) {
+	row := s.dbx.QueryRowContext(ctx, `
+		SELECT id, run_id, workspace_id, document_type, title, status,
+			content_json, source_refs_json, formatted_markdown, open_questions_json,
+			display_title, frame_title, frame_subtitle, primary_signal, visual_status,
+			sort_order, created_at
+		FROM v2_strategy_synthesis_documents
+		WHERE workspace_id=$1 AND id=$2
+	`, workspaceID, documentID)
+	var document StrategySynthesisDocument
+	var contentRaw, sourcesRaw, openQuestionsRaw []byte
+	if err := row.Scan(
+		&document.ID, &document.RunID, &document.WorkspaceID, &document.DocumentType,
+		&document.Title, &document.Status, &contentRaw, &sourcesRaw,
+		&document.FormattedDocument, &openQuestionsRaw, &document.DisplayTitle,
+		&document.FrameTitle, &document.FrameSubtitle, &document.PrimarySignal,
+		&document.VisualStatus, &document.SortOrder, &document.CreatedAt,
+	); err != nil {
+		return StrategySynthesisDocument{}, err
+	}
+	if err := json.Unmarshal(contentRaw, &document.ContentBlocks); err != nil {
+		return StrategySynthesisDocument{}, err
+	}
+	if err := json.Unmarshal(sourcesRaw, &document.SourceRefs); err != nil {
+		return StrategySynthesisDocument{}, err
+	}
+	if err := json.Unmarshal(openQuestionsRaw, &document.OpenQuestions); err != nil {
+		return StrategySynthesisDocument{}, err
+	}
+	return document, nil
 }
 
 func scanSynthesisRun(scanner scanner) (StrategySynthesisRun, error) {

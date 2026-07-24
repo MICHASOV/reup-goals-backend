@@ -81,8 +81,12 @@ type department struct {
 
 type workspaceDocument struct {
 	ID                  int64     `json:"id"`
+	ParentID            *int64    `json:"parent_id,omitempty"`
 	Title               string    `json:"title"`
+	Status              string    `json:"status"`
+	Favorite            bool      `json:"favorite"`
 	Version             int       `json:"version"`
+	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 	LinkedDepartmentIDs []int     `json:"linked_department_ids"`
 	LinkedWorkstreamIDs []int     `json:"linked_workstream_ids"`
@@ -330,7 +334,7 @@ func (h *Handler) loadDepartments(r *http.Request, workspaceID int) ([]departmen
 
 func (h *Handler) loadWorkspaceDocuments(r *http.Request, workspaceID int) ([]workspaceDocument, error) {
 	rows, err := h.dbx.QueryContext(r.Context(), `
-		SELECT id, title, version, updated_at, linked_department_ids,
+		SELECT id, parent_id, title, status, favorite, version, created_at, updated_at, linked_department_ids,
 			linked_workstream_ids, linked_project_ids
 		FROM workspace_documents
 		WHERE workspace_id=$1 AND archived_at IS NULL
@@ -345,7 +349,8 @@ func (h *Handler) loadWorkspaceDocuments(r *http.Request, workspaceID int) ([]wo
 		var item workspaceDocument
 		var departmentRaw, workstreamRaw, projectRaw []byte
 		if err := rows.Scan(
-			&item.ID, &item.Title, &item.Version, &item.UpdatedAt,
+			&item.ID, &item.ParentID, &item.Title, &item.Status, &item.Favorite,
+			&item.Version, &item.CreatedAt, &item.UpdatedAt,
 			&departmentRaw, &workstreamRaw, &projectRaw,
 		); err != nil {
 			return nil, err

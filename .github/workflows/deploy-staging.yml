@@ -254,6 +254,11 @@ jobs:
               server_name api-staging.reupgoals.pro;
 
               client_max_body_size 90m;
+              gzip on;
+              gzip_comp_level 5;
+              gzip_min_length 1024;
+              gzip_vary on;
+              gzip_types application/json text/plain;
 
               add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
@@ -313,4 +318,8 @@ jobs:
 
           certbot --nginx --non-interactive --agree-tos --register-unsafely-without-email \
             -d api-staging.reupgoals.pro --redirect || true
+          sed -i -E 's/listen 443 ssl;/listen 443 ssl http2;/' /etc/nginx/sites-available/api-staging.reupgoals.pro
+          sed -i -E 's/listen \[::\]:443 ssl;/listen [::]:443 ssl http2;/' /etc/nginx/sites-available/api-staging.reupgoals.pro
+          nginx -t
+          systemctl reload nginx
           REMOTE
