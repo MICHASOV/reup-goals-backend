@@ -406,7 +406,7 @@ func (s *Store) createRisk(ctx context.Context, workspaceID int, userID int, inp
 	if err != nil {
 		return Risk{}, err
 	}
-	if err := s.replaceEntityTaskLinks(ctx, workspaceID, "v2_task_risks", "risk_id", risk.ID, input.LinkedTaskIDs); err != nil {
+	if err := s.replaceRiskTaskLinks(ctx, workspaceID, risk.ID, input.LinkedTaskIDs); err != nil {
 		return Risk{}, err
 	}
 	risk.LinkedTaskIDs = append([]int{}, input.LinkedTaskIDs...)
@@ -495,7 +495,7 @@ func (s *Store) UpdateRisk(ctx context.Context, workspaceID int, riskID int, inp
 		return Risk{}, err
 	}
 	if input.LinkedTaskIDs != nil {
-		if err := s.replaceEntityTaskLinks(ctx, workspaceID, "v2_task_risks", "risk_id", risk.ID, input.LinkedTaskIDs); err != nil {
+		if err := s.replaceRiskTaskLinks(ctx, workspaceID, risk.ID, input.LinkedTaskIDs); err != nil {
 			return Risk{}, err
 		}
 		risk.LinkedTaskIDs = append([]int{}, input.LinkedTaskIDs...)
@@ -535,7 +535,7 @@ func (s *Store) createHypothesis(ctx context.Context, workspaceID int, userID in
 	if err != nil {
 		return Hypothesis{}, err
 	}
-	if err := s.replaceEntityTaskLinks(ctx, workspaceID, "v2_task_hypotheses", "hypothesis_id", item.ID, input.LinkedTaskIDs); err != nil {
+	if err := s.replaceHypothesisTaskLinks(ctx, workspaceID, item.ID, input.LinkedTaskIDs); err != nil {
 		return Hypothesis{}, err
 	}
 	item.LinkedTaskIDs = append([]int{}, input.LinkedTaskIDs...)
@@ -599,7 +599,7 @@ func (s *Store) UpdateHypothesis(ctx context.Context, workspaceID int, hypothesi
 		return Hypothesis{}, err
 	}
 	if input.LinkedTaskIDs != nil {
-		if err := s.replaceEntityTaskLinks(ctx, workspaceID, "v2_task_hypotheses", "hypothesis_id", item.ID, input.LinkedTaskIDs); err != nil {
+		if err := s.replaceHypothesisTaskLinks(ctx, workspaceID, item.ID, input.LinkedTaskIDs); err != nil {
 			return Hypothesis{}, err
 		}
 		item.LinkedTaskIDs = append([]int{}, input.LinkedTaskIDs...)
@@ -874,7 +874,7 @@ func (s *Store) riskByID(ctx context.Context, workspaceID int, riskID int) (Risk
 	if err != nil {
 		return Risk{}, err
 	}
-	item.LinkedTaskIDs, err = s.entityTaskIDs(ctx, workspaceID, "v2_task_risks", "risk_id", item.ID)
+	item.LinkedTaskIDs, err = s.riskTaskIDs(ctx, workspaceID, item.ID)
 	return item, err
 }
 
@@ -900,7 +900,7 @@ func (s *Store) hypothesisByID(ctx context.Context, workspaceID int, hypothesisI
 	if err != nil {
 		return Hypothesis{}, err
 	}
-	item.LinkedTaskIDs, err = s.entityTaskIDs(ctx, workspaceID, "v2_task_hypotheses", "hypothesis_id", item.ID)
+	item.LinkedTaskIDs, err = s.hypothesisTaskIDs(ctx, workspaceID, item.ID)
 	return item, err
 }
 
@@ -931,14 +931,33 @@ func (s *Store) validateMetricTargetForEntity(
 	return nil
 }
 
-func (s *Store) entityTaskIDs(ctx context.Context, workspaceID int, table string, entityColumn string, entityID any) ([]int, error) {
-	rows, err := s.dbx.QueryContext(ctx,
-		"SELECT task_id FROM "+table+" WHERE workspace_id=$1 AND "+entityColumn+"=$2 ORDER BY task_id",
-		workspaceID, entityID,
-	)
+func (s *Store) riskTaskIDs(ctx context.Context, workspaceID int, riskID int) ([]int, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT task_id
+		FROM v2_task_risks
+		WHERE workspace_id=$1 AND risk_id=$2
+		ORDER BY task_id
+	`, workspaceID, riskID)
 	if err != nil {
 		return nil, err
 	}
+	return scanTaskIDs(rows)
+}
+
+func (s *Store) hypothesisTaskIDs(ctx context.Context, workspaceID int, hypothesisID int64) ([]int, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT task_id
+		FROM v2_task_hypotheses
+		WHERE workspace_id=$1 AND hypothesis_id=$2
+		ORDER BY task_id
+	`, workspaceID, hypothesisID)
+	if err != nil {
+		return nil, err
+	}
+	return scanTaskIDs(rows)
+}
+
+func scanTaskIDs(rows *sql.Rows) ([]int, error) {
 	defer rows.Close()
 	result := []int{}
 	for rows.Next() {
@@ -951,14 +970,7 @@ func (s *Store) entityTaskIDs(ctx context.Context, workspaceID int, table string
 	return result, rows.Err()
 }
 
-func (s *Store) replaceEntityTaskLinks(
-	ctx context.Context,
-	workspaceID int,
-	table string,
-	entityColumn string,
-	entityID any,
-	taskIDs []int,
-) error {
+func (s *Store) replaceRiskTaskLinks(ctx context.Context, workspaceID int, riskID int, taskIDs []int) error {
 	if taskIDs == nil {
 		return nil
 	}
@@ -967,10 +979,10 @@ func (s *Store) replaceEntityTaskLinks(
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
-		"DELETE FROM "+table+" WHERE workspace_id=$1 AND "+entityColumn+"=$2",
-		workspaceID, entityID,
-	); err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM v2_task_risks
+		WHERE workspace_id=$1 AND risk_id=$2
+	`, workspaceID, riskID); err != nil {
 		return err
 	}
 	seen := map[int]bool{}
@@ -979,12 +991,47 @@ func (s *Store) replaceEntityTaskLinks(
 			continue
 		}
 		seen[taskID] = true
-		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO "+table+" (workspace_id, task_id, "+entityColumn+") "+
-				"SELECT $1, id, $3 FROM v2_tasks WHERE id=$2 AND workspace_id=$1 AND archived_at IS NULL "+
-				"ON CONFLICT DO NOTHING",
-			workspaceID, taskID, entityID,
-		); err != nil {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO v2_task_risks (workspace_id, task_id, risk_id)
+			SELECT $1, id, $3
+			FROM v2_tasks
+			WHERE id=$2 AND workspace_id=$1 AND archived_at IS NULL
+			ON CONFLICT DO NOTHING
+		`, workspaceID, taskID, riskID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) replaceHypothesisTaskLinks(ctx context.Context, workspaceID int, hypothesisID int64, taskIDs []int) error {
+	if taskIDs == nil {
+		return nil
+	}
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM v2_task_hypotheses
+		WHERE workspace_id=$1 AND hypothesis_id=$2
+	`, workspaceID, hypothesisID); err != nil {
+		return err
+	}
+	seen := map[int]bool{}
+	for _, taskID := range taskIDs {
+		if taskID <= 0 || seen[taskID] {
+			continue
+		}
+		seen[taskID] = true
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO v2_task_hypotheses (workspace_id, task_id, hypothesis_id)
+			SELECT $1, id, $3
+			FROM v2_tasks
+			WHERE id=$2 AND workspace_id=$1 AND archived_at IS NULL
+			ON CONFLICT DO NOTHING
+		`, workspaceID, taskID, hypothesisID); err != nil {
 			return err
 		}
 	}
@@ -1102,7 +1149,7 @@ func (s *Store) listRisks(ctx context.Context, workspaceID int, planID int) ([]R
 		if err != nil {
 			return nil, err
 		}
-		risk.LinkedTaskIDs, err = s.entityTaskIDs(ctx, workspaceID, "v2_task_risks", "risk_id", risk.ID)
+		risk.LinkedTaskIDs, err = s.riskTaskIDs(ctx, workspaceID, risk.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -1154,7 +1201,7 @@ func (s *Store) listHypotheses(ctx context.Context, workspaceID int, planID int)
 		if err != nil {
 			return nil, err
 		}
-		item.LinkedTaskIDs, err = s.entityTaskIDs(ctx, workspaceID, "v2_task_hypotheses", "hypothesis_id", item.ID)
+		item.LinkedTaskIDs, err = s.hypothesisTaskIDs(ctx, workspaceID, item.ID)
 		if err != nil {
 			return nil, err
 		}
