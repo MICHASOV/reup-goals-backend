@@ -201,7 +201,7 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, err
 	err := h.dbx.QueryRowContext(r.Context(), `
 		SELECT strategy.id, strategy.status, strategy.version, strategy.summary,
 			COALESCE((
-				SELECT COALESCE(NULLIF(snapshot_json->>'current_stage', ''), NULLIF(business_stage, 'unknown'), '')
+				SELECT COALESCE(NULLIF(business_stage, 'unknown'), '')
 				FROM strategic_memory_snapshots
 				WHERE workspace_id=$1
 				ORDER BY version DESC, id DESC
