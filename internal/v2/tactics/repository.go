@@ -53,24 +53,51 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 		}
 	}
 
-	workstreams, err := s.listWorkstreams(ctx, workspaceID, plan.ID)
-	if err != nil {
-		return CurrentResponse{}, err
+	type currentPart struct {
+		kind          string
+		workstreams   []Workstream
+		risks         []Risk
+		opportunities []Opportunity
+		hypotheses    []Hypothesis
+		err           error
 	}
+	parts := make(chan currentPart, 4)
+	go func() {
+		items, loadErr := s.listWorkstreams(ctx, workspaceID, plan.ID)
+		parts <- currentPart{kind: "workstreams", workstreams: items, err: loadErr}
+	}()
+	go func() {
+		items, loadErr := s.listRisks(ctx, workspaceID, plan.ID)
+		parts <- currentPart{kind: "risks", risks: items, err: loadErr}
+	}()
+	go func() {
+		items, loadErr := s.listOpportunities(ctx, workspaceID, plan.ID)
+		parts <- currentPart{kind: "opportunities", opportunities: items, err: loadErr}
+	}()
+	go func() {
+		items, loadErr := s.listHypotheses(ctx, workspaceID, plan.ID)
+		parts <- currentPart{kind: "hypotheses", hypotheses: items, err: loadErr}
+	}()
 
-	risks, err := s.listRisks(ctx, workspaceID, plan.ID)
-	if err != nil {
-		return CurrentResponse{}, err
-	}
-
-	opportunities, err := s.listOpportunities(ctx, workspaceID, plan.ID)
-	if err != nil {
-		return CurrentResponse{}, err
-	}
-
-	hypotheses, err := s.listHypotheses(ctx, workspaceID, plan.ID)
-	if err != nil {
-		return CurrentResponse{}, err
+	var workstreams []Workstream
+	var risks []Risk
+	var opportunities []Opportunity
+	var hypotheses []Hypothesis
+	for range 4 {
+		part := <-parts
+		if part.err != nil {
+			return CurrentResponse{}, part.err
+		}
+		switch part.kind {
+		case "workstreams":
+			workstreams = part.workstreams
+		case "risks":
+			risks = part.risks
+		case "opportunities":
+			opportunities = part.opportunities
+		case "hypotheses":
+			hypotheses = part.hypotheses
+		}
 	}
 
 	hydrateWorkstreams(workstreams, risks, opportunities, hypotheses)

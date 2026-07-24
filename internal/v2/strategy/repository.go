@@ -26,16 +26,7 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Strat
 		return Strategy{}, nil, KnowledgeBaseSummary{}, err
 	}
 
-	if err := s.ensureDefaultArtifacts(ctx, strategy.ID, workspaceID); err != nil {
-		return Strategy{}, nil, KnowledgeBaseSummary{}, err
-	}
-
-	artifacts, err := s.listArtifacts(ctx, workspaceID, strategy.ID)
-	if err != nil {
-		return Strategy{}, nil, KnowledgeBaseSummary{}, err
-	}
-
-	summary, err := s.knowledgeBaseSummary(ctx, workspaceID)
+	artifacts, summary, err := s.currentDetails(ctx, workspaceID, strategy.ID)
 	if err != nil {
 		return Strategy{}, nil, KnowledgeBaseSummary{}, err
 	}
@@ -55,18 +46,46 @@ func (s *Store) CurrentActive(ctx context.Context, workspaceID int, userID int) 
 		return Strategy{}, nil, KnowledgeBaseSummary{}, err
 	}
 
-	if err := s.ensureDefaultArtifacts(ctx, strategy.ID, workspaceID); err != nil {
-		return Strategy{}, nil, KnowledgeBaseSummary{}, err
-	}
-	artifacts, err := s.listArtifacts(ctx, workspaceID, strategy.ID)
-	if err != nil {
-		return Strategy{}, nil, KnowledgeBaseSummary{}, err
-	}
-	summary, err := s.knowledgeBaseSummary(ctx, workspaceID)
+	artifacts, summary, err := s.currentDetails(ctx, workspaceID, strategy.ID)
 	if err != nil {
 		return Strategy{}, nil, KnowledgeBaseSummary{}, err
 	}
 	return strategy, artifacts, summary, nil
+}
+
+func (s *Store) currentDetails(ctx context.Context, workspaceID int, strategyID int) ([]Artifact, KnowledgeBaseSummary, error) {
+	if err := s.ensureDefaultArtifacts(ctx, strategyID, workspaceID); err != nil {
+		return nil, KnowledgeBaseSummary{}, err
+	}
+
+	type artifactsResult struct {
+		items []Artifact
+		err   error
+	}
+	type summaryResult struct {
+		item KnowledgeBaseSummary
+		err  error
+	}
+	artifactsCh := make(chan artifactsResult, 1)
+	summaryCh := make(chan summaryResult, 1)
+	go func() {
+		items, err := s.listArtifacts(ctx, workspaceID, strategyID)
+		artifactsCh <- artifactsResult{items: items, err: err}
+	}()
+	go func() {
+		item, err := s.knowledgeBaseSummary(ctx, workspaceID)
+		summaryCh <- summaryResult{item: item, err: err}
+	}()
+
+	artifacts := <-artifactsCh
+	summary := <-summaryCh
+	if artifacts.err != nil {
+		return nil, KnowledgeBaseSummary{}, artifacts.err
+	}
+	if summary.err != nil {
+		return nil, KnowledgeBaseSummary{}, summary.err
+	}
+	return artifacts.items, summary.item, nil
 }
 
 func (s *Store) ListVersions(ctx context.Context, workspaceID int) ([]Strategy, error) {
@@ -554,6 +573,40 @@ func workingStrategyTx(ctx context.Context, tx *sql.Tx, workspaceID int) (Strate
 }
 
 func (s *Store) ensureDefaultArtifacts(ctx context.Context, strategyID int, workspaceID int) error {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT type
+		FROM v2_strategy_artifacts
+		WHERE strategy_id=$1 AND workspace_id=$2
+	`, strategyID, workspaceID)
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]struct{}, len(artifactDefinitions))
+	for rows.Next() {
+		var artifactType string
+		if err := rows.Scan(&artifactType); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[artifactType] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	allPresent := true
+	for _, definition := range artifactDefinitions {
+		if _, ok := existing[definition.Type]; !ok {
+			allPresent = false
+			break
+		}
+	}
+	if allPresent {
+		return nil
+	}
+
 	tx, err := s.dbx.BeginTx(ctx, nil)
 	if err != nil {
 		return err

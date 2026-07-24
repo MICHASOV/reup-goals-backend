@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -1303,10 +1304,8 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 	if len(tasks) == 0 {
 		return tasks, nil
 	}
-	targets := make(map[int]bool, len(tasks))
 	taskIDs := make([]int, 0, len(tasks))
 	for i := range tasks {
-		targets[tasks[i].ID] = true
 		taskIDs = append(taskIDs, tasks[i].ID)
 		tasks[i].Flags = []string{}
 		tasks[i].SecondaryWorkstreamIDs = []int{}
@@ -1314,169 +1313,59 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		tasks[i].EvaluationStatus = "not_evaluated"
 		tasks[i].PrioritySource = "none"
 	}
-	secondaryRows, err := s.dbx.QueryContext(ctx, `
-		SELECT task_id, workstream_id
-		FROM v2_task_secondary_workstreams
-		WHERE workspace_id=$1 AND task_id=ANY($2)
-		ORDER BY task_id, workstream_id
-	`, workspaceID, pq.Array(taskIDs))
-	if err != nil {
-		return nil, err
-	}
-	secondaryByTask := map[int][]int{}
-	for secondaryRows.Next() {
-		var taskID int
-		var workstreamID int
-		if err := secondaryRows.Scan(&taskID, &workstreamID); err != nil {
-			_ = secondaryRows.Close()
+	var (
+		secondaryByTask              map[int][]int
+		dependenciesByTask           map[int][]BlockingTask
+		completionFilesByTask        map[int][]TaskCompletionFile
+		completionEvaluations        map[int]TaskCompletionEvaluation
+		completionEvaluationStatuses map[int]string
+		evaluations                  map[int]TaskEvaluation
+		jobStatuses                  map[int]string
+		secondaryErr                 error
+		dependenciesErr              error
+		completionFilesErr           error
+		completionEvaluationsErr     error
+		evaluationsErr               error
+		jobStatusesErr               error
+		wait                         sync.WaitGroup
+	)
+	wait.Add(6)
+	go func() {
+		defer wait.Done()
+		secondaryByTask, secondaryErr = s.taskSecondaryWorkstreams(ctx, workspaceID, taskIDs)
+	}()
+	go func() {
+		defer wait.Done()
+		dependenciesByTask, dependenciesErr = s.taskDependencies(ctx, workspaceID, taskIDs)
+	}()
+	go func() {
+		defer wait.Done()
+		completionFilesByTask, completionFilesErr = s.taskCompletionFiles(ctx, workspaceID, taskIDs)
+	}()
+	go func() {
+		defer wait.Done()
+		completionEvaluations, completionEvaluationStatuses, completionEvaluationsErr = s.taskCompletionEvaluations(ctx, workspaceID, taskIDs)
+	}()
+	go func() {
+		defer wait.Done()
+		evaluations, evaluationsErr = s.taskEvaluations(ctx, workspaceID, taskIDs)
+	}()
+	go func() {
+		defer wait.Done()
+		jobStatuses, jobStatusesErr = s.taskEvaluationJobStatuses(ctx, workspaceID, taskIDs)
+	}()
+	wait.Wait()
+	for _, err := range []error{
+		secondaryErr,
+		dependenciesErr,
+		completionFilesErr,
+		completionEvaluationsErr,
+		evaluationsErr,
+		jobStatusesErr,
+	} {
+		if err != nil {
 			return nil, err
 		}
-		secondaryByTask[taskID] = append(secondaryByTask[taskID], workstreamID)
-	}
-	if err := secondaryRows.Close(); err != nil {
-		return nil, err
-	}
-
-	dependencyRows, err := s.dbx.QueryContext(ctx, `
-		SELECT dependency.task_id, blocker.id, blocker.title, blocker.status
-		FROM v2_task_dependencies dependency
-		JOIN v2_tasks blocker
-			ON blocker.id=dependency.blocker_task_id AND blocker.workspace_id=dependency.workspace_id
-		WHERE dependency.workspace_id=$1 AND dependency.task_id=ANY($2)
-		ORDER BY dependency.task_id, blocker.title, blocker.id
-	`, workspaceID, pq.Array(taskIDs))
-	if err != nil {
-		return nil, err
-	}
-	dependenciesByTask := map[int][]BlockingTask{}
-	for dependencyRows.Next() {
-		var taskID int
-		var blocker BlockingTask
-		if err := dependencyRows.Scan(&taskID, &blocker.ID, &blocker.Title, &blocker.Status); err != nil {
-			_ = dependencyRows.Close()
-			return nil, err
-		}
-		dependenciesByTask[taskID] = append(dependenciesByTask[taskID], blocker)
-	}
-	if err := dependencyRows.Close(); err != nil {
-		return nil, err
-	}
-
-	completionFilesByTask := map[int][]TaskCompletionFile{}
-	completionFileRows, err := s.dbx.QueryContext(ctx, `
-		SELECT link.task_id, file.id, file.filename, file.content_type, file.size_bytes, file.status, link.created_at
-		FROM v2_task_completion_files link
-		JOIN strategic_openai_files file
-			ON file.id=link.strategic_file_id AND file.workspace_id=link.workspace_id
-		WHERE link.workspace_id=$1 AND link.task_id=ANY($2)
-		ORDER BY link.task_id, link.created_at, file.id
-	`, workspaceID, pq.Array(taskIDs))
-	if err != nil {
-		return nil, err
-	}
-	for completionFileRows.Next() {
-		var taskID int
-		var item TaskCompletionFile
-		if err := completionFileRows.Scan(&taskID, &item.ID, &item.Filename, &item.ContentType, &item.SizeBytes, &item.Status, &item.CreatedAt); err != nil {
-			_ = completionFileRows.Close()
-			return nil, err
-		}
-		completionFilesByTask[taskID] = append(completionFilesByTask[taskID], item)
-	}
-	if err := completionFileRows.Close(); err != nil {
-		return nil, err
-	}
-
-	completionEvaluations := map[int]TaskCompletionEvaluation{}
-	completionEvaluationStatuses := map[int]string{}
-	completionRows, err := s.dbx.QueryContext(ctx, `
-		SELECT DISTINCT ON (task_id)
-			task_id, id, status, sufficient, quality_score, reason, missing_information_json, created_at
-		FROM v2_task_completion_evaluations
-		WHERE workspace_id=$1 AND task_id=ANY($2)
-		ORDER BY task_id, created_at DESC, id DESC
-	`, workspaceID, pq.Array(taskIDs))
-	if err != nil {
-		return nil, err
-	}
-	for completionRows.Next() {
-		var taskID int
-		var status string
-		var missingRaw json.RawMessage
-		var item TaskCompletionEvaluation
-		if err := completionRows.Scan(&taskID, &item.ID, &status, &item.Sufficient, &item.QualityScore, &item.Reason, &missingRaw, &item.CreatedAt); err != nil {
-			_ = completionRows.Close()
-			return nil, err
-		}
-		completionEvaluationStatuses[taskID] = status
-		if status == EvaluationReady {
-			item.MissingInformation = decodeStringList(missingRaw)
-			completionEvaluations[taskID] = item
-		}
-	}
-	if err := completionRows.Close(); err != nil {
-		return nil, err
-	}
-
-	evaluations := map[int]TaskEvaluation{}
-	rows, err := s.dbx.QueryContext(ctx, `
-		SELECT DISTINCT ON (task_id)
-			id, task_id, strategic_relevance, course_alignment, tactical_alignment,
-			expected_impact, urgency, effort, confidence, priority_score, priority_tier,
-			recommendation, priority_reason, clarification_question,
-			missing_information_json, flags_json, backlog_category, created_at
-		FROM v2_task_evaluations
-		WHERE workspace_id=$1
-		ORDER BY task_id, created_at DESC, id DESC
-	`, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var item TaskEvaluation
-		var missingRaw json.RawMessage
-		var flagsRaw json.RawMessage
-		if err := rows.Scan(
-			&item.ID, &item.TaskID, &item.StrategicRelevance, &item.CourseAlignment,
-			&item.TacticalAlignment, &item.ExpectedImpact, &item.Urgency, &item.Effort,
-			&item.Confidence, &item.PriorityScore, &item.PriorityTier, &item.Recommendation,
-			&item.PriorityReason, &item.ClarificationQuestion, &missingRaw, &flagsRaw, &item.BacklogCategory, &item.CreatedAt,
-		); err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		if targets[item.TaskID] {
-			_ = json.Unmarshal(missingRaw, &item.MissingInformation)
-			_ = json.Unmarshal(flagsRaw, &item.Flags)
-			evaluations[item.TaskID] = item
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-
-	jobStatuses := map[int]string{}
-	jobRows, err := s.dbx.QueryContext(ctx, `
-		SELECT task_id, status
-		FROM v2_task_evaluation_jobs
-		WHERE workspace_id=$1
-	`, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	for jobRows.Next() {
-		var taskID int
-		var status string
-		if err := jobRows.Scan(&taskID, &status); err != nil {
-			_ = jobRows.Close()
-			return nil, err
-		}
-		if targets[taskID] {
-			jobStatuses[taskID] = status
-		}
-	}
-	if err := jobRows.Close(); err != nil {
-		return nil, err
 	}
 
 	for i := range tasks {
