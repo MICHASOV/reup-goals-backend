@@ -54,6 +54,10 @@ type strategy struct {
 	Summary       string `json:"summary"`
 	CurrentSignal string `json:"current_signal"`
 	TargetSignal  string `json:"target_signal"`
+	CurrentStage  string `json:"current_stage"`
+	CurrentMetric string `json:"current_metric"`
+	TargetStage   string `json:"target_stage"`
+	TargetMetric  string `json:"target_metric"`
 }
 
 type workstream struct {
@@ -195,12 +199,19 @@ func (h *Handler) loadAccount(r *http.Request, userID int, target *account) erro
 func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, error) {
 	var item strategy
 	err := h.dbx.QueryRowContext(r.Context(), `
-		SELECT id, status, version, summary
-		FROM v2_strategies
-		WHERE workspace_id=$1 AND archived_at IS NULL
-		ORDER BY (status='active') DESC, version DESC, id DESC
+		SELECT strategy.id, strategy.status, strategy.version, strategy.summary,
+			COALESCE((
+				SELECT COALESCE(NULLIF(snapshot_json->>'current_stage', ''), NULLIF(business_stage, 'unknown'), '')
+				FROM strategic_memory_snapshots
+				WHERE workspace_id=$1
+				ORDER BY version DESC, id DESC
+				LIMIT 1
+			), '')
+		FROM v2_strategies strategy
+		WHERE strategy.workspace_id=$1 AND strategy.archived_at IS NULL
+		ORDER BY (strategy.status='active') DESC, strategy.version DESC, strategy.id DESC
 		LIMIT 1
-	`, workspaceID).Scan(&item.ID, &item.Status, &item.Version, &item.Summary)
+	`, workspaceID).Scan(&item.ID, &item.Status, &item.Version, &item.Summary, &item.CurrentStage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -208,7 +219,8 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, err
 		return nil, err
 	}
 	rows, err := h.dbx.QueryContext(r.Context(), `
-		SELECT document.document_type, document.primary_signal, document.frame_title
+		SELECT document.document_type, document.primary_signal, document.frame_title,
+			document.frame_subtitle
 		FROM v2_strategy_synthesis_documents document
 		JOIN v2_strategy_synthesis_runs run ON run.id=document.run_id
 		WHERE run.workspace_id=$1 AND run.strategy_id=$2 AND run.status='completed'
@@ -224,8 +236,8 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var documentType, primarySignal, frameTitle string
-		if err := rows.Scan(&documentType, &primarySignal, &frameTitle); err != nil {
+		var documentType, primarySignal, frameTitle, frameSubtitle string
+		if err := rows.Scan(&documentType, &primarySignal, &frameTitle, &frameSubtitle); err != nil {
 			return nil, err
 		}
 		signal := strings.TrimSpace(primarySignal)
@@ -234,9 +246,24 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, err
 		}
 		if documentType == "strategic_diagnosis" {
 			item.CurrentSignal = signal
+			item.CurrentMetric = signal
+			item.TargetStage = strings.TrimSpace(frameTitle)
+			if item.CurrentStage == "" {
+				item.CurrentStage = strings.TrimSpace(frameSubtitle)
+			}
 		} else {
 			item.TargetSignal = signal
+			item.TargetMetric = signal
+			if item.TargetStage == "" {
+				item.TargetStage = strings.TrimSpace(frameTitle)
+			}
 		}
+	}
+	if item.CurrentMetric == "" {
+		item.CurrentMetric = item.CurrentSignal
+	}
+	if item.TargetMetric == "" {
+		item.TargetMetric = item.TargetSignal
 	}
 	return &item, rows.Err()
 }
