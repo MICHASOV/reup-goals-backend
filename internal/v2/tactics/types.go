@@ -34,6 +34,7 @@ const (
 	EntityDepartment    = "department"
 	EntityRisk          = "risk"
 	EntityOpportunity   = "opportunity"
+	EntityHypothesis    = "hypothesis"
 	EntityAdvisorThread = "advisor_thread"
 
 	CoverageUncovered        = "uncovered"
@@ -125,6 +126,7 @@ type Workstream struct {
 	Projects         []Project      `json:"projects"`
 	Risks            []Risk         `json:"risks"`
 	Opportunities    []Opportunity  `json:"opportunities"`
+	Hypotheses       []Hypothesis   `json:"hypotheses"`
 }
 
 type TacticMetric struct {
@@ -153,20 +155,29 @@ type Project struct {
 }
 
 type Risk struct {
-	ID             int       `json:"id"`
-	WorkspaceID    int       `json:"-"`
-	TacticalPlanID int       `json:"tactical_plan_id"`
-	EntityType     string    `json:"entity_type"`
-	EntityID       int       `json:"entity_id"`
-	Title          string    `json:"title"`
-	Description    string    `json:"description"`
-	Severity       string    `json:"severity"`
-	Probability    string    `json:"probability"`
-	Status         string    `json:"status"`
-	CoverageStatus string    `json:"coverage_status"`
-	Source         string    `json:"source"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                int       `json:"id"`
+	WorkspaceID       int       `json:"-"`
+	TacticalPlanID    int       `json:"tactical_plan_id"`
+	EntityType        string    `json:"entity_type"`
+	EntityID          int       `json:"entity_id"`
+	Title             string    `json:"title"`
+	Description       string    `json:"description"`
+	Severity          string    `json:"severity"`
+	Probability       string    `json:"probability"`
+	ProbabilityValue  *int      `json:"probability_value,omitempty"`
+	ImpactScore       *int      `json:"impact_score,omitempty"`
+	EconomicExposure  *float64  `json:"economic_exposure,omitempty"`
+	Currency          string    `json:"currency"`
+	OwnerUserID       *int      `json:"owner_user_id,omitempty"`
+	LeadingIndicators string    `json:"leading_indicators"`
+	MitigationPlan    string    `json:"mitigation_plan"`
+	ContingencyPlan   string    `json:"contingency_plan"`
+	Status            string    `json:"status"`
+	CoverageStatus    string    `json:"coverage_status"`
+	LinkedTaskIDs     []int     `json:"linked_task_ids"`
+	Source            string    `json:"source"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type Opportunity struct {
@@ -184,6 +195,27 @@ type Opportunity struct {
 	Source          string    `json:"source"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type Hypothesis struct {
+	ID             int64     `json:"id"`
+	WorkspaceID    int       `json:"-"`
+	TacticalPlanID int       `json:"tactical_plan_id"`
+	EntityType     string    `json:"entity_type"`
+	EntityID       int       `json:"entity_id"`
+	Title          string    `json:"title"`
+	Statement      string    `json:"statement"`
+	ExpectedEffect string    `json:"expected_effect"`
+	MetricTargetID *int64    `json:"metric_target_id,omitempty"`
+	TestMethod     string    `json:"test_method"`
+	Confidence     int       `json:"confidence"`
+	Status         string    `json:"status"`
+	Evidence       string    `json:"evidence"`
+	OwnerUserID    *int      `json:"owner_user_id,omitempty"`
+	LinkedTaskIDs  []int     `json:"linked_task_ids"`
+	Source         string    `json:"source"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type CurrentResponse struct {
@@ -357,6 +389,13 @@ type TacticsDraftChange struct {
 	ExpectedValue    string         `json:"expected_value,omitempty"`
 	Severity         string         `json:"severity,omitempty"`
 	Probability      string         `json:"probability,omitempty"`
+	ProbabilityValue *int           `json:"probability_value,omitempty"`
+	ImpactScore      *int           `json:"impact_score,omitempty"`
+	MitigationPlan   string         `json:"mitigation_plan,omitempty"`
+	Statement        string         `json:"statement,omitempty"`
+	ExpectedEffect   string         `json:"expected_effect,omitempty"`
+	TestMethod       string         `json:"test_method,omitempty"`
+	HypothesisStatus string         `json:"hypothesis_status,omitempty"`
 	PotentialImpact  string         `json:"potential_impact,omitempty"`
 	Urgency          string         `json:"urgency,omitempty"`
 	CoverageStatus   string         `json:"coverage_status,omitempty"`
@@ -583,6 +622,19 @@ func ValidProjectStatus(status string) bool {
 func ValidEntityType(entityType string) bool {
 	switch entityType {
 	case EntityPlan, EntityWorkstream, EntityProject:
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidHypothesisEntityType(entityType string) bool {
+	return entityType == EntityWorkstream || entityType == EntityProject
+}
+
+func ValidHypothesisStatus(status string) bool {
+	switch status {
+	case "draft", "ready", "testing", "confirmed", "disproved", "inconclusive", "archived":
 		return true
 	default:
 		return false

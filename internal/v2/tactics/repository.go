@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"reup-goals-backend/internal/v2/aiactions"
@@ -67,7 +68,12 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 		return CurrentResponse{}, err
 	}
 
-	hydrateWorkstreams(workstreams, risks, opportunities)
+	hypotheses, err := s.listHypotheses(ctx, workspaceID, plan.ID)
+	if err != nil {
+		return CurrentResponse{}, err
+	}
+
+	hydrateWorkstreams(workstreams, risks, opportunities, hypotheses)
 	coverage, err := s.coverageGaps(ctx, workspaceID, plan.ID, workstreams)
 	if err != nil {
 		return CurrentResponse{}, err
@@ -381,16 +387,30 @@ func (s *Store) createRisk(ctx context.Context, workspaceID int, userID int, inp
 	row := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_tactical_risks (
 			workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			severity, probability, status, coverage_status, source, created_by
+			severity, probability, probability_value, impact_score, economic_exposure, currency,
+			owner_user_id, leading_indicators, mitigation_plan, contingency_plan,
+			status, coverage_status, source, created_by
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		RETURNING
 			id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			severity, probability, status, coverage_status, source, created_at, updated_at
+			severity, probability, probability_value, impact_score, economic_exposure, currency,
+			owner_user_id, leading_indicators, mitigation_plan, contingency_plan,
+			status, coverage_status, source, created_at, updated_at
 	`, workspaceID, planID, input.EntityType, input.EntityID, input.Title, input.Description,
-		input.Severity, input.Probability, input.Status, input.CoverageStatus, source, userID)
+		input.Severity, input.Probability, input.ProbabilityValue, input.ImpactScore, input.EconomicExposure,
+		input.Currency, input.OwnerUserID, input.LeadingIndicators, input.MitigationPlan, input.ContingencyPlan,
+		input.Status, input.CoverageStatus, source, userID)
 
-	return scanRisk(row)
+	risk, err := scanRisk(row)
+	if err != nil {
+		return Risk{}, err
+	}
+	if err := s.replaceEntityTaskLinks(ctx, workspaceID, "v2_task_risks", "risk_id", risk.ID, input.LinkedTaskIDs); err != nil {
+		return Risk{}, err
+	}
+	risk.LinkedTaskIDs = append([]int{}, input.LinkedTaskIDs...)
+	return risk, nil
 }
 
 func (s *Store) UpdateRisk(ctx context.Context, workspaceID int, riskID int, input RiskInput) (Risk, error) {
@@ -411,6 +431,30 @@ func (s *Store) UpdateRisk(ctx context.Context, workspaceID int, riskID int, inp
 	if input.Probability == "" {
 		input.Probability = current.Probability
 	}
+	if input.ProbabilityValue == nil {
+		input.ProbabilityValue = current.ProbabilityValue
+	}
+	if input.ImpactScore == nil {
+		input.ImpactScore = current.ImpactScore
+	}
+	if input.EconomicExposure == nil {
+		input.EconomicExposure = current.EconomicExposure
+	}
+	if input.Currency == "" {
+		input.Currency = current.Currency
+	}
+	if input.OwnerUserID == nil {
+		input.OwnerUserID = current.OwnerUserID
+	}
+	if input.LeadingIndicators == "" {
+		input.LeadingIndicators = current.LeadingIndicators
+	}
+	if input.MitigationPlan == "" {
+		input.MitigationPlan = current.MitigationPlan
+	}
+	if input.ContingencyPlan == "" {
+		input.ContingencyPlan = current.ContingencyPlan
+	}
 	if input.Status == "" {
 		input.Status = current.Status
 	}
@@ -424,16 +468,145 @@ func (s *Store) UpdateRisk(ctx context.Context, workspaceID int, riskID int, inp
 			description=$2,
 			severity=$3,
 			probability=$4,
-			status=$5,
-			coverage_status=$6,
+			probability_value=$5,
+			impact_score=$6,
+			economic_exposure=$7,
+			currency=$8,
+			owner_user_id=$9,
+			leading_indicators=$10,
+			mitigation_plan=$11,
+			contingency_plan=$12,
+			status=$13,
+			coverage_status=$14,
 			updated_at=NOW()
-		WHERE id=$7 AND workspace_id=$8 AND archived_at IS NULL
+		WHERE id=$15 AND workspace_id=$16 AND archived_at IS NULL
 		RETURNING
 			id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			severity, probability, status, coverage_status, source, created_at, updated_at
-	`, input.Title, input.Description, input.Severity, input.Probability, input.Status, input.CoverageStatus, riskID, workspaceID)
+			severity, probability, probability_value, impact_score, economic_exposure, currency,
+			owner_user_id, leading_indicators, mitigation_plan, contingency_plan,
+			status, coverage_status, source, created_at, updated_at
+	`, input.Title, input.Description, input.Severity, input.Probability, input.ProbabilityValue,
+		input.ImpactScore, input.EconomicExposure, input.Currency, input.OwnerUserID,
+		input.LeadingIndicators, input.MitigationPlan, input.ContingencyPlan,
+		input.Status, input.CoverageStatus, riskID, workspaceID)
 
-	return scanRisk(row)
+	risk, err := scanRisk(row)
+	if err != nil {
+		return Risk{}, err
+	}
+	if input.LinkedTaskIDs != nil {
+		if err := s.replaceEntityTaskLinks(ctx, workspaceID, "v2_task_risks", "risk_id", risk.ID, input.LinkedTaskIDs); err != nil {
+			return Risk{}, err
+		}
+		risk.LinkedTaskIDs = append([]int{}, input.LinkedTaskIDs...)
+	} else {
+		risk.LinkedTaskIDs = current.LinkedTaskIDs
+	}
+	return risk, nil
+}
+
+func (s *Store) CreateHypothesis(ctx context.Context, workspaceID int, userID int, input HypothesisInput) (Hypothesis, error) {
+	return s.createHypothesis(ctx, workspaceID, userID, input, SourceManual)
+}
+
+func (s *Store) createHypothesis(ctx context.Context, workspaceID int, userID int, input HypothesisInput, source string) (Hypothesis, error) {
+	input.normalize()
+	planID, err := s.resolvePlanForEntity(ctx, workspaceID, input.EntityType, input.EntityID)
+	if err != nil {
+		return Hypothesis{}, err
+	}
+	if err := s.validateMetricTargetForEntity(ctx, workspaceID, input.MetricTargetID, input.EntityType, input.EntityID); err != nil {
+		return Hypothesis{}, err
+	}
+	row := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO v2_tactical_hypotheses (
+			workspace_id, tactical_plan_id, entity_type, entity_id, title, statement,
+			expected_effect, metric_target_id, test_method, confidence, status, evidence,
+			owner_user_id, source, created_by
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		RETURNING id, workspace_id, tactical_plan_id, entity_type, entity_id, title,
+			statement, expected_effect, metric_target_id, test_method, confidence, status,
+			evidence, owner_user_id, source, created_at, updated_at
+	`, workspaceID, planID, input.EntityType, input.EntityID, input.Title, input.Statement,
+		input.ExpectedEffect, input.MetricTargetID, input.TestMethod, *input.Confidence, input.Status,
+		input.Evidence, input.OwnerUserID, source, userID)
+	item, err := scanHypothesis(row)
+	if err != nil {
+		return Hypothesis{}, err
+	}
+	if err := s.replaceEntityTaskLinks(ctx, workspaceID, "v2_task_hypotheses", "hypothesis_id", item.ID, input.LinkedTaskIDs); err != nil {
+		return Hypothesis{}, err
+	}
+	item.LinkedTaskIDs = append([]int{}, input.LinkedTaskIDs...)
+	return item, nil
+}
+
+func (s *Store) UpdateHypothesis(ctx context.Context, workspaceID int, hypothesisID int64, input HypothesisInput) (Hypothesis, error) {
+	input.trim()
+	current, err := s.hypothesisByID(ctx, workspaceID, hypothesisID)
+	if err != nil {
+		return Hypothesis{}, err
+	}
+	if input.Title == "" {
+		input.Title = current.Title
+	}
+	if input.Statement == "" {
+		input.Statement = current.Statement
+	}
+	if input.ExpectedEffect == "" {
+		input.ExpectedEffect = current.ExpectedEffect
+	}
+	if input.ClearMetricTarget {
+		input.MetricTargetID = nil
+	} else if input.MetricTargetID == nil {
+		input.MetricTargetID = current.MetricTargetID
+	}
+	if input.TestMethod == "" {
+		input.TestMethod = current.TestMethod
+	}
+	if input.Confidence == nil {
+		value := current.Confidence
+		input.Confidence = &value
+	}
+	if input.Status == "" {
+		input.Status = current.Status
+	}
+	if input.Evidence == "" {
+		input.Evidence = current.Evidence
+	}
+	if input.OwnerUserID == nil {
+		input.OwnerUserID = current.OwnerUserID
+	}
+	if err := s.validateMetricTargetForEntity(
+		ctx, workspaceID, input.MetricTargetID, current.EntityType, current.EntityID,
+	); err != nil {
+		return Hypothesis{}, err
+	}
+	row := s.dbx.QueryRowContext(ctx, `
+		UPDATE v2_tactical_hypotheses
+		SET title=$1, statement=$2, expected_effect=$3, metric_target_id=$4,
+			test_method=$5, confidence=$6, status=$7, evidence=$8, owner_user_id=$9,
+			updated_at=NOW()
+		WHERE id=$10 AND workspace_id=$11 AND archived_at IS NULL
+		RETURNING id, workspace_id, tactical_plan_id, entity_type, entity_id, title,
+			statement, expected_effect, metric_target_id, test_method, confidence, status,
+			evidence, owner_user_id, source, created_at, updated_at
+	`, input.Title, input.Statement, input.ExpectedEffect, input.MetricTargetID, input.TestMethod,
+		*input.Confidence, input.Status, input.Evidence, input.OwnerUserID, hypothesisID, workspaceID)
+	item, err := scanHypothesis(row)
+	if err != nil {
+		return Hypothesis{}, err
+	}
+	if input.LinkedTaskIDs != nil {
+		if err := s.replaceEntityTaskLinks(ctx, workspaceID, "v2_task_hypotheses", "hypothesis_id", item.ID, input.LinkedTaskIDs); err != nil {
+			return Hypothesis{}, err
+		}
+		item.LinkedTaskIDs = append([]int{}, input.LinkedTaskIDs...)
+	} else {
+		item.LinkedTaskIDs = current.LinkedTaskIDs
+	}
+	return item, nil
 }
 
 func (s *Store) CreateOpportunity(ctx context.Context, workspaceID int, userID int, input OpportunityInput) (Opportunity, error) {
@@ -691,11 +864,18 @@ func (s *Store) projectByID(ctx context.Context, workspaceID int, projectID int)
 func (s *Store) riskByID(ctx context.Context, workspaceID int, riskID int) (Risk, error) {
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			severity, probability, status, coverage_status, source, created_at, updated_at
+			severity, probability, probability_value, impact_score, economic_exposure, currency,
+			owner_user_id, leading_indicators, mitigation_plan, contingency_plan,
+			status, coverage_status, source, created_at, updated_at
 		FROM v2_tactical_risks
 		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
 	`, riskID, workspaceID)
-	return scanRisk(row)
+	item, err := scanRisk(row)
+	if err != nil {
+		return Risk{}, err
+	}
+	item.LinkedTaskIDs, err = s.entityTaskIDs(ctx, workspaceID, "v2_task_risks", "risk_id", item.ID)
+	return item, err
 }
 
 func (s *Store) opportunityByID(ctx context.Context, workspaceID int, opportunityID int) (Opportunity, error) {
@@ -706,6 +886,109 @@ func (s *Store) opportunityByID(ctx context.Context, workspaceID int, opportunit
 		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
 	`, opportunityID, workspaceID)
 	return scanOpportunity(row)
+}
+
+func (s *Store) hypothesisByID(ctx context.Context, workspaceID int, hypothesisID int64) (Hypothesis, error) {
+	row := s.dbx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, tactical_plan_id, entity_type, entity_id, title,
+			statement, expected_effect, metric_target_id, test_method, confidence, status,
+			evidence, owner_user_id, source, created_at, updated_at
+		FROM v2_tactical_hypotheses
+		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
+	`, hypothesisID, workspaceID)
+	item, err := scanHypothesis(row)
+	if err != nil {
+		return Hypothesis{}, err
+	}
+	item.LinkedTaskIDs, err = s.entityTaskIDs(ctx, workspaceID, "v2_task_hypotheses", "hypothesis_id", item.ID)
+	return item, err
+}
+
+func (s *Store) validateMetricTargetForEntity(
+	ctx context.Context,
+	workspaceID int,
+	targetID *int64,
+	entityType string,
+	entityID int,
+) error {
+	if targetID == nil {
+		return nil
+	}
+	var exists bool
+	if err := s.dbx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM v2_metric_targets
+			WHERE id=$1 AND workspace_id=$2 AND scope_type=$3 AND scope_id=$4
+				AND archived_at IS NULL
+		)
+	`, *targetID, workspaceID, entityType, entityID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) entityTaskIDs(ctx context.Context, workspaceID int, table string, entityColumn string, entityID any) ([]int, error) {
+	rows, err := s.dbx.QueryContext(ctx,
+		"SELECT task_id FROM "+table+" WHERE workspace_id=$1 AND "+entityColumn+"=$2 ORDER BY task_id",
+		workspaceID, entityID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []int{}
+	for rows.Next() {
+		var taskID int
+		if err := rows.Scan(&taskID); err != nil {
+			return nil, err
+		}
+		result = append(result, taskID)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) replaceEntityTaskLinks(
+	ctx context.Context,
+	workspaceID int,
+	table string,
+	entityColumn string,
+	entityID any,
+	taskIDs []int,
+) error {
+	if taskIDs == nil {
+		return nil
+	}
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM "+table+" WHERE workspace_id=$1 AND "+entityColumn+"=$2",
+		workspaceID, entityID,
+	); err != nil {
+		return err
+	}
+	seen := map[int]bool{}
+	for _, taskID := range taskIDs {
+		if taskID <= 0 || seen[taskID] {
+			continue
+		}
+		seen[taskID] = true
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO "+table+" (workspace_id, task_id, "+entityColumn+") "+
+				"SELECT $1, id, $3 FROM v2_tasks WHERE id=$2 AND workspace_id=$1 AND archived_at IS NULL "+
+				"ON CONFLICT DO NOTHING",
+			workspaceID, taskID, entityID,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) nextSortOrder(ctx context.Context, table string, column string, ownerID int) (int, error) {
@@ -739,6 +1022,7 @@ func (s *Store) listWorkstreams(ctx context.Context, workspaceID int, planID int
 		workstream.Projects = []Project{}
 		workstream.Risks = []Risk{}
 		workstream.Opportunities = []Opportunity{}
+		workstream.Hypotheses = []Hypothesis{}
 		workstreams = append(workstreams, workstream)
 	}
 	if err := rows.Err(); err != nil {
@@ -800,7 +1084,9 @@ func (s *Store) listProjects(ctx context.Context, workspaceID int, workstreams [
 func (s *Store) listRisks(ctx context.Context, workspaceID int, planID int) ([]Risk, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT id, workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
-			severity, probability, status, coverage_status, source, created_at, updated_at
+			severity, probability, probability_value, impact_score, economic_exposure, currency,
+			owner_user_id, leading_indicators, mitigation_plan, contingency_plan,
+			status, coverage_status, source, created_at, updated_at
 		FROM v2_tactical_risks
 		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL
 		ORDER BY id ASC
@@ -813,6 +1099,10 @@ func (s *Store) listRisks(ctx context.Context, workspaceID int, planID int) ([]R
 	risks := []Risk{}
 	for rows.Next() {
 		risk, err := scanRisk(rows)
+		if err != nil {
+			return nil, err
+		}
+		risk.LinkedTaskIDs, err = s.entityTaskIDs(ctx, workspaceID, "v2_task_risks", "risk_id", risk.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -845,6 +1135,34 @@ func (s *Store) listOpportunities(ctx context.Context, workspaceID int, planID i
 	return opportunities, rows.Err()
 }
 
+func (s *Store) listHypotheses(ctx context.Context, workspaceID int, planID int) ([]Hypothesis, error) {
+	rows, err := s.dbx.QueryContext(ctx, `
+		SELECT id, workspace_id, tactical_plan_id, entity_type, entity_id, title,
+			statement, expected_effect, metric_target_id, test_method, confidence, status,
+			evidence, owner_user_id, source, created_at, updated_at
+		FROM v2_tactical_hypotheses
+		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL
+		ORDER BY id ASC
+	`, workspaceID, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []Hypothesis{}
+	for rows.Next() {
+		item, err := scanHypothesis(rows)
+		if err != nil {
+			return nil, err
+		}
+		item.LinkedTaskIDs, err = s.entityTaskIDs(ctx, workspaceID, "v2_task_hypotheses", "hypothesis_id", item.ID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) resolvePlanForEntity(ctx context.Context, workspaceID int, entityType string, entityID int) (int, error) {
 	switch entityType {
 	case EntityPlan:
@@ -867,14 +1185,22 @@ func (s *Store) resolvePlanForEntity(ctx context.Context, workspaceID int, entit
 	}
 }
 
-func hydrateWorkstreams(workstreams []Workstream, risks []Risk, opportunities []Opportunity) {
+func hydrateWorkstreams(workstreams []Workstream, risks []Risk, opportunities []Opportunity, hypotheses []Hypothesis) {
 	byID := map[int]int{}
+	projectOwner := map[int]int{}
 	for i := range workstreams {
 		byID[workstreams[i].ID] = i
+		for _, project := range workstreams[i].Projects {
+			projectOwner[project.ID] = i
+		}
 	}
 	for _, risk := range risks {
 		if risk.EntityType == EntityWorkstream {
 			if index, ok := byID[risk.EntityID]; ok {
+				workstreams[index].Risks = append(workstreams[index].Risks, risk)
+			}
+		} else if risk.EntityType == EntityProject {
+			if index, ok := projectOwner[risk.EntityID]; ok {
 				workstreams[index].Risks = append(workstreams[index].Risks, risk)
 			}
 		}
@@ -883,6 +1209,21 @@ func hydrateWorkstreams(workstreams []Workstream, risks []Risk, opportunities []
 		if opportunity.EntityType == EntityWorkstream {
 			if index, ok := byID[opportunity.EntityID]; ok {
 				workstreams[index].Opportunities = append(workstreams[index].Opportunities, opportunity)
+			}
+		} else if opportunity.EntityType == EntityProject {
+			if index, ok := projectOwner[opportunity.EntityID]; ok {
+				workstreams[index].Opportunities = append(workstreams[index].Opportunities, opportunity)
+			}
+		}
+	}
+	for _, hypothesis := range hypotheses {
+		if hypothesis.EntityType == EntityWorkstream {
+			if index, ok := byID[hypothesis.EntityID]; ok {
+				workstreams[index].Hypotheses = append(workstreams[index].Hypotheses, hypothesis)
+			}
+		} else if hypothesis.EntityType == EntityProject {
+			if index, ok := projectOwner[hypothesis.EntityID]; ok {
+				workstreams[index].Hypotheses = append(workstreams[index].Hypotheses, hypothesis)
 			}
 		}
 	}
@@ -951,6 +1292,31 @@ func (s *Store) coverageGaps(ctx context.Context, workspaceID int, planID int, w
 		return Uncovered{}, err
 	}
 
+	metricTargets := map[string]int{}
+	metricRows, err := s.dbx.QueryContext(ctx, `
+		SELECT scope_type, scope_id, COUNT(*)
+		FROM v2_metric_targets
+		WHERE workspace_id=$1 AND archived_at IS NULL
+			AND scope_type IN ('workstream', 'project')
+		GROUP BY scope_type, scope_id
+	`, workspaceID)
+	if err != nil {
+		return Uncovered{}, err
+	}
+	defer metricRows.Close()
+	for metricRows.Next() {
+		var scopeType string
+		var scopeID int
+		var count int
+		if err := metricRows.Scan(&scopeType, &scopeID, &count); err != nil {
+			return Uncovered{}, err
+		}
+		metricTargets[fmt.Sprintf("%s:%d", scopeType, scopeID)] = count
+	}
+	if err := metricRows.Err(); err != nil {
+		return Uncovered{}, err
+	}
+
 	for _, workstream := range workstreams {
 		if workstreamTasks[workstream.ID] == 0 {
 			result.WorkstreamsWithoutTasks = append(result.WorkstreamsWithoutTasks, TacticsCoverageGap{
@@ -964,7 +1330,7 @@ func (s *Store) coverageGaps(ctx context.Context, workspaceID int, planID int, w
 				Reason: "Не определён ценный конечный продукт направления.",
 			})
 		}
-		if len(workstream.Metrics) == 0 {
+		if len(workstream.Metrics) == 0 && metricTargets[fmt.Sprintf("%s:%d", EntityWorkstream, workstream.ID)] == 0 {
 			result.MissingMetrics = append(result.MissingMetrics, TacticsCoverageGap{
 				EntityType: EntityWorkstream, EntityID: workstream.ID, Title: workstream.Title,
 				Reason: "Не определена измеримая метрика направления.",
@@ -981,6 +1347,12 @@ func (s *Store) coverageGaps(ctx context.Context, workspaceID int, planID int, w
 				result.MissingSuccessCriteria = append(result.MissingSuccessCriteria, TacticsCoverageGap{
 					EntityType: EntityProject, EntityID: project.ID, Title: project.Title,
 					Reason: "Не определён критерий успеха проекта.",
+				})
+			}
+			if strings.TrimSpace(project.MetricName) == "" && metricTargets[fmt.Sprintf("%s:%d", EntityProject, project.ID)] == 0 {
+				result.MissingMetrics = append(result.MissingMetrics, TacticsCoverageGap{
+					EntityType: EntityProject, EntityID: project.ID, Title: project.Title,
+					Reason: "Не определена измеримая метрика проекта.",
 				})
 			}
 		}
@@ -1090,14 +1462,23 @@ func (i *ProjectInput) trim() {
 }
 
 type RiskInput struct {
-	EntityType     string `json:"entity_type"`
-	EntityID       int    `json:"entity_id"`
-	Title          string `json:"title"`
-	Description    string `json:"description"`
-	Severity       string `json:"severity"`
-	Probability    string `json:"probability"`
-	Status         string `json:"status"`
-	CoverageStatus string `json:"coverage_status"`
+	EntityType        string   `json:"entity_type"`
+	EntityID          int      `json:"entity_id"`
+	Title             string   `json:"title"`
+	Description       string   `json:"description"`
+	Severity          string   `json:"severity"`
+	Probability       string   `json:"probability"`
+	ProbabilityValue  *int     `json:"probability_value"`
+	ImpactScore       *int     `json:"impact_score"`
+	EconomicExposure  *float64 `json:"economic_exposure"`
+	Currency          string   `json:"currency"`
+	OwnerUserID       *int     `json:"owner_user_id"`
+	LeadingIndicators string   `json:"leading_indicators"`
+	MitigationPlan    string   `json:"mitigation_plan"`
+	ContingencyPlan   string   `json:"contingency_plan"`
+	Status            string   `json:"status"`
+	CoverageStatus    string   `json:"coverage_status"`
+	LinkedTaskIDs     []int    `json:"linked_task_ids"`
 }
 
 func (i *RiskInput) normalize() {
@@ -1122,8 +1503,49 @@ func (i *RiskInput) trim() {
 	i.Description = strings.TrimSpace(i.Description)
 	i.Severity = strings.TrimSpace(i.Severity)
 	i.Probability = strings.TrimSpace(i.Probability)
+	i.Currency = strings.TrimSpace(i.Currency)
+	i.LeadingIndicators = strings.TrimSpace(i.LeadingIndicators)
+	i.MitigationPlan = strings.TrimSpace(i.MitigationPlan)
+	i.ContingencyPlan = strings.TrimSpace(i.ContingencyPlan)
 	i.Status = strings.TrimSpace(i.Status)
 	i.CoverageStatus = strings.TrimSpace(i.CoverageStatus)
+}
+
+type HypothesisInput struct {
+	EntityType        string `json:"entity_type"`
+	EntityID          int    `json:"entity_id"`
+	Title             string `json:"title"`
+	Statement         string `json:"statement"`
+	ExpectedEffect    string `json:"expected_effect"`
+	MetricTargetID    *int64 `json:"metric_target_id"`
+	ClearMetricTarget bool   `json:"clear_metric_target"`
+	TestMethod        string `json:"test_method"`
+	Confidence        *int   `json:"confidence"`
+	Status            string `json:"status"`
+	Evidence          string `json:"evidence"`
+	OwnerUserID       *int   `json:"owner_user_id"`
+	LinkedTaskIDs     []int  `json:"linked_task_ids"`
+}
+
+func (i *HypothesisInput) normalize() {
+	i.trim()
+	if i.Confidence == nil {
+		value := 500
+		i.Confidence = &value
+	}
+	if i.Status == "" {
+		i.Status = "draft"
+	}
+}
+
+func (i *HypothesisInput) trim() {
+	i.EntityType = strings.TrimSpace(i.EntityType)
+	i.Title = strings.TrimSpace(i.Title)
+	i.Statement = strings.TrimSpace(i.Statement)
+	i.ExpectedEffect = strings.TrimSpace(i.ExpectedEffect)
+	i.TestMethod = strings.TrimSpace(i.TestMethod)
+	i.Status = strings.TrimSpace(i.Status)
+	i.Evidence = strings.TrimSpace(i.Evidence)
 }
 
 type OpportunityInput struct {
@@ -1266,11 +1688,34 @@ func scanProject(scanner scanner) (Project, error) {
 
 func scanRisk(scanner scanner) (Risk, error) {
 	var risk Risk
+	var probabilityValue sql.NullInt64
+	var impactScore sql.NullInt64
+	var economicExposure sql.NullFloat64
+	var ownerUserID sql.NullInt64
 	err := scanner.Scan(
 		&risk.ID, &risk.WorkspaceID, &risk.TacticalPlanID, &risk.EntityType, &risk.EntityID,
-		&risk.Title, &risk.Description, &risk.Severity, &risk.Probability, &risk.Status, &risk.CoverageStatus,
+		&risk.Title, &risk.Description, &risk.Severity, &risk.Probability, &probabilityValue,
+		&impactScore, &economicExposure, &risk.Currency, &ownerUserID, &risk.LeadingIndicators,
+		&risk.MitigationPlan, &risk.ContingencyPlan, &risk.Status, &risk.CoverageStatus,
 		&risk.Source, &risk.CreatedAt, &risk.UpdatedAt,
 	)
+	if probabilityValue.Valid {
+		value := int(probabilityValue.Int64)
+		risk.ProbabilityValue = &value
+	}
+	if impactScore.Valid {
+		value := int(impactScore.Int64)
+		risk.ImpactScore = &value
+	}
+	if economicExposure.Valid {
+		value := economicExposure.Float64
+		risk.EconomicExposure = &value
+	}
+	if ownerUserID.Valid {
+		value := int(ownerUserID.Int64)
+		risk.OwnerUserID = &value
+	}
+	risk.LinkedTaskIDs = []int{}
 	return risk, err
 }
 
@@ -1283,4 +1728,26 @@ func scanOpportunity(scanner scanner) (Opportunity, error) {
 		&opportunity.UpdatedAt,
 	)
 	return opportunity, err
+}
+
+func scanHypothesis(scanner scanner) (Hypothesis, error) {
+	var item Hypothesis
+	var metricTargetID sql.NullInt64
+	var ownerUserID sql.NullInt64
+	err := scanner.Scan(
+		&item.ID, &item.WorkspaceID, &item.TacticalPlanID, &item.EntityType, &item.EntityID,
+		&item.Title, &item.Statement, &item.ExpectedEffect, &metricTargetID, &item.TestMethod,
+		&item.Confidence, &item.Status, &item.Evidence, &ownerUserID, &item.Source,
+		&item.CreatedAt, &item.UpdatedAt,
+	)
+	if metricTargetID.Valid {
+		value := metricTargetID.Int64
+		item.MetricTargetID = &value
+	}
+	if ownerUserID.Valid {
+		value := int(ownerUserID.Int64)
+		item.OwnerUserID = &value
+	}
+	item.LinkedTaskIDs = []int{}
+	return item, err
 }

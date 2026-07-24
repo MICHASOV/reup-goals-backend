@@ -30,6 +30,7 @@ import (
 	"reup-goals-backend/internal/v2/course"
 	"reup-goals-backend/internal/v2/departments"
 	"reup-goals-backend/internal/v2/jobs"
+	"reup-goals-backend/internal/v2/metrics"
 	"reup-goals-backend/internal/v2/operations"
 	"reup-goals-backend/internal/v2/profile"
 	"reup-goals-backend/internal/v2/strategicmemory"
@@ -96,6 +97,7 @@ func main() {
 	bootstrapHandler := bootstrap.NewHandler(database)
 	courseHandler := course.NewHandler(database)
 	departmentHandler := departments.NewHandler(database, strategicSourceRecorder)
+	metricsHandler := metrics.NewHandler(database)
 	workspaceDocumentsHandler := workspacedocs.NewHandler(database, strategicSourceRecorder)
 	workspaceContextIndex := contextindex.New(database, auditorAIClient)
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
@@ -171,6 +173,9 @@ func main() {
 	mux.Handle("/api/v2/workspace-documents", v2api.RequireAuth(database, jwtSecret, workspaceDocumentsHandler.Documents))
 	mux.Handle("/api/v2/workspace-documents/", v2api.RequireAuth(database, jwtSecret, workspaceDocumentsHandler.Documents))
 	mux.Handle("/api/v2/responsibilities", v2api.RequireAuth(database, jwtSecret, departmentHandler.Responsibilities))
+	mux.Handle("/api/v2/metrics/catalog", v2api.RequireAuth(database, jwtSecret, metricsHandler.Metrics))
+	mux.Handle("/api/v2/metrics/targets", v2api.RequireAuth(database, jwtSecret, metricsHandler.Metrics))
+	mux.Handle("/api/v2/metrics/targets/", v2api.RequireAuth(database, jwtSecret, metricsHandler.Metrics))
 	mux.Handle("/api/v2/audio/transcriptions", v2api.RequireAuth(database, jwtSecret, audioHandler.Transcriptions))
 	mux.Handle("/api/v2/ai-actions", v2api.RequireAuth(database, jwtSecret, aiActionsHandler.Actions))
 	mux.Handle("/api/v2/ai-actions/", v2api.RequireAuth(database, jwtSecret, aiActionsHandler.Actions))
@@ -223,6 +228,8 @@ func main() {
 	mux.Handle("/api/v2/tactics/projects/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Projects))
 	mux.Handle("/api/v2/tactics/risks", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Risks))
 	mux.Handle("/api/v2/tactics/risks/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Risks))
+	mux.Handle("/api/v2/tactics/hypotheses", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Hypotheses))
+	mux.Handle("/api/v2/tactics/hypotheses/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Hypotheses))
 	mux.Handle("/api/v2/tactics/opportunities", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Opportunities))
 	mux.Handle("/api/v2/tactics/opportunities/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Opportunities))
 	mux.Handle("/api/v2/tactics/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Tactics))

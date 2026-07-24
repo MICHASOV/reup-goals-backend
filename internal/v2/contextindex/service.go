@@ -200,6 +200,31 @@ var snapshotSections = []snapshotSection{
 		FROM (
 			SELECT * FROM v2_tactical_opportunities WHERE workspace_id=$1 AND archived_at IS NULL
 		) item`},
+	{Title: "Tactical hypotheses", Query: `
+		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.id), '[]'::jsonb)::text
+		FROM (
+			SELECT * FROM v2_tactical_hypotheses WHERE workspace_id=$1 AND archived_at IS NULL
+		) item`},
+	{Title: "Business metrics and targets", Query: `
+		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.target_id), '[]'::jsonb)::text
+		FROM (
+			SELECT target.id AS target_id, target.scope_type, target.scope_id, target.role,
+				target.baseline_value, target.target_value, target.target_date, target.cadence,
+				metric.id AS metric_id, metric.name, metric.description, metric.category,
+				metric.unit, metric.value_type, metric.better_direction, metric.formula,
+				latest.value AS latest_value, latest.measured_at AS latest_at
+			FROM v2_metric_targets target
+			JOIN v2_workspace_metrics metric ON metric.id=target.metric_id
+			LEFT JOIN LATERAL (
+				SELECT value, measured_at
+				FROM v2_metric_observations observation
+				WHERE observation.workspace_id=target.workspace_id
+					AND observation.metric_id=target.metric_id
+					AND (observation.target_id=target.id OR observation.target_id IS NULL)
+				ORDER BY measured_at DESC, id DESC LIMIT 1
+			) latest ON TRUE
+			WHERE target.workspace_id=$1 AND target.archived_at IS NULL AND metric.archived_at IS NULL
+		) item`},
 	{Title: "Latest tactics readiness", Query: `
 		SELECT COALESCE(jsonb_agg(to_jsonb(item) ORDER BY item.id), '[]'::jsonb)::text
 		FROM (

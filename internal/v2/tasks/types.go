@@ -17,6 +17,7 @@ const (
 	SourceWorkstream   = "workstream"
 	SourceProject      = "project"
 	SourceRisk         = "risk"
+	SourceHypothesis   = "hypothesis"
 	SourceOpportunity  = "opportunity"
 	SourceAISuggestion = "ai_suggestion"
 
@@ -434,7 +435,7 @@ func ValidStatus(status string) bool {
 
 func ValidSourceType(sourceType string) bool {
 	switch sourceType {
-	case SourceManual, SourceWorkstream, SourceProject, SourceRisk, SourceOpportunity, SourceAISuggestion:
+	case SourceManual, SourceWorkstream, SourceProject, SourceRisk, SourceHypothesis, SourceOpportunity, SourceAISuggestion:
 		return true
 	default:
 		return false

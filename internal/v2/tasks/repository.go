@@ -363,6 +363,9 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 	if err != nil {
 		return Task{}, err
 	}
+	if err := s.linkTaskToTacticalEntities(ctx, workspaceID, task.ID, input, sourceType); err != nil {
+		return Task{}, err
+	}
 	if err := s.replaceSecondaryWorkstreams(ctx, workspaceID, task.ID, secondaryWorkstreamIDs); err != nil {
 		return Task{}, err
 	}
@@ -1083,7 +1086,76 @@ func (s *Store) validateLinks(ctx context.Context, workspaceID int, workstream w
 			return ErrForbidden
 		}
 	}
+	if valueOrEmpty(input.SourceType) == SourceHypothesis {
+		if input.SourceID == nil || *input.SourceID <= 0 {
+			return ErrForbidden
+		}
+		var exists bool
+		if err := s.dbx.QueryRowContext(ctx, `
+			SELECT EXISTS(
+				SELECT 1
+				FROM v2_tactical_hypotheses hypothesis
+				WHERE hypothesis.id=$1
+					AND hypothesis.workspace_id=$2
+					AND hypothesis.tactical_plan_id=$3
+					AND hypothesis.archived_at IS NULL
+					AND (
+						(hypothesis.entity_type='workstream' AND hypothesis.entity_id=$4)
+						OR (
+							hypothesis.entity_type='project'
+							AND EXISTS (
+								SELECT 1
+								FROM v2_tactical_projects project
+								WHERE project.id=hypothesis.entity_id
+									AND project.workspace_id=$2
+									AND project.workstream_id=$4
+									AND project.archived_at IS NULL
+							)
+						)
+					)
+			)
+		`, *input.SourceID, workspaceID, workstream.TacticalPlanID, workstream.ID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrForbidden
+		}
+	}
 	return nil
+}
+
+func (s *Store) linkTaskToTacticalEntities(
+	ctx context.Context,
+	workspaceID int,
+	taskID int,
+	input TaskInput,
+	sourceType string,
+) error {
+	purpose := "execution"
+	if input.RiskID != nil {
+		purpose = "risk_mitigation"
+		if _, err := s.dbx.ExecContext(ctx, `
+			INSERT INTO v2_task_risks (workspace_id, task_id, risk_id)
+			VALUES ($1, $2, $3)
+			ON CONFLICT DO NOTHING
+		`, workspaceID, taskID, *input.RiskID); err != nil {
+			return err
+		}
+	}
+	if sourceType == SourceHypothesis && input.SourceID != nil {
+		purpose = "hypothesis_test"
+		if _, err := s.dbx.ExecContext(ctx, `
+			INSERT INTO v2_task_hypotheses (workspace_id, task_id, hypothesis_id)
+			VALUES ($1, $2, $3)
+			ON CONFLICT DO NOTHING
+		`, workspaceID, taskID, *input.SourceID); err != nil {
+			return err
+		}
+	}
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_tasks SET purpose=$1 WHERE id=$2 AND workspace_id=$3
+	`, purpose, taskID, workspaceID)
+	return err
 }
 
 func (s *Store) validateSecondaryWorkstreams(ctx context.Context, workspaceID int, planID int, primaryID int, requested []int) ([]int, error) {

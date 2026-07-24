@@ -9,7 +9,7 @@ The product gives you:
 - the active strategy and its synthesized documents;
 - the active course, including its direction, goal, horizon, key metric, and success criterion;
 - the complete tactical-session transcript through a specific message;
-- the current tactical plan, workstreams, projects, risks, and opportunities;
+- the current tactical plan, workstreams, projects, risks, and hypotheses;
 - the facilitator's current assessment and open questions;
 - a source catalog containing the only source keys you may cite.
 
@@ -27,7 +27,7 @@ Review at least these dimensions:
 - measurability: whether each workstream has one to three meaningful metrics with current and target states, and success signals are sufficiently concrete;
 - project_quality: whether projects are real interventions or experiments with expected business value plus success and failure criteria;
 - feasibility_resources: whether the portfolio is realistic for the available people, money, time, capabilities, and constraints;
-- risks_opportunities: whether material risks and opportunities are identified, connected to the correct entities, and assessed by probability, impact, and urgency where relevant;
+- risks_hypotheses: whether material risks and testable hypotheses are connected to the correct entities, assessed, and supported by mitigation or validation work;
 - dependencies_sequencing: whether critical dependencies and order of execution are understood;
 - evidence_assumptions: whether facts, assumptions, and unvalidated bets are separated and proportionately handled;
 - strategy_consistency: whether tactics expose a contradiction or missing decision that should be returned to strategy.
@@ -82,7 +82,7 @@ Return valid JSON only with this exact top-level structure:
   ],
   "entity_assessments": [
     {
-      "entity_type": "workstream|project|risk|opportunity",
+      "entity_type": "workstream|project|risk|hypothesis",
       "entity_id": 0,
       "title": "",
       "status": "strong|weak|misaligned|insufficient_data",

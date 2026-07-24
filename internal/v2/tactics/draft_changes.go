@@ -51,6 +51,11 @@ func normalizeTacticsDraftChanges(changes []TacticsDraftChange) []TacticsDraftCh
 		change.ExpectedValue = strings.TrimSpace(change.ExpectedValue)
 		change.Severity = strings.ToLower(strings.TrimSpace(change.Severity))
 		change.Probability = strings.ToLower(strings.TrimSpace(change.Probability))
+		change.MitigationPlan = strings.TrimSpace(change.MitigationPlan)
+		change.Statement = strings.TrimSpace(change.Statement)
+		change.ExpectedEffect = strings.TrimSpace(change.ExpectedEffect)
+		change.TestMethod = strings.TrimSpace(change.TestMethod)
+		change.HypothesisStatus = strings.ToLower(strings.TrimSpace(change.HypothesisStatus))
 		change.PotentialImpact = strings.ToLower(strings.TrimSpace(change.PotentialImpact))
 		change.Urgency = strings.ToLower(strings.TrimSpace(change.Urgency))
 		change.CoverageStatus = strings.ToLower(strings.TrimSpace(change.CoverageStatus))
@@ -59,7 +64,7 @@ func normalizeTacticsDraftChanges(changes []TacticsDraftChange) []TacticsDraftCh
 			continue
 		}
 		switch change.EntityType {
-		case EntityWorkstream, EntityProject, "risk", "opportunity":
+		case EntityWorkstream, EntityProject, EntityRisk, EntityHypothesis, EntityOpportunity:
 		default:
 			continue
 		}
@@ -226,6 +231,13 @@ func (s *FacilitatorService) captureAppliedTacticsEntity(
 		}
 		sourceType = strategicmemory.SourceTypeOpportunity
 		value = item
+	case EntityHypothesis:
+		item, err := s.store.hypothesisByID(ctx, workspaceID, int64(change.EntityID))
+		if err != nil {
+			return
+		}
+		sourceType = strategicmemory.SourceTypeHypothesis
+		value = item
 	default:
 		return
 	}
@@ -256,9 +268,11 @@ func (s *Store) applyFacilitatorDraftChange(
 		return s.applyWorkstreamDraft(ctx, workspaceID, userID, plan, change)
 	case EntityProject:
 		return s.applyProjectDraft(ctx, workspaceID, userID, plan, parentID, change)
-	case "risk":
+	case EntityRisk:
 		return s.applyRiskDraft(ctx, workspaceID, userID, plan, parentID, change)
-	case "opportunity":
+	case EntityHypothesis:
+		return s.applyHypothesisDraft(ctx, workspaceID, userID, plan, parentID, change)
+	case EntityOpportunity:
 		return s.applyOpportunityDraft(ctx, workspaceID, userID, plan, parentID, change)
 	default:
 		return AppliedTacticsChange{}, false
@@ -358,7 +372,12 @@ func (s *Store) applyRiskDraft(ctx context.Context, workspaceID int, userID int,
 			entityID = existingID
 		}
 	}
-	input := RiskInput{EntityType: entityType, EntityID: parentID, Title: change.Title, Description: change.Description, Severity: change.Severity, Probability: change.Probability, CoverageStatus: change.CoverageStatus}
+	input := RiskInput{
+		EntityType: entityType, EntityID: parentID, Title: change.Title,
+		Description: change.Description, Severity: change.Severity, Probability: change.Probability,
+		ProbabilityValue: change.ProbabilityValue, ImpactScore: change.ImpactScore,
+		MitigationPlan: change.MitigationPlan, CoverageStatus: change.CoverageStatus,
+	}
 	var item Risk
 	var err error
 	if operation == "create" {
@@ -374,6 +393,41 @@ func (s *Store) applyRiskDraft(ctx context.Context, workspaceID int, userID int,
 		return AppliedTacticsChange{}, false
 	}
 	return appliedChange(operation, "risk", item.ID, item.Title, change), true
+}
+
+func (s *Store) applyHypothesisDraft(ctx context.Context, workspaceID int, userID int, plan TacticalPlan, parentID int, change TacticsDraftChange) (AppliedTacticsChange, bool) {
+	operation := change.Operation
+	entityID := pointerValue(change.EntityID)
+	entityType := change.ParentEntityType
+	if !ValidHypothesisEntityType(entityType) || parentID <= 0 {
+		return AppliedTacticsChange{}, false
+	}
+	if operation == "create" {
+		if existingID, err := s.hypothesisIDByTitle(ctx, workspaceID, plan.ID, entityType, parentID, change.Title); err == nil {
+			operation = "update"
+			entityID = int(existingID)
+		}
+	}
+	input := HypothesisInput{
+		EntityType: entityType, EntityID: parentID, Title: change.Title,
+		Statement: change.Statement, ExpectedEffect: change.ExpectedEffect,
+		TestMethod: change.TestMethod, Status: change.HypothesisStatus,
+	}
+	var item Hypothesis
+	var err error
+	if operation == "create" {
+		item, err = s.createHypothesis(ctx, workspaceID, userID, input, SourceAISuggestion)
+	} else {
+		current, lookupErr := s.hypothesisByID(ctx, workspaceID, int64(entityID))
+		if lookupErr != nil || current.TacticalPlanID != plan.ID {
+			return AppliedTacticsChange{}, false
+		}
+		item, err = s.UpdateHypothesis(ctx, workspaceID, int64(entityID), input)
+	}
+	if err != nil {
+		return AppliedTacticsChange{}, false
+	}
+	return appliedChange(operation, EntityHypothesis, int(item.ID), item.Title, change), true
 }
 
 func (s *Store) applyOpportunityDraft(ctx context.Context, workspaceID int, userID int, plan TacticalPlan, parentID int, change TacticsDraftChange) (AppliedTacticsChange, bool) {
@@ -471,6 +525,17 @@ func (s *Store) opportunityIDByTitle(ctx context.Context, workspaceID int, planI
 	var id int
 	err := s.dbx.QueryRowContext(ctx, `
 		SELECT id FROM v2_tactical_opportunities
+		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND entity_type=$3 AND entity_id=$4
+			AND archived_at IS NULL AND LOWER(BTRIM(title))=LOWER(BTRIM($5))
+		ORDER BY id DESC LIMIT 1
+	`, workspaceID, planID, entityType, entityID, title).Scan(&id)
+	return id, err
+}
+
+func (s *Store) hypothesisIDByTitle(ctx context.Context, workspaceID int, planID int, entityType string, entityID int, title string) (int64, error) {
+	var id int64
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id FROM v2_tactical_hypotheses
 		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND entity_type=$3 AND entity_id=$4
 			AND archived_at IS NULL AND LOWER(BTRIM(title))=LOWER(BTRIM($5))
 		ORDER BY id DESC LIMIT 1

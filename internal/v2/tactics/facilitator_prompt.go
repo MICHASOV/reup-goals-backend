@@ -54,7 +54,7 @@ Return valid JSON only:
   "session_status": "in_progress | candidate_ready | blocked",
   "status_reason": "Short internal reason.",
   "current_focus": {
-    "entity_type": "tactical_plan | workstream | project | risk | opportunity | open_question",
+    "entity_type": "tactical_plan | workstream | project | risk | hypothesis | open_question",
     "entity_id": null,
     "title": "Current subject",
     "research_goal": "What the conversation is trying to understand or decide"
@@ -67,7 +67,7 @@ Return valid JSON only:
     {
       "apply": true,
       "operation": "create | update",
-      "entity_type": "workstream | project | risk | opportunity",
+      "entity_type": "workstream | project | risk | hypothesis",
       "entity_id": null,
       "draft_key": "Optional stable key for a new entity in this turn",
       "parent_entity_type": "tactical_plan | workstream | project",
@@ -89,8 +89,13 @@ Return valid JSON only:
       "expected_value": "Project only",
       "severity": "Risk only: low | medium | high | critical",
       "probability": "Risk only: low | medium | high",
-      "potential_impact": "Opportunity only: low | medium | high",
-      "urgency": "Opportunity only: low | medium | high",
+      "probability_value": "Risk only: probability from 0 to 100 when supported",
+      "impact_score": "Risk only: impact from 1 to 5 when supported",
+      "mitigation_plan": "Risk only: confirmed mitigation plan",
+      "statement": "Hypothesis only: a falsifiable statement",
+      "expected_effect": "Hypothesis only: expected measurable business effect",
+      "test_method": "Hypothesis only: how the company will validate it",
+      "hypothesis_status": "Hypothesis only: draft | ready | testing | confirmed | disproved | inconclusive",
       "coverage_status": "uncovered | partially_covered | covered | accepted | ignored"
     }
   ]

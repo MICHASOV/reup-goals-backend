@@ -408,7 +408,7 @@ func compilationSources(sources []RawSource) []knowledgeCompilationSource {
 			role = "uploaded_file"
 		case SourceTypeWorkspaceDoc, SourceTypeTaskCompletion, SourceTypeDepartment,
 			SourceTypeTacticalPlan, SourceTypeWorkstream, SourceTypeProject,
-			SourceTypeRisk, SourceTypeOpportunity, SourceTypeResearchResult:
+			SourceTypeRisk, SourceTypeOpportunity, SourceTypeHypothesis, SourceTypeResearchResult:
 			role = "business_record"
 		}
 		result = append(result, knowledgeCompilationSource{
@@ -434,7 +434,7 @@ func structuredSourceAvailableInWorkspaceIndex(sourceType string) bool {
 	switch sourceType {
 	case SourceTypeWorkspaceDoc, SourceTypeTaskCompletion, SourceTypeDepartment,
 		SourceTypeTacticalPlan, SourceTypeWorkstream, SourceTypeProject,
-		SourceTypeRisk, SourceTypeOpportunity, SourceTypeResearchResult:
+		SourceTypeRisk, SourceTypeOpportunity, SourceTypeHypothesis, SourceTypeResearchResult:
 		return true
 	default:
 		return false
@@ -457,6 +457,7 @@ func lastEvidenceSourceID(sources []RawSource) int {
 			sources[index].SourceType == SourceTypeProject ||
 			sources[index].SourceType == SourceTypeRisk ||
 			sources[index].SourceType == SourceTypeOpportunity ||
+			sources[index].SourceType == SourceTypeHypothesis ||
 			sources[index].SourceType == SourceTypeResearchResult {
 			return sources[index].ID
 		}

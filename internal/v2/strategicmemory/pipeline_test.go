@@ -105,7 +105,8 @@ func TestCompilationSourcesClassifiesProductInputs(t *testing.T) {
 		{ID: 8, SourceType: SourceTypeProject},
 		{ID: 9, SourceType: SourceTypeRisk},
 		{ID: 10, SourceType: SourceTypeOpportunity},
-		{ID: 11, SourceType: SourceTypeResearchResult},
+		{ID: 11, SourceType: SourceTypeHypothesis},
+		{ID: 12, SourceType: SourceTypeResearchResult},
 	})
 	for index, source := range got {
 		want := "business_record"
@@ -137,7 +138,7 @@ func TestDeferredSourceTypesCoverBusinessInputs(t *testing.T) {
 		SourceTypeStrategyMessage, SourceTypeDocumentMessage, SourceTypeTacticsMessage,
 		SourceTypeTaskDiscussion, SourceTypeWorkspaceDoc, SourceTypeTaskCompletion,
 		SourceTypeDepartment, SourceTypeTacticalPlan, SourceTypeWorkstream,
-		SourceTypeProject, SourceTypeRisk, SourceTypeOpportunity, SourceTypeResearchResult,
+		SourceTypeProject, SourceTypeRisk, SourceTypeOpportunity, SourceTypeHypothesis, SourceTypeResearchResult,
 	} {
 		if !isDeferredSourceType(sourceType) {
 			t.Fatalf("source type %q is not accepted by the recorder", sourceType)

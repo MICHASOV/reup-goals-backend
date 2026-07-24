@@ -242,14 +242,14 @@ func (s *Store) KnowledgeSourcesRange(ctx context.Context, workspaceID int, afte
 		SELECT id, workspace_id, user_id, source_type, content, metadata_json, created_at
 		FROM strategic_raw_sources
 		WHERE workspace_id=$1 AND id>$2 AND id<=$3
-			AND source_type IN ($4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+			AND source_type IN ($4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		ORDER BY id
 	`, workspaceID, afterID, throughID,
 		SourceTypeUserMessage, SourceTypeAssistantMessage, SourceTypeFileUpload,
 		SourceTypeStrategyMessage, SourceTypeDocumentMessage, SourceTypeTacticsMessage,
 		SourceTypeTaskDiscussion, SourceTypeWorkspaceDoc, SourceTypeTaskCompletion,
 		SourceTypeDepartment, SourceTypeTacticalPlan, SourceTypeWorkstream, SourceTypeProject,
-		SourceTypeRisk, SourceTypeOpportunity, SourceTypeResearchResult,
+		SourceTypeRisk, SourceTypeOpportunity, SourceTypeHypothesis, SourceTypeResearchResult,
 	)
 	if err != nil {
 		return nil, err

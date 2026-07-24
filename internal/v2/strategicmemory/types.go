@@ -21,6 +21,7 @@ const (
 	SourceTypeProject          = "tactical_project"
 	SourceTypeRisk             = "tactical_risk"
 	SourceTypeOpportunity      = "tactical_opportunity"
+	SourceTypeHypothesis       = "tactical_hypothesis"
 	SourceTypeResearchResult   = "strategy_research_result"
 
 	ConversationStateCollectingContext = "collecting_context"

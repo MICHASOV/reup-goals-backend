@@ -742,6 +742,61 @@ func (h *Handler) Opportunities(w http.ResponseWriter, r *http.Request) {
 	writeEntity(w, err, "opportunity", opportunity, "opportunity_update_failed")
 }
 
+func (h *Handler) Hypotheses(w http.ResponseWriter, r *http.Request) {
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+	if r.URL.Path == "/api/v2/tactics/hypotheses" {
+		if r.Method != http.MethodPost {
+			api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		input, ok := decodeHypothesisInput(w, r)
+		if !ok {
+			return
+		}
+		if input.Status == "" {
+			input.Status = "draft"
+		}
+		if input.EntityID <= 0 || input.Title == "" || !ValidHypothesisEntityType(input.EntityType) ||
+			!ValidHypothesisStatus(input.Status) || !validHypothesisConfidence(input.Confidence) {
+			api.WriteError(w, http.StatusBadRequest, "invalid_hypothesis")
+			return
+		}
+		item, err := h.store.CreateHypothesis(r.Context(), workspace.ID, userID, input)
+		if err == nil {
+			h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeHypothesis, int(item.ID), item)
+		}
+		writeEntity(w, err, "hypothesis", item, "hypothesis_create_failed")
+		return
+	}
+
+	id, ok := numericSuffix(r.URL.Path, "/api/v2/tactics/hypotheses/")
+	if !ok {
+		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if r.Method != http.MethodPatch {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	input, ok := decodeHypothesisInput(w, r)
+	if !ok {
+		return
+	}
+	if (input.Status != "" && !ValidHypothesisStatus(input.Status)) ||
+		!validHypothesisConfidence(input.Confidence) {
+		api.WriteError(w, http.StatusBadRequest, "invalid_hypothesis")
+		return
+	}
+	item, err := h.store.UpdateHypothesis(r.Context(), workspace.ID, int64(id), input)
+	if err == nil {
+		h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeHypothesis, int(item.ID), item)
+	}
+	writeEntity(w, err, "hypothesis", item, "hypothesis_update_failed")
+}
+
 func (h *Handler) currentWorkspace(w http.ResponseWriter, r *http.Request) (workspaces.Workspace, int, bool) {
 	uid, ok := auth.UserIDFromContext(r.Context())
 	if !ok {
@@ -791,6 +846,11 @@ func decodeRiskInput(w http.ResponseWriter, r *http.Request) (RiskInput, bool) {
 		return RiskInput{}, false
 	}
 	input.trim()
+	if (input.ProbabilityValue != nil && (*input.ProbabilityValue < 0 || *input.ProbabilityValue > 100)) ||
+		(input.ImpactScore != nil && (*input.ImpactScore < 1 || *input.ImpactScore > 5)) {
+		api.WriteError(w, http.StatusBadRequest, "invalid_risk_score")
+		return RiskInput{}, false
+	}
 	return input, true
 }
 
@@ -802,6 +862,20 @@ func decodeOpportunityInput(w http.ResponseWriter, r *http.Request) (Opportunity
 	}
 	input.trim()
 	return input, true
+}
+
+func decodeHypothesisInput(w http.ResponseWriter, r *http.Request) (HypothesisInput, bool) {
+	var input HypothesisInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return HypothesisInput{}, false
+	}
+	input.trim()
+	return input, true
+}
+
+func validHypothesisConfidence(value *int) bool {
+	return value == nil || (*value >= 0 && *value <= 1000)
 }
 
 func writeEntity(w http.ResponseWriter, err error, key string, value any, internalCode string) {

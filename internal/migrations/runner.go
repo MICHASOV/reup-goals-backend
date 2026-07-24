@@ -2605,6 +2605,267 @@ var migrations = []Migration{
 				ON v2_tactics_advisor_threads (workspace_id, user_id, scope_type, scope_id, updated_at DESC);
 		`,
 	},
+	{
+		ID: "20260724_046_metrics_hypotheses_and_risk_links",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_workspace_metrics (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				template_key TEXT NOT NULL DEFAULT '',
+				name TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				category TEXT NOT NULL DEFAULT 'custom',
+				unit TEXT NOT NULL DEFAULT 'number',
+				value_type TEXT NOT NULL DEFAULT 'number',
+				better_direction TEXT NOT NULL DEFAULT 'increase',
+				formula TEXT NOT NULL DEFAULT '',
+				is_custom BOOLEAN NOT NULL DEFAULT false,
+				status TEXT NOT NULL DEFAULT 'active',
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				archived_at TIMESTAMPTZ NULL,
+				CHECK (value_type IN ('number', 'percent', 'currency', 'duration', 'ratio')),
+				CHECK (better_direction IN ('increase', 'decrease', 'range')),
+				CHECK (status IN ('active', 'archived'))
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_workspace_metrics_template
+				ON v2_workspace_metrics (workspace_id, template_key)
+				WHERE template_key <> '' AND archived_at IS NULL;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_workspace_metrics_name
+				ON v2_workspace_metrics (workspace_id, LOWER(name))
+				WHERE archived_at IS NULL;
+			CREATE INDEX IF NOT EXISTS idx_v2_workspace_metrics_catalog
+				ON v2_workspace_metrics (workspace_id, category, name);
+
+			CREATE TABLE IF NOT EXISTS v2_metric_targets (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				metric_id BIGINT NOT NULL REFERENCES v2_workspace_metrics(id) ON DELETE CASCADE,
+				scope_type TEXT NOT NULL,
+				scope_id INTEGER NOT NULL,
+				role TEXT NOT NULL DEFAULT 'supporting',
+				baseline_value NUMERIC NULL,
+				target_value NUMERIC NULL,
+				target_date DATE NULL,
+				display_unit TEXT NOT NULL DEFAULT '',
+				cadence TEXT NOT NULL DEFAULT 'monthly',
+				source_note TEXT NOT NULL DEFAULT '',
+				owner_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				archived_at TIMESTAMPTZ NULL,
+				CHECK (scope_type IN ('workspace', 'strategy', 'workstream', 'project')),
+				CHECK (role IN ('primary', 'guardrail', 'supporting')),
+				CHECK (cadence IN ('daily', 'weekly', 'monthly', 'quarterly', 'on_demand'))
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_metric_targets_scope_metric
+				ON v2_metric_targets (workspace_id, metric_id, scope_type, scope_id)
+				WHERE archived_at IS NULL;
+			CREATE INDEX IF NOT EXISTS idx_v2_metric_targets_scope
+				ON v2_metric_targets (workspace_id, scope_type, scope_id, role, id);
+
+			CREATE TABLE IF NOT EXISTS v2_metric_observations (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				metric_id BIGINT NOT NULL REFERENCES v2_workspace_metrics(id) ON DELETE CASCADE,
+				target_id BIGINT NULL REFERENCES v2_metric_targets(id) ON DELETE SET NULL,
+				value NUMERIC NOT NULL,
+				measured_at DATE NOT NULL DEFAULT CURRENT_DATE,
+				source_type TEXT NOT NULL DEFAULT 'manual',
+				source_note TEXT NOT NULL DEFAULT '',
+				evidence_url TEXT NOT NULL DEFAULT '',
+				confidence INTEGER NOT NULL DEFAULT 1000,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				CHECK (source_type IN ('manual', 'task_result', 'integration', 'ai_suggestion')),
+				CHECK (confidence BETWEEN 0 AND 1000)
+			);
+			CREATE INDEX IF NOT EXISTS idx_v2_metric_observations_history
+				ON v2_metric_observations (workspace_id, metric_id, measured_at DESC, id DESC);
+			CREATE INDEX IF NOT EXISTS idx_v2_metric_observations_target
+				ON v2_metric_observations (workspace_id, target_id, measured_at DESC, id DESC);
+
+			ALTER TABLE v2_tactical_risks
+				ADD COLUMN IF NOT EXISTS probability_value INTEGER NULL,
+				ADD COLUMN IF NOT EXISTS impact_score INTEGER NULL,
+				ADD COLUMN IF NOT EXISTS economic_exposure NUMERIC NULL,
+				ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS owner_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				ADD COLUMN IF NOT EXISTS leading_indicators TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS mitigation_plan TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS contingency_plan TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS realized_at TIMESTAMPTZ NULL;
+			ALTER TABLE v2_tactical_risks
+				DROP CONSTRAINT IF EXISTS v2_tactical_risks_probability_value_check;
+			ALTER TABLE v2_tactical_risks
+				ADD CONSTRAINT v2_tactical_risks_probability_value_check
+				CHECK (probability_value IS NULL OR probability_value BETWEEN 0 AND 100);
+			ALTER TABLE v2_tactical_risks
+				DROP CONSTRAINT IF EXISTS v2_tactical_risks_impact_score_check;
+			ALTER TABLE v2_tactical_risks
+				ADD CONSTRAINT v2_tactical_risks_impact_score_check
+				CHECK (impact_score IS NULL OR impact_score BETWEEN 1 AND 5);
+
+			CREATE TABLE IF NOT EXISTS v2_tactical_hypotheses (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				tactical_plan_id INTEGER NOT NULL REFERENCES v2_tactical_plans(id) ON DELETE CASCADE,
+				entity_type TEXT NOT NULL,
+				entity_id INTEGER NOT NULL,
+				title TEXT NOT NULL,
+				statement TEXT NOT NULL DEFAULT '',
+				expected_effect TEXT NOT NULL DEFAULT '',
+				metric_target_id BIGINT NULL REFERENCES v2_metric_targets(id) ON DELETE SET NULL,
+				test_method TEXT NOT NULL DEFAULT '',
+				confidence INTEGER NOT NULL DEFAULT 500,
+				status TEXT NOT NULL DEFAULT 'draft',
+				evidence TEXT NOT NULL DEFAULT '',
+				owner_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				source TEXT NOT NULL DEFAULT 'manual',
+				legacy_opportunity_id INTEGER NULL REFERENCES v2_tactical_opportunities(id) ON DELETE SET NULL,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				archived_at TIMESTAMPTZ NULL,
+				CHECK (entity_type IN ('workstream', 'project')),
+				CHECK (confidence BETWEEN 0 AND 1000),
+				CHECK (status IN ('draft', 'ready', 'testing', 'confirmed', 'disproved', 'inconclusive', 'archived'))
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_tactical_hypotheses_legacy
+				ON v2_tactical_hypotheses (workspace_id, legacy_opportunity_id)
+				WHERE legacy_opportunity_id IS NOT NULL;
+			CREATE INDEX IF NOT EXISTS idx_v2_tactical_hypotheses_scope
+				ON v2_tactical_hypotheses (workspace_id, tactical_plan_id, entity_type, entity_id, status);
+
+			CREATE TABLE IF NOT EXISTS v2_task_risks (
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				risk_id INTEGER NOT NULL REFERENCES v2_tactical_risks(id) ON DELETE CASCADE,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (task_id, risk_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_v2_task_risks_risk
+				ON v2_task_risks (workspace_id, risk_id, task_id);
+
+			CREATE TABLE IF NOT EXISTS v2_task_hypotheses (
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				hypothesis_id BIGINT NOT NULL REFERENCES v2_tactical_hypotheses(id) ON DELETE CASCADE,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (task_id, hypothesis_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_v2_task_hypotheses_hypothesis
+				ON v2_task_hypotheses (workspace_id, hypothesis_id, task_id);
+
+			ALTER TABLE v2_tasks
+				ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'execution';
+			ALTER TABLE v2_tasks
+				DROP CONSTRAINT IF EXISTS v2_tasks_purpose_check;
+			ALTER TABLE v2_tasks
+				ADD CONSTRAINT v2_tasks_purpose_check
+				CHECK (purpose IN ('execution', 'hypothesis_test', 'risk_mitigation'));
+
+			INSERT INTO v2_task_risks (workspace_id, task_id, risk_id)
+			SELECT workspace_id, id, risk_id
+			FROM v2_tasks
+			WHERE risk_id IS NOT NULL
+			ON CONFLICT DO NOTHING;
+
+			INSERT INTO v2_tactical_hypotheses (
+				workspace_id, tactical_plan_id, entity_type, entity_id, title, statement,
+				expected_effect, confidence, status, source, legacy_opportunity_id, created_by,
+				created_at, updated_at
+			)
+			SELECT workspace_id, tactical_plan_id, entity_type, entity_id, title, description,
+				potential_impact, 500,
+				CASE WHEN status IN ('archived', 'completed') THEN 'archived' ELSE 'ready' END,
+				source, id, created_by, created_at, updated_at
+			FROM v2_tactical_opportunities
+			WHERE archived_at IS NULL AND entity_type IN ('workstream', 'project')
+			ON CONFLICT DO NOTHING;
+
+			INSERT INTO v2_task_hypotheses (workspace_id, task_id, hypothesis_id)
+			SELECT task.workspace_id, task.id, hypothesis.id
+			FROM v2_tasks task
+			JOIN v2_tactical_hypotheses hypothesis
+				ON hypothesis.workspace_id=task.workspace_id
+				AND hypothesis.legacy_opportunity_id=task.opportunity_id
+			WHERE task.opportunity_id IS NOT NULL
+			ON CONFLICT DO NOTHING;
+
+			UPDATE v2_tasks
+			SET purpose=CASE
+				WHEN risk_id IS NOT NULL THEN 'risk_mitigation'
+				WHEN opportunity_id IS NOT NULL THEN 'hypothesis_test'
+				ELSE purpose
+			END
+			WHERE risk_id IS NOT NULL OR opportunity_id IS NOT NULL;
+
+			INSERT INTO v2_workspace_metrics (
+				workspace_id, name, category, unit, value_type, better_direction, formula,
+				is_custom, status, created_by
+			)
+			SELECT DISTINCT ON (workstream.workspace_id, LOWER(BTRIM(metric.value->>'name')))
+				workstream.workspace_id,
+				BTRIM(metric.value->>'name'),
+				'custom', 'number', 'number', 'increase', '', true, 'active', workstream.created_by
+			FROM v2_tactical_workstreams workstream
+			CROSS JOIN LATERAL jsonb_array_elements(workstream.metrics_json) metric(value)
+			WHERE workstream.archived_at IS NULL AND BTRIM(metric.value->>'name') <> ''
+			ORDER BY workstream.workspace_id, LOWER(BTRIM(metric.value->>'name')), workstream.id
+			ON CONFLICT DO NOTHING;
+
+			INSERT INTO v2_metric_targets (
+				workspace_id, metric_id, scope_type, scope_id, role,
+				baseline_value, target_value, cadence, source_note, created_by
+			)
+			SELECT
+				workstream.workspace_id, workspace_metric.id, 'workstream', workstream.id, 'primary',
+				CASE WHEN BTRIM(metric.value->>'current') ~ '^-?[0-9]+([.,][0-9]+)?$'
+					THEN REPLACE(BTRIM(metric.value->>'current'), ',', '.')::NUMERIC ELSE NULL END,
+				CASE WHEN BTRIM(metric.value->>'target') ~ '^-?[0-9]+([.,][0-9]+)?$'
+					THEN REPLACE(BTRIM(metric.value->>'target'), ',', '.')::NUMERIC ELSE NULL END,
+				'monthly',
+				CASE WHEN BTRIM(metric.value->>'current') <> '' OR BTRIM(metric.value->>'target') <> ''
+					THEN CONCAT('Импортировано: ', metric.value->>'current', ' → ', metric.value->>'target') ELSE '' END,
+				workstream.created_by
+			FROM v2_tactical_workstreams workstream
+			CROSS JOIN LATERAL jsonb_array_elements(workstream.metrics_json) metric(value)
+			JOIN v2_workspace_metrics workspace_metric
+				ON workspace_metric.workspace_id=workstream.workspace_id
+				AND LOWER(workspace_metric.name)=LOWER(BTRIM(metric.value->>'name'))
+				AND workspace_metric.archived_at IS NULL
+			WHERE workstream.archived_at IS NULL AND BTRIM(metric.value->>'name') <> ''
+			ON CONFLICT DO NOTHING;
+
+			INSERT INTO v2_workspace_metrics (
+				workspace_id, name, category, unit, value_type, better_direction, formula,
+				is_custom, status, created_by
+			)
+			SELECT DISTINCT ON (project.workspace_id, LOWER(BTRIM(project.metric_name)))
+				project.workspace_id, BTRIM(project.metric_name), 'custom', 'number', 'number',
+				'increase', '', true, 'active', project.created_by
+			FROM v2_tactical_projects project
+			WHERE project.archived_at IS NULL AND BTRIM(project.metric_name) <> ''
+			ORDER BY project.workspace_id, LOWER(BTRIM(project.metric_name)), project.id
+			ON CONFLICT DO NOTHING;
+
+			INSERT INTO v2_metric_targets (
+				workspace_id, metric_id, scope_type, scope_id, role, cadence, source_note, created_by
+			)
+			SELECT project.workspace_id, workspace_metric.id, 'project', project.id, 'primary',
+				'monthly', project.expected_value, project.created_by
+			FROM v2_tactical_projects project
+			JOIN v2_workspace_metrics workspace_metric
+				ON workspace_metric.workspace_id=project.workspace_id
+				AND LOWER(workspace_metric.name)=LOWER(BTRIM(project.metric_name))
+				AND workspace_metric.archived_at IS NULL
+			WHERE project.archived_at IS NULL AND BTRIM(project.metric_name) <> ''
+			ON CONFLICT DO NOTHING;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

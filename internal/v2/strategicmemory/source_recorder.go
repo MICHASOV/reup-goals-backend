@@ -141,7 +141,7 @@ func isDeferredSourceType(value string) bool {
 	case SourceTypeStrategyMessage, SourceTypeDocumentMessage, SourceTypeTacticsMessage,
 		SourceTypeTaskDiscussion, SourceTypeWorkspaceDoc, SourceTypeTaskCompletion,
 		SourceTypeDepartment, SourceTypeTacticalPlan, SourceTypeWorkstream,
-		SourceTypeProject, SourceTypeRisk, SourceTypeOpportunity, SourceTypeResearchResult:
+		SourceTypeProject, SourceTypeRisk, SourceTypeOpportunity, SourceTypeHypothesis, SourceTypeResearchResult:
 		return true
 	default:
 		return false
