@@ -202,19 +202,21 @@ func (s *Store) RecoverStaleEntityEvaluations(ctx context.Context) error {
 
 func (s *Store) hydrateEntityEvaluations(ctx context.Context, workspaceID int, workstreams []Workstream) error {
 	for index := range workstreams {
-		evaluation, status, err := s.LatestEntityEvaluation(ctx, workspaceID, EntityWorkstream, workstreams[index].ID)
+		workstream := &workstreams[index]
+		evaluation, status, err := s.LatestEntityEvaluation(ctx, workspaceID, EntityWorkstream, workstream.ID)
 		if err != nil {
 			return err
 		}
-		workstreams[index].Evaluation = evaluation
-		workstreams[index].EvaluationStatus = status
-		for projectIndex := range workstreams[index].Projects {
-			evaluation, status, err := s.LatestEntityEvaluation(ctx, workspaceID, EntityProject, workstreams[index].Projects[projectIndex].ID)
+		workstream.Evaluation = evaluation
+		workstream.EvaluationStatus = status
+		for projectIndex := range workstream.Projects {
+			project := &workstream.Projects[projectIndex]
+			evaluation, status, err := s.LatestEntityEvaluation(ctx, workspaceID, EntityProject, project.ID)
 			if err != nil {
 				return err
 			}
-			workstreams[index].Projects[projectIndex].Evaluation = evaluation
-			workstreams[index].Projects[projectIndex].EvaluationStatus = status
+			project.Evaluation = evaluation
+			project.EvaluationStatus = status
 		}
 	}
 	return nil
