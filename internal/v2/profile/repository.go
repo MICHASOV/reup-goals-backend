@@ -15,6 +15,12 @@ import (
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
+var (
+	ErrMemberLimitReached = errors.New("workspace_member_limit_reached")
+	ErrAlreadyMember      = errors.New("workspace_member_already_exists")
+	ErrInvalidMemberRole  = errors.New("invalid_member_role")
+)
+
 type Store struct {
 	dbx        *sql.DB
 	workspaces *workspaces.Store
@@ -32,8 +38,8 @@ func (s *Store) Overview(ctx context.Context, userID int, checkoutAvailable bool
 
 	var account Account
 	if err := s.dbx.QueryRowContext(ctx, `
-		SELECT id, email, name, avatar_url FROM users WHERE id=$1
-	`, userID).Scan(&account.ID, &account.Email, &account.Name, &account.AvatarURL); err != nil {
+		SELECT id, email, name, avatar_url, company_role FROM users WHERE id=$1
+	`, userID).Scan(&account.ID, &account.Email, &account.Name, &account.AvatarURL, &account.CompanyRole); err != nil {
 		return Overview{}, err
 	}
 
@@ -49,12 +55,20 @@ func (s *Store) Overview(ctx context.Context, userID int, checkoutAvailable bool
 	if err != nil {
 		return Overview{}, err
 	}
+	if err := s.dbx.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM workspace_memberships WHERE workspace_id=$1 AND status='active') +
+			(SELECT COUNT(*) FROM workspace_invitations WHERE workspace_id=$1 AND status='pending' AND expires_at>NOW())
+	`, workspace.ID).Scan(&subscription.SeatsUsed); err != nil {
+		return Overview{}, err
+	}
 
 	displayName := workspace.Name
 	if workspace.DisplayName != nil && strings.TrimSpace(*workspace.DisplayName) != "" {
 		displayName = strings.TrimSpace(*workspace.DisplayName)
 	}
 	isOwner := membership.Role == roleOwner
+	canManageMembers := isOwner || membership.Role == roleAdmin
 	return Overview{
 		Account: account,
 		Workspace: WorkspaceSummary{
@@ -68,7 +82,7 @@ func (s *Store) Overview(ctx context.Context, userID int, checkoutAvailable bool
 		Subscription: subscription,
 		Capabilities: Capabilities{
 			ManageWorkspace:    isOwner,
-			ManageMembers:      isOwner,
+			ManageMembers:      canManageMembers,
 			ManageSubscription: isOwner,
 			DeleteWorkspace:    isOwner,
 		},
@@ -80,7 +94,7 @@ func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, 
 	var periodEnd, nextRenewal, graceUntil sql.NullTime
 	err := s.dbx.QueryRowContext(ctx, `
 		SELECT plan_name, status, amount, currency, payment_method, payment_provider,
-			current_period_end, next_payment_at, grace_until
+			current_period_end, next_payment_at, grace_until, member_limit
 		FROM subscriptions
 		WHERE workspace_id=$1 OR (workspace_id IS NULL AND user_id=$2)
 		ORDER BY CASE WHEN workspace_id=$1 THEN 0 ELSE 1 END, updated_at DESC
@@ -88,6 +102,7 @@ func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, 
 	`, workspaceID, ownerUserID).Scan(
 		&result.Plan, &result.Status, &result.Amount, &result.Currency,
 		&result.PaymentMethod, &result.PaymentProvider, &periodEnd, &nextRenewal, &graceUntil,
+		&result.MemberLimit,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SubscriptionSummary{
@@ -96,6 +111,7 @@ func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, 
 			Currency:          "RUB",
 			DisplayStatus:     "inactive",
 			CheckoutAvailable: checkoutAvailable,
+			MemberLimit:       5,
 		}, nil
 	}
 	if err != nil {
@@ -113,12 +129,14 @@ func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, 
 	return result, nil
 }
 
-func (s *Store) UpdateAccount(ctx context.Context, userID int, name, avatarURL string) (Account, error) {
+func (s *Store) UpdateAccount(ctx context.Context, userID int, name, avatarURL, companyRole string) (Account, error) {
 	var account Account
 	err := s.dbx.QueryRowContext(ctx, `
-		UPDATE users SET name=$1, avatar_url=$2 WHERE id=$3
-		RETURNING id, email, name, avatar_url
-	`, name, avatarURL, userID).Scan(&account.ID, &account.Email, &account.Name, &account.AvatarURL)
+		UPDATE users SET name=$1, avatar_url=$2, company_role=$3 WHERE id=$4
+		RETURNING id, email, name, avatar_url, company_role
+	`, name, avatarURL, companyRole, userID).Scan(
+		&account.ID, &account.Email, &account.Name, &account.AvatarURL, &account.CompanyRole,
+	)
 	return account, err
 }
 
@@ -185,8 +203,8 @@ func (s *Store) Members(ctx context.Context, workspaceID, currentUserID int) ([]
 	}
 
 	rows, err := s.dbx.QueryContext(ctx, `
-		SELECT membership.id, users.id, users.name, users.email, users.avatar_url,
-			membership.role, membership.created_at
+			SELECT membership.id, users.id, users.name, users.email, users.avatar_url,
+				users.company_role, membership.role, membership.created_at
 		FROM workspace_memberships membership
 		JOIN users ON users.id=membership.user_id
 		WHERE membership.workspace_id=$1 AND membership.status='active'
@@ -200,13 +218,17 @@ func (s *Store) Members(ctx context.Context, workspaceID, currentUserID int) ([]
 	for rows.Next() {
 		var item Member
 		var userID int
-		if err := rows.Scan(&item.ID, &userID, &item.Name, &item.Email, &item.AvatarURL, &item.Role, &item.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&item.ID, &userID, &item.Name, &item.Email, &item.AvatarURL,
+			&item.CompanyRole, &item.Role, &item.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		item.Kind = "membership"
 		item.UserID = &userID
 		item.Status = invitationAccepted
 		item.CanBeRemoved = item.Role != roleOwner && userID != currentUserID
+		item.CanChangeRole = item.Role != roleOwner && userID != currentUserID
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -232,12 +254,16 @@ func (s *Store) Members(ctx context.Context, workspaceID, currentUserID int) ([]
 		item.Kind = "invitation"
 		item.ExpiresAt = &expiresAt
 		item.CanBeRemoved = item.Status == invitationPending
+		item.CanChangeRole = item.Status == invitationPending
 		result = append(result, item)
 	}
 	return result, invitationRows.Err()
 }
 
-func (s *Store) Invite(ctx context.Context, workspaceID, invitedBy int, email string) (Member, string, error) {
+func (s *Store) Invite(ctx context.Context, workspaceID, invitedBy int, email, role string, memberLimit int) (Member, string, error) {
+	if role != roleAdmin && role != roleMember {
+		return Member{}, "", ErrInvalidMemberRole
+	}
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return Member{}, "", err
@@ -251,19 +277,59 @@ func (s *Store) Invite(ctx context.Context, workspaceID, invitedBy int, email st
 		return Member{}, "", err
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, workspaceID); err != nil {
+		return Member{}, "", err
+	}
+	var alreadyMember bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM workspace_memberships membership
+			JOIN users ON users.id=membership.user_id
+			WHERE membership.workspace_id=$1 AND membership.status='active' AND lower(users.email)=lower($2)
+		)
+	`, workspaceID, email).Scan(&alreadyMember); err != nil {
+		return Member{}, "", err
+	}
+	if alreadyMember {
+		return Member{}, "", ErrAlreadyMember
+	}
+	var pendingExists bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM workspace_invitations
+			WHERE workspace_id=$1 AND lower(email)=lower($2) AND status='pending' AND expires_at>NOW()
+		)
+	`, workspaceID, email).Scan(&pendingExists); err != nil {
+		return Member{}, "", err
+	}
+	if !pendingExists && memberLimit > 0 {
+		var seatsUsed int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT
+				(SELECT COUNT(*) FROM workspace_memberships WHERE workspace_id=$1 AND status='active') +
+				(SELECT COUNT(*) FROM workspace_invitations WHERE workspace_id=$1 AND status='pending' AND expires_at>NOW())
+		`, workspaceID).Scan(&seatsUsed); err != nil {
+			return Member{}, "", err
+		}
+		if seatsUsed >= memberLimit {
+			return Member{}, "", ErrMemberLimitReached
+		}
+	}
 
 	var invitationID int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO workspace_invitations (
 			workspace_id, email, role, status, invited_by, token_hash, expires_at
-		) VALUES ($1,$2,'member','pending',$3,$4,$5)
+		) VALUES ($1,$2,$3,'pending',$4,$5,$6)
 		ON CONFLICT (workspace_id, (lower(email))) WHERE status='pending' DO UPDATE SET
 			invited_by=EXCLUDED.invited_by,
+			role=EXCLUDED.role,
 			token_hash=EXCLUDED.token_hash,
 			expires_at=EXCLUDED.expires_at,
 			updated_at=NOW()
 		RETURNING id
-	`, workspaceID, email, invitedBy, hex.EncodeToString(tokenHash[:]), expiresAt).Scan(&invitationID)
+	`, workspaceID, email, role, invitedBy, hex.EncodeToString(tokenHash[:]), expiresAt).Scan(&invitationID)
 	if err != nil {
 		return Member{}, "", err
 	}
@@ -271,36 +337,87 @@ func (s *Store) Invite(ctx context.Context, workspaceID, invitedBy int, email st
 		return Member{}, "", err
 	}
 	return Member{
-		ID: invitationID, Kind: "invitation", Email: email, Role: roleMember,
-		Status: invitationPending, ExpiresAt: &expiresAt, CreatedAt: time.Now().UTC(), CanBeRemoved: true,
+		ID: invitationID, Kind: "invitation", Email: email, Role: role,
+		Status: invitationPending, ExpiresAt: &expiresAt, CreatedAt: time.Now().UTC(),
+		CanBeRemoved: true, CanChangeRole: true,
 	}, token, nil
 }
 
 func (s *Store) AcceptInvitation(ctx context.Context, userID int, token string) error {
 	tokenHash := sha256.Sum256([]byte(token))
-	tx, err := s.dbx.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
+	hash := hex.EncodeToString(tokenHash[:])
 	var workspaceID int
-	var role string
-	err = tx.QueryRowContext(ctx, `
-		SELECT invitation.workspace_id, invitation.role
+	if err := s.dbx.QueryRowContext(ctx, `
+		SELECT invitation.workspace_id
 		FROM workspace_invitations invitation
 		JOIN users ON users.id=$1
 		WHERE invitation.token_hash=$2
 			AND lower(invitation.email)=lower(users.email)
 			AND invitation.status='pending'
 			AND invitation.expires_at > NOW()
-		FOR UPDATE
-	`, userID, hex.EncodeToString(tokenHash[:])).Scan(&workspaceID, &role)
+	`, userID, hash).Scan(&workspaceID); err != nil {
+		return err
+	}
+	tx, err := s.dbx.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if role != roleMember {
-		return errors.New("invalid_invitation_role")
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, workspaceID); err != nil {
+		return err
+	}
+	var role string
+	err = tx.QueryRowContext(ctx, `
+		SELECT invitation.role
+		FROM workspace_invitations invitation
+		JOIN users ON users.id=$1
+		WHERE invitation.token_hash=$2
+			AND invitation.workspace_id=$3
+			AND lower(invitation.email)=lower(users.email)
+			AND invitation.status='pending'
+			AND invitation.expires_at > NOW()
+		FOR UPDATE
+	`, userID, hash, workspaceID).Scan(&role)
+	if err != nil {
+		return err
+	}
+	if role != roleAdmin && role != roleMember {
+		return ErrInvalidMemberRole
+	}
+	var alreadyMember bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM workspace_memberships
+			WHERE workspace_id=$1 AND user_id=$2 AND status='active'
+		)
+	`, workspaceID, userID).Scan(&alreadyMember); err != nil {
+		return err
+	}
+	var memberLimit int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE((
+			SELECT subscription.member_limit
+			FROM subscriptions subscription
+			JOIN workspaces workspace ON workspace.id=$1
+			WHERE subscription.workspace_id=$1
+				OR (subscription.workspace_id IS NULL AND subscription.user_id=workspace.owner_user_id)
+			ORDER BY CASE WHEN subscription.workspace_id=$1 THEN 0 ELSE 1 END, subscription.updated_at DESC
+			LIMIT 1
+		), 5)
+	`, workspaceID).Scan(&memberLimit); err != nil {
+		return err
+	}
+	if !alreadyMember && memberLimit > 0 {
+		var activeMembers int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM workspace_memberships
+			WHERE workspace_id=$1 AND status='active'
+		`, workspaceID).Scan(&activeMembers); err != nil {
+			return err
+		}
+		if activeMembers >= memberLimit {
+			return ErrMemberLimitReached
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE workspace_memberships SET is_default=FALSE, updated_at=NOW()
@@ -310,10 +427,10 @@ func (s *Store) AcceptInvitation(ctx context.Context, userID int, token string) 
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO workspace_memberships (workspace_id, user_id, role, status, is_default)
-		VALUES ($1,$2,'member','active',TRUE)
+		VALUES ($1,$2,$3,'active',TRUE)
 		ON CONFLICT (workspace_id, user_id) DO UPDATE SET
-			role='member', status='active', is_default=TRUE, updated_at=NOW()
-	`, workspaceID, userID); err != nil {
+			role=EXCLUDED.role, status='active', is_default=TRUE, updated_at=NOW()
+	`, workspaceID, userID, role); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -326,17 +443,46 @@ func (s *Store) AcceptInvitation(ctx context.Context, userID int, token string) 
 	return tx.Commit()
 }
 
-func (s *Store) RemoveMember(ctx context.Context, workspaceID int, kind string, id int64) error {
+func (s *Store) RemoveMember(ctx context.Context, workspaceID, actorUserID int, kind string, id int64) error {
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	var result sql.Result
-	var err error
 	switch kind {
 	case "membership":
-		result, err = s.dbx.ExecContext(ctx, `
+		var userID int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT user_id FROM workspace_memberships
+			WHERE id=$1 AND workspace_id=$2 AND role <> 'owner' AND user_id <> $3
+			FOR UPDATE
+		`, id, workspaceID, actorUserID).Scan(&userID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM v2_department_members WHERE workspace_id=$1 AND user_id=$2
+		`, workspaceID, userID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE v2_departments SET manager_user_id=NULL, updated_at=NOW()
+			WHERE workspace_id=$1 AND manager_user_id=$2
+		`, workspaceID, userID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE v2_tasks SET owner_user_id=NULL, updated_at=NOW()
+			WHERE workspace_id=$1 AND owner_user_id=$2
+		`, workspaceID, userID); err != nil {
+			return err
+		}
+		result, err = tx.ExecContext(ctx, `
 			DELETE FROM workspace_memberships
 			WHERE id=$1 AND workspace_id=$2 AND role <> 'owner'
 		`, id, workspaceID)
 	case "invitation":
-		result, err = s.dbx.ExecContext(ctx, `
+		result, err = tx.ExecContext(ctx, `
 			UPDATE workspace_invitations
 			SET status='cancelled', cancelled_at=NOW(), updated_at=NOW()
 			WHERE id=$1 AND workspace_id=$2 AND status='pending'
@@ -354,7 +500,42 @@ func (s *Store) RemoveMember(ctx context.Context, workspaceID int, kind string, 
 	if count == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return tx.Commit()
+}
+
+func (s *Store) UpdateMemberRole(
+	ctx context.Context,
+	workspaceID, actorUserID int,
+	membershipID int64,
+	role string,
+) (Member, error) {
+	if role != roleAdmin && role != roleMember {
+		return Member{}, ErrInvalidMemberRole
+	}
+	var item Member
+	var userID int
+	err := s.dbx.QueryRowContext(ctx, `
+		UPDATE workspace_memberships membership
+		SET role=$1, updated_at=NOW()
+		FROM users
+		WHERE membership.id=$2 AND membership.workspace_id=$3
+			AND membership.role <> 'owner' AND membership.user_id <> $4
+			AND users.id=membership.user_id
+			RETURNING membership.id, users.id, users.name, users.email, users.avatar_url,
+				users.company_role, membership.role, membership.created_at
+	`, role, membershipID, workspaceID, actorUserID).Scan(
+		&item.ID, &userID, &item.Name, &item.Email, &item.AvatarURL,
+		&item.CompanyRole, &item.Role, &item.CreatedAt,
+	)
+	if err != nil {
+		return Member{}, err
+	}
+	item.Kind = "membership"
+	item.UserID = &userID
+	item.Status = invitationAccepted
+	item.CanBeRemoved = true
+	item.CanChangeRole = true
+	return item, nil
 }
 
 func (s *Store) BillingOrganization(ctx context.Context, workspaceID int) (*BillingOrganization, error) {

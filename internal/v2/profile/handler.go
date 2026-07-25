@@ -98,19 +98,23 @@ func (h *Handler) account(w http.ResponseWriter, r *http.Request, userID int) {
 		return
 	}
 	var body struct {
-		Name      string `json:"name"`
-		AvatarURL string `json:"avatar_url"`
+		Name        string `json:"name"`
+		AvatarURL   string `json:"avatar_url"`
+		CompanyRole string `json:"company_role"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
 	body.Name = strings.TrimSpace(body.Name)
 	body.AvatarURL = strings.TrimSpace(body.AvatarURL)
-	if len([]rune(body.Name)) < 2 || len([]rune(body.Name)) > 120 || len(body.AvatarURL) > 2048 || !validOptionalHTTPURL(body.AvatarURL) {
+	body.CompanyRole = strings.TrimSpace(body.CompanyRole)
+	if len([]rune(body.Name)) < 2 || len([]rune(body.Name)) > 120 ||
+		len([]rune(body.CompanyRole)) > 120 || len(body.AvatarURL) > 2048 ||
+		!validOptionalHTTPURL(body.AvatarURL) {
 		api.WriteError(w, http.StatusUnprocessableEntity, "invalid_profile")
 		return
 	}
-	result, err := h.store.UpdateAccount(r.Context(), userID, body.Name, body.AvatarURL)
+	result, err := h.store.UpdateAccount(r.Context(), userID, body.Name, body.AvatarURL, body.CompanyRole)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "profile_update_failed")
 		return
@@ -216,7 +220,7 @@ func (h *Handler) members(w http.ResponseWriter, r *http.Request, userID int, ov
 		api.WriteError(w, http.StatusForbidden, "owner_required")
 		return
 	}
-	if len(segments) != 3 || r.Method != http.MethodDelete {
+	if len(segments) != 3 {
 		api.WriteError(w, http.StatusNotFound, "not_found")
 		return
 	}
@@ -225,14 +229,46 @@ func (h *Handler) members(w http.ResponseWriter, r *http.Request, userID int, ov
 		api.WriteError(w, http.StatusBadRequest, "invalid_member_id")
 		return
 	}
-	if err := h.store.RemoveMember(r.Context(), overview.Workspace.ID, segments[1], id); errors.Is(err, sql.ErrNoRows) {
-		api.WriteError(w, http.StatusNotFound, "member_not_found")
-		return
-	} else if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "member_remove_failed")
-		return
+	switch r.Method {
+	case http.MethodDelete:
+		if err := h.store.RemoveMember(r.Context(), overview.Workspace.ID, userID, segments[1], id); errors.Is(err, sql.ErrNoRows) {
+			api.WriteError(w, http.StatusNotFound, "member_not_found")
+			return
+		} else if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "member_remove_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case http.MethodPatch:
+		if segments[1] != "membership" {
+			api.WriteError(w, http.StatusUnprocessableEntity, "member_role_not_editable")
+			return
+		}
+		var body struct {
+			Role string `json:"role"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		item, err := h.store.UpdateMemberRole(
+			r.Context(), overview.Workspace.ID, userID, id, strings.ToLower(strings.TrimSpace(body.Role)),
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			api.WriteError(w, http.StatusNotFound, "member_not_found")
+			return
+		}
+		if errors.Is(err, ErrInvalidMemberRole) {
+			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "member_role_update_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"member": item})
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
-	api.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (h *Handler) invitations(w http.ResponseWriter, r *http.Request, userID int, overview Overview) {
@@ -256,21 +292,44 @@ func (h *Handler) invitations(w http.ResponseWriter, r *http.Request, userID int
 		api.WriteError(w, http.StatusUnprocessableEntity, "invalid_invitation_email")
 		return
 	}
-	if body.Role != "" && strings.ToLower(strings.TrimSpace(body.Role)) != roleMember {
+	body.Role = strings.ToLower(strings.TrimSpace(body.Role))
+	if body.Role == "" {
+		body.Role = roleMember
+	}
+	if body.Role != roleMember && body.Role != roleAdmin {
 		api.WriteError(w, http.StatusUnprocessableEntity, "invalid_invitation_role")
 		return
 	}
-	item, token, err := h.store.Invite(r.Context(), overview.Workspace.ID, userID, email)
+	item, token, err := h.store.Invite(
+		r.Context(), overview.Workspace.ID, userID, email, body.Role, overview.Subscription.MemberLimit,
+	)
 	if err != nil {
+		if errors.Is(err, ErrMemberLimitReached) {
+			api.WriteError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if errors.Is(err, ErrAlreadyMember) {
+			api.WriteError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if errors.Is(err, ErrInvalidMemberRole) {
+			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
 		api.WriteError(w, http.StatusInternalServerError, "invitation_create_failed")
 		return
 	}
 	emailDelivered := true
 	if token != "" {
-		inviteURL := strings.TrimRight(h.cfg.FrontendBaseURL, "/") + "/account?invite=" + url.QueryEscape(token)
+		inviteURL := strings.TrimRight(h.cfg.FrontendBaseURL, "/") + "/login?invite=" +
+			url.QueryEscape(token) + "&email=" + url.QueryEscape(email)
+		roleLabel := "участника"
+		if body.Role == roleAdmin {
+			roleLabel = "администратора"
+		}
 		bodyHTML := fmt.Sprintf(
-			"<p>Вас пригласили в Workspace <strong>%s</strong> в REUP.goals.</p><p><a href=\"%s\">Принять приглашение</a></p><p>Ссылка действует 7 дней.</p>",
-			html.EscapeString(overview.Workspace.DisplayName), html.EscapeString(inviteURL),
+			"<p>Вас пригласили в Workspace <strong>%s</strong> в REUP.goals в роли %s.</p><p><a href=\"%s\">Принять приглашение</a></p><p>Ссылка действует 7 дней.</p>",
+			html.EscapeString(overview.Workspace.DisplayName), roleLabel, html.EscapeString(inviteURL),
 		)
 		if h.emailService == nil || h.emailService.SendServiceEmail(email, "Приглашение в REUP.goals", bodyHTML) != nil {
 			emailDelivered = false
@@ -297,6 +356,9 @@ func (h *Handler) acceptInvitation(w http.ResponseWriter, r *http.Request, userI
 	}
 	if err := h.store.AcceptInvitation(r.Context(), userID, body.Token); errors.Is(err, sql.ErrNoRows) {
 		api.WriteError(w, http.StatusUnprocessableEntity, "invitation_invalid_or_expired")
+		return
+	} else if errors.Is(err, ErrMemberLimitReached) {
+		api.WriteError(w, http.StatusConflict, err.Error())
 		return
 	} else if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "invitation_accept_failed")

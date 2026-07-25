@@ -18,6 +18,7 @@ import (
 	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/strategicmemory"
+	"reup-goals-backend/internal/v2/workspacedocs"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -29,6 +30,7 @@ type Handler struct {
 	facilitator     *FacilitatorService
 	readiness       *TacticsReadinessService
 	entityEvaluator *TacticalEntityEvaluatorService
+	documents       *workspacedocs.Store
 }
 
 func (h *Handler) WithContextIndex(index *contextindex.Service) *Handler {
@@ -50,6 +52,7 @@ func NewHandler(dbx *sql.DB, aiClient ai.Provider, evaluatorAIClient ai.Provider
 		facilitator:     facilitator,
 		readiness:       readiness,
 		entityEvaluator: entityEvaluator,
+		documents:       workspacedocs.NewStore(dbx),
 	}
 }
 
@@ -281,6 +284,18 @@ func (h *Handler) facilitatorApplyActions(w http.ResponseWriter, r *http.Request
 			}
 		}
 		return
+	}
+	for _, change := range response.AppliedChanges {
+		switch change.EntityType {
+		case EntityWorkstream:
+			if item, itemErr := h.store.WorkstreamDetail(r.Context(), workspace.ID, change.EntityID); itemErr == nil {
+				h.ensureWorkstreamDocument(r.Context(), workspace.ID, userID, item)
+			}
+		case EntityProject:
+			if item, _, itemErr := h.store.ProjectDetail(r.Context(), workspace.ID, change.EntityID); itemErr == nil {
+				h.ensureProjectDocument(r.Context(), workspace.ID, userID, item)
+			}
+		}
 	}
 	api.WriteJSON(w, http.StatusOK, response)
 }
@@ -552,6 +567,7 @@ func (h *Handler) Workstreams(w http.ResponseWriter, r *http.Request) {
 		}
 		workstream, err := h.store.CreateWorkstream(r.Context(), workspace.ID, userID, input)
 		if err == nil {
+			h.ensureWorkstreamDocument(r.Context(), workspace.ID, userID, workstream)
 			h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeWorkstream, workstream.ID, workstream)
 			if evaluationStatus, queueErr := h.entityEvaluator.Queue(r.Context(), workspace.ID, userID, EntityWorkstream, workstream.ID); queueErr != nil {
 				log.Printf("[WARN] queue workstream evaluation workspace_id=%d id=%d: %v", workspace.ID, workstream.ID, queueErr)
@@ -570,6 +586,9 @@ func (h *Handler) Workstreams(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodGet {
 		workstream, err := h.store.WorkstreamDetail(r.Context(), workspace.ID, workstreamID)
+		if err == nil {
+			h.ensureWorkstreamDocument(r.Context(), workspace.ID, userID, workstream)
+		}
 		writeEntity(w, err, "workstream", workstream, "workstream_get_failed")
 		return
 	}
@@ -614,6 +633,7 @@ func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
 		}
 		project, err := h.store.CreateProject(r.Context(), workspace.ID, userID, input)
 		if err == nil {
+			h.ensureProjectDocument(r.Context(), workspace.ID, userID, project)
 			h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeProject, project.ID, project)
 			if evaluationStatus, queueErr := h.entityEvaluator.Queue(r.Context(), workspace.ID, userID, EntityProject, project.ID); queueErr != nil {
 				log.Printf("[WARN] queue project evaluation workspace_id=%d id=%d: %v", workspace.ID, project.ID, queueErr)
@@ -640,6 +660,7 @@ func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, http.StatusInternalServerError, "project_get_failed")
 			return
 		}
+		h.ensureProjectDocument(r.Context(), workspace.ID, userID, project)
 		api.WriteJSON(w, http.StatusOK, map[string]any{
 			"project":    project,
 			"workstream": workstream,
@@ -664,6 +685,84 @@ func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeEntity(w, err, "project", project, "project_update_failed")
+}
+
+func (h *Handler) EntityEvaluations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	workspace, userID, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		EntityType string `json:"entity_type"`
+		EntityID   int    `json:"entity_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	body.EntityType = strings.TrimSpace(body.EntityType)
+	if body.EntityID <= 0 || (body.EntityType != EntityWorkstream && body.EntityType != EntityProject) {
+		api.WriteError(w, http.StatusUnprocessableEntity, "invalid_tactical_evaluation_entity")
+		return
+	}
+	status, err := h.entityEvaluator.Queue(r.Context(), workspace.ID, userID, body.EntityType, body.EntityID)
+	if errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusNotFound, "entity_not_found")
+		return
+	}
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "tactical_evaluation_queue_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusAccepted, map[string]any{"status": status})
+}
+
+func (h *Handler) ensureWorkstreamDocument(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	workstream Workstream,
+) {
+	content := "# " + workstream.Title + "\n\n" +
+		documentSection("Контекст направления", firstNonEmpty(workstream.Description, workstream.Goal, "Контекст пока не заполнен.")) +
+		documentSection("Ценный конечный продукт", workstream.CKP) +
+		documentSection("Почему направление существует", workstream.Reason)
+	if _, err := h.documents.EnsureEntityDocument(
+		ctx, workspaceID, userID, EntityWorkstream, workstream.ID, 0,
+		workstream.Title+" — документация", content,
+	); err != nil {
+		log.Printf("[WARN] ensure workstream document workspace_id=%d id=%d: %v", workspaceID, workstream.ID, err)
+	}
+}
+
+func (h *Handler) ensureProjectDocument(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	project Project,
+) {
+	content := "# " + project.Title + "\n\n" +
+		documentSection("Контекст проекта", firstNonEmpty(project.Description, project.WhyNeeded, "Контекст пока не заполнен.")) +
+		documentSection("Ожидаемая ценность", project.ExpectedValue) +
+		documentSection("Критерий успеха", project.SuccessCriteria)
+	if _, err := h.documents.EnsureEntityDocument(
+		ctx, workspaceID, userID, EntityProject, project.ID, project.WorkstreamID,
+		project.Title+" — документация", content,
+	); err != nil {
+		log.Printf("[WARN] ensure project document workspace_id=%d id=%d: %v", workspaceID, project.ID, err)
+	}
+}
+
+func documentSection(title string, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return "## " + title + "\n\n" + value + "\n\n"
 }
 
 func (h *Handler) captureTacticsEntity(

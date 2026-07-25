@@ -127,6 +127,65 @@ func (s *Store) Create(ctx context.Context, workspaceID, userID int, input Input
 	return document, nil
 }
 
+func (s *Store) EnsureEntityDocument(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	entityType string,
+	entityID int,
+	workstreamID int,
+	title string,
+	content string,
+) (Document, error) {
+	var documentID int64
+	var query string
+	switch entityType {
+	case "workstream":
+		query = `
+			SELECT id FROM workspace_documents
+			WHERE workspace_id=$1 AND archived_at IS NULL
+				AND linked_workstream_ids @> jsonb_build_array($2::integer)
+			ORDER BY created_at ASC, id ASC
+			LIMIT 1
+		`
+	case "project":
+		query = `
+			SELECT id FROM workspace_documents
+			WHERE workspace_id=$1 AND archived_at IS NULL
+				AND linked_project_ids @> jsonb_build_array($2::integer)
+			ORDER BY created_at ASC, id ASC
+			LIMIT 1
+		`
+	default:
+		return Document{}, ErrInvalidLink
+	}
+	err := s.db.QueryRowContext(ctx, query, workspaceID, entityID).Scan(&documentID)
+	if err == nil {
+		return s.Get(ctx, workspaceID, documentID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Document{}, err
+	}
+	status := "draft"
+	workstreamIDs := []int{}
+	projectIDs := []int{}
+	if entityType == "workstream" {
+		workstreamIDs = []int{entityID}
+	} else {
+		projectIDs = []int{entityID}
+		if workstreamID > 0 {
+			workstreamIDs = []int{workstreamID}
+		}
+	}
+	return s.Create(ctx, workspaceID, userID, Input{
+		Title:         &title,
+		Content:       &content,
+		Status:        &status,
+		WorkstreamIDs: &workstreamIDs,
+		ProjectIDs:    &projectIDs,
+	})
+}
+
 func (s *Store) Update(ctx context.Context, workspaceID, userID int, documentID int64, input Input) (Document, error) {
 	current, err := s.Get(ctx, workspaceID, documentID)
 	if err != nil {

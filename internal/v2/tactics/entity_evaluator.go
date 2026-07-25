@@ -182,6 +182,12 @@ func (s *TacticalEntityEvaluatorService) buildEvaluationInput(ctx context.Contex
 	default:
 		return nil, "", errors.New("invalid_tactical_evaluation_entity")
 	}
+	metrics, responsibility, err := s.evaluationSupportContext(
+		ctx, job.WorkspaceID, job.EntityType, job.EntityID,
+	)
+	if err != nil {
+		return nil, "", err
+	}
 
 	companyContext := map[string]any{}
 	snapshot, err := s.memory.LatestSnapshot(ctx, job.WorkspaceID)
@@ -202,10 +208,87 @@ func (s *TacticalEntityEvaluatorService) buildEvaluationInput(ctx context.Contex
 		},
 		"parent_tactical_context": parent,
 		"company_context":         companyContext,
+		"key_metrics":             metrics,
+		"responsible_departments": responsibility,
 	}
 	raw, _ := json.Marshal(input)
 	hash := sha256.Sum256(raw)
 	return input, hex.EncodeToString(hash[:]), nil
+}
+
+func (s *TacticalEntityEvaluatorService) evaluationSupportContext(
+	ctx context.Context,
+	workspaceID int,
+	entityType string,
+	entityID int,
+) ([]map[string]any, []map[string]any, error) {
+	metricRows, err := s.store.dbx.QueryContext(ctx, `
+		SELECT metric.name, target.role, target.baseline_value, target.target_value,
+			target.target_date, target.display_unit, target.cadence, target.source_note
+		FROM v2_metric_targets target
+		JOIN v2_workspace_metrics metric
+			ON metric.id=target.metric_id AND metric.workspace_id=target.workspace_id
+		WHERE target.workspace_id=$1 AND target.scope_type=$2 AND target.scope_id=$3
+			AND target.archived_at IS NULL AND metric.archived_at IS NULL
+		ORDER BY CASE target.role WHEN 'primary' THEN 0 WHEN 'guardrail' THEN 1 ELSE 2 END, target.id
+		LIMIT 3
+	`, workspaceID, entityType, entityID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer metricRows.Close()
+	metrics := make([]map[string]any, 0, 3)
+	for metricRows.Next() {
+		var name, role, unit, cadence, source string
+		var baseline, target sql.NullFloat64
+		var targetDate sql.NullTime
+		if err := metricRows.Scan(&name, &role, &baseline, &target, &targetDate, &unit, &cadence, &source); err != nil {
+			return nil, nil, err
+		}
+		item := map[string]any{
+			"name": name, "role": role, "unit": unit, "cadence": cadence, "source": source,
+		}
+		if baseline.Valid {
+			item["baseline"] = baseline.Float64
+		}
+		if target.Valid {
+			item["target"] = target.Float64
+		}
+		if targetDate.Valid {
+			item["target_date"] = targetDate.Time.Format("2006-01-02")
+		}
+		metrics = append(metrics, item)
+	}
+	if err := metricRows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	linkTable, entityColumn := "v2_workstream_departments", "workstream_id"
+	if entityType == EntityProject {
+		linkTable, entityColumn = "v2_project_departments", "project_id"
+	}
+	query := fmt.Sprintf(`
+		SELECT department.name, link.role
+		FROM %s link
+		JOIN v2_departments department
+			ON department.id=link.department_id AND department.workspace_id=link.workspace_id
+		WHERE link.workspace_id=$1 AND link.%s=$2 AND department.archived_at IS NULL
+		ORDER BY CASE link.role WHEN 'lead' THEN 0 ELSE 1 END, department.name
+	`, linkTable, entityColumn)
+	responsibilityRows, err := s.store.dbx.QueryContext(ctx, query, workspaceID, entityID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer responsibilityRows.Close()
+	responsibility := make([]map[string]any, 0)
+	for responsibilityRows.Next() {
+		var name, role string
+		if err := responsibilityRows.Scan(&name, &role); err != nil {
+			return nil, nil, err
+		}
+		responsibility = append(responsibility, map[string]any{"name": name, "role": role})
+	}
+	return metrics, responsibility, responsibilityRows.Err()
 }
 
 func workstreamEvaluationContext(workstream Workstream) map[string]any {

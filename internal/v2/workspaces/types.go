@@ -8,6 +8,8 @@ const (
 	WorkspaceStatusActive = "active"
 
 	MembershipRoleOwner    = "owner"
+	MembershipRoleAdmin    = "admin"
+	MembershipRoleMember   = "member"
 	MembershipStatusActive = "active"
 )
 

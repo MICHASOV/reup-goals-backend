@@ -230,6 +230,7 @@ func main() {
 	mux.Handle("/api/v2/tactics/workstreams/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Workstreams))
 	mux.Handle("/api/v2/tactics/projects", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Projects))
 	mux.Handle("/api/v2/tactics/projects/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Projects))
+	mux.Handle("/api/v2/tactics/evaluations", v2api.RequireAuth(database, jwtSecret, tacticsHandler.EntityEvaluations))
 	mux.Handle("/api/v2/tactics/risks", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Risks))
 	mux.Handle("/api/v2/tactics/risks/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Risks))
 	mux.Handle("/api/v2/tactics/hypotheses", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Hypotheses))

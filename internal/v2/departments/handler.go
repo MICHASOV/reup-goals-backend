@@ -219,7 +219,8 @@ func (h *Handler) currentWorkspace(w http.ResponseWriter, r *http.Request) (work
 }
 
 func canManage(membership workspaces.Membership) bool {
-	return membership.Role == workspaces.MembershipRoleOwner
+	return membership.Role == workspaces.MembershipRoleOwner ||
+		membership.Role == workspaces.MembershipRoleAdmin
 }
 
 func writeDepartmentError(w http.ResponseWriter, err error) bool {

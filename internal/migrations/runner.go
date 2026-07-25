@@ -2947,6 +2947,123 @@ var migrations = []Migration{
 				ON v2_tactical_entity_evaluation_jobs (status, not_before, id);
 		`,
 	},
+	{
+		ID: "20260725_049_workspace_team_and_entity_documents",
+		SQL: `
+			ALTER TABLE users
+				ADD COLUMN IF NOT EXISTS company_role TEXT NOT NULL DEFAULT '';
+
+			ALTER TABLE subscriptions
+				ADD COLUMN IF NOT EXISTS member_limit INTEGER NOT NULL DEFAULT 5;
+
+			UPDATE subscriptions
+			SET member_limit=CASE
+				WHEN LOWER(plan_name) LIKE '%individual%' OR LOWER(plan_name) LIKE '%solo%' THEN 1
+				WHEN LOWER(plan_name) LIKE '%enterprise%' OR LOWER(plan_name) LIKE '%unlimited%' THEN 0
+				ELSE 5
+			END
+			WHERE member_limit=5;
+
+			UPDATE workspace_memberships
+			SET role='member'
+			WHERE role NOT IN ('owner', 'admin', 'member');
+
+			UPDATE workspace_invitations
+			SET role='member'
+			WHERE role NOT IN ('admin', 'member');
+
+			DO $$
+			BEGIN
+				IF NOT EXISTS (
+					SELECT 1 FROM pg_constraint
+					WHERE conname='chk_subscriptions_member_limit'
+				) THEN
+					ALTER TABLE subscriptions
+						ADD CONSTRAINT chk_subscriptions_member_limit
+						CHECK (member_limit=0 OR member_limit > 0);
+				END IF;
+				IF NOT EXISTS (
+					SELECT 1 FROM pg_constraint
+					WHERE conname='chk_workspace_memberships_role'
+				) THEN
+					ALTER TABLE workspace_memberships
+						ADD CONSTRAINT chk_workspace_memberships_role
+						CHECK (role IN ('owner', 'admin', 'member'));
+				END IF;
+				IF NOT EXISTS (
+					SELECT 1 FROM pg_constraint
+					WHERE conname='chk_workspace_invitations_role'
+				) THEN
+					ALTER TABLE workspace_invitations
+						ADD CONSTRAINT chk_workspace_invitations_role
+						CHECK (role IN ('admin', 'member'));
+				END IF;
+			END $$;
+
+			INSERT INTO workspace_documents (
+				workspace_id, title, content, status, linked_workstream_ids,
+				created_by, updated_by
+			)
+			SELECT
+				workstream.workspace_id,
+				workstream.title || ' — документация',
+				CONCAT(
+					'# ', workstream.title, E'\n\n',
+					'## Контекст направления', E'\n\n',
+					COALESCE(NULLIF(workstream.description, ''), NULLIF(workstream.goal, ''), 'Контекст пока не заполнен.'), E'\n\n',
+					CASE WHEN BTRIM(workstream.ckp) <> ''
+						THEN CONCAT('## Ценный конечный продукт', E'\n\n', workstream.ckp, E'\n\n')
+						ELSE '' END,
+					CASE WHEN BTRIM(workstream.reason) <> ''
+						THEN CONCAT('## Почему направление существует', E'\n\n', workstream.reason)
+						ELSE '' END
+				),
+				'draft',
+				jsonb_build_array(workstream.id),
+				workstream.created_by,
+				workstream.created_by
+			FROM v2_tactical_workstreams workstream
+			WHERE workstream.archived_at IS NULL
+				AND NOT EXISTS (
+					SELECT 1 FROM workspace_documents document
+					WHERE document.workspace_id=workstream.workspace_id
+						AND document.archived_at IS NULL
+						AND document.linked_workstream_ids @> jsonb_build_array(workstream.id)
+				);
+
+			INSERT INTO workspace_documents (
+				workspace_id, title, content, status, linked_project_ids,
+				linked_workstream_ids, created_by, updated_by
+			)
+			SELECT
+				project.workspace_id,
+				project.title || ' — документация',
+				CONCAT(
+					'# ', project.title, E'\n\n',
+					'## Контекст проекта', E'\n\n',
+					COALESCE(NULLIF(project.description, ''), NULLIF(project.why_needed, ''), 'Контекст пока не заполнен.'), E'\n\n',
+					CASE WHEN BTRIM(project.expected_value) <> ''
+						THEN CONCAT('## Ожидаемая ценность', E'\n\n', project.expected_value, E'\n\n')
+						ELSE '' END,
+					CASE WHEN BTRIM(project.success_criteria) <> ''
+						THEN CONCAT('## Критерий успеха', E'\n\n', project.success_criteria)
+						ELSE '' END
+				),
+				'draft',
+				jsonb_build_array(project.id),
+				jsonb_build_array(project.workstream_id),
+				project.created_by,
+				project.created_by
+			FROM v2_tactical_projects project
+			WHERE project.archived_at IS NULL
+				AND NOT EXISTS (
+					SELECT 1 FROM workspace_documents document
+					WHERE document.workspace_id=project.workspace_id
+						AND document.archived_at IS NULL
+						AND document.linked_project_ids @> jsonb_build_array(project.id)
+				);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

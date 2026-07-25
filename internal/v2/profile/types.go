@@ -4,6 +4,7 @@ import "time"
 
 const (
 	roleOwner  = "owner"
+	roleAdmin  = "admin"
 	roleMember = "member"
 
 	invitationPending   = "pending"
@@ -21,10 +22,11 @@ type Overview struct {
 }
 
 type Account struct {
-	ID        int    `json:"id"`
-	Email     string `json:"email"`
-	Name      string `json:"name"`
-	AvatarURL string `json:"avatar_url"`
+	ID          int    `json:"id"`
+	Email       string `json:"email"`
+	Name        string `json:"name"`
+	AvatarURL   string `json:"avatar_url"`
+	CompanyRole string `json:"company_role"`
 }
 
 type WorkspaceSummary struct {
@@ -60,20 +62,24 @@ type SubscriptionSummary struct {
 	Access            bool       `json:"access"`
 	DisplayStatus     string     `json:"display_status"`
 	CheckoutAvailable bool       `json:"checkout_available"`
+	MemberLimit       int        `json:"member_limit"`
+	SeatsUsed         int        `json:"seats_used"`
 }
 
 type Member struct {
-	ID           int64      `json:"id"`
-	Kind         string     `json:"kind"`
-	UserID       *int       `json:"user_id,omitempty"`
-	Name         string     `json:"name"`
-	Email        string     `json:"email"`
-	AvatarURL    string     `json:"avatar_url"`
-	Role         string     `json:"role"`
-	Status       string     `json:"status"`
-	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	CanBeRemoved bool       `json:"can_be_removed"`
+	ID            int64      `json:"id"`
+	Kind          string     `json:"kind"`
+	UserID        *int       `json:"user_id,omitempty"`
+	Name          string     `json:"name"`
+	Email         string     `json:"email"`
+	AvatarURL     string     `json:"avatar_url"`
+	CompanyRole   string     `json:"company_role"`
+	Role          string     `json:"role"`
+	Status        string     `json:"status"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	CanBeRemoved  bool       `json:"can_be_removed"`
+	CanChangeRole bool       `json:"can_change_role"`
 }
 
 type Settings struct {
