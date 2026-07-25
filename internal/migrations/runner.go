@@ -2894,6 +2894,59 @@ var migrations = []Migration{
 				ON v2_task_focus_decisions (workspace_id, task_id, created_at DESC);
 		`,
 	},
+	{
+		ID: "20260725_048_tactical_entity_evaluations",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_tactical_entity_evaluations (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				entity_type TEXT NOT NULL CHECK (entity_type IN ('workstream', 'project')),
+				entity_id INTEGER NOT NULL,
+				model TEXT NOT NULL DEFAULT '',
+				prompt_version TEXT NOT NULL DEFAULT '',
+				strategic_relevance INTEGER NOT NULL CHECK (strategic_relevance BETWEEN 0 AND 1000),
+				expected_impact INTEGER NOT NULL CHECK (expected_impact BETWEEN 0 AND 1000),
+				clarity INTEGER NOT NULL CHECK (clarity BETWEEN 0 AND 1000),
+				feasibility INTEGER NOT NULL CHECK (feasibility BETWEEN 0 AND 1000),
+				measurability INTEGER NOT NULL CHECK (measurability BETWEEN 0 AND 1000),
+				confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 1000),
+				priority_score INTEGER NOT NULL CHECK (priority_score BETWEEN 0 AND 1000),
+				priority_tier TEXT NOT NULL CHECK (priority_tier IN ('P1', 'P2', 'P3', 'P4', 'P5')),
+				priority_reason TEXT NOT NULL DEFAULT '',
+				missing_information_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+				context_fingerprint TEXT NOT NULL DEFAULT '',
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				duration_ms BIGINT NOT NULL DEFAULT 0,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactical_entity_evaluations_latest
+				ON v2_tactical_entity_evaluations (
+					workspace_id, entity_type, entity_id, created_at DESC, id DESC
+				);
+
+			CREATE TABLE IF NOT EXISTS v2_tactical_entity_evaluation_jobs (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				entity_type TEXT NOT NULL CHECK (entity_type IN ('workstream', 'project')),
+				entity_id INTEGER NOT NULL,
+				requested_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				status TEXT NOT NULL DEFAULT 'queued',
+				attempts INTEGER NOT NULL DEFAULT 0,
+				revision INTEGER NOT NULL DEFAULT 1,
+				running_revision INTEGER NOT NULL DEFAULT 0,
+				not_before TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				error_text TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE (workspace_id, entity_type, entity_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_tactical_entity_evaluation_jobs_due
+				ON v2_tactical_entity_evaluation_jobs (status, not_before, id);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

@@ -104,7 +104,7 @@ func main() {
 	workspaceContextIndex := contextindex.New(database, auditorAIClient)
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
 	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
-	tacticsHandler := tactics.NewHandler(database, advisorAIClient, cfg.OpenAIAdvisorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
+	tacticsHandler := tactics.NewHandler(database, advisorAIClient, taskEvaluatorAIClient, cfg.OpenAIAdvisorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
 	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, taskEvaluatorAIClient, cfg.OpenAIAuditorCompactThreshold, strategicSourceRecorder).WithContextIndex(workspaceContextIndex)
 	operationsHandler := operations.NewHandler(database, jobManager)
 	privacyHandler := privacy.NewHandler(database)

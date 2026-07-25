@@ -46,10 +46,6 @@ func (h *Handler) Documents(w http.ResponseWriter, r *http.Request) {
 			}
 			api.WriteJSON(w, http.StatusOK, map[string]any{"documents": documents})
 		case http.MethodPost:
-			if membership.Role != workspaces.MembershipRoleOwner {
-				api.WriteError(w, http.StatusForbidden, "forbidden")
-				return
-			}
 			var input Input
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				api.WriteError(w, http.StatusBadRequest, "invalid_json")
@@ -85,10 +81,6 @@ func (h *Handler) Documents(w http.ResponseWriter, r *http.Request) {
 		}
 		api.WriteJSON(w, http.StatusOK, map[string]any{"document": document, "versions": versions})
 	case http.MethodPatch:
-		if membership.Role != workspaces.MembershipRoleOwner {
-			api.WriteError(w, http.StatusForbidden, "forbidden")
-			return
-		}
 		var input Input
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			api.WriteError(w, http.StatusBadRequest, "invalid_json")
@@ -170,6 +162,8 @@ func writeDocumentError(w http.ResponseWriter, err error) bool {
 		return false
 	}
 	switch {
+	case errors.Is(err, ErrVersionConflict):
+		api.WriteError(w, http.StatusConflict, ErrVersionConflict.Error())
 	case errors.Is(err, sql.ErrNoRows):
 		api.WriteError(w, http.StatusNotFound, "workspace_document_not_found")
 	case errors.Is(err, ErrInvalidDocument), errors.Is(err, ErrInvalidLink), errors.Is(err, ErrInvalidParent):

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -131,6 +132,9 @@ func (s *Store) Update(ctx context.Context, workspaceID, userID int, documentID 
 	if err != nil {
 		return Document{}, err
 	}
+	if input.BaseVersion != nil && *input.BaseVersion != current.Version {
+		return Document{}, ErrVersionConflict
+	}
 	title := current.Title
 	if input.Title != nil {
 		title = strings.TrimSpace(*input.Title)
@@ -189,12 +193,15 @@ func (s *Store) Update(ctx context.Context, workspaceID, userID int, documentID 
 			linked_department_ids=$8::jsonb, linked_workstream_ids=$9::jsonb, linked_project_ids=$10::jsonb,
 			version=version+1, updated_by=$11, updated_at=NOW(),
 			archived_at=CASE WHEN $6='archived' THEN COALESCE(archived_at, NOW()) ELSE NULL END
-		WHERE workspace_id=$1 AND id=$2
+		WHERE workspace_id=$1 AND id=$2 AND version=$12
 		RETURNING id, workspace_id, parent_id, title, content, status, favorite,
 			linked_department_ids, linked_workstream_ids, linked_project_ids,
 			version, created_by, updated_by, created_at, updated_at, archived_at
-	`, workspaceID, documentID, parentID, title, content, status, favorite, departmentJSON, workstreamJSON, projectJSON, userID)
+	`, workspaceID, documentID, parentID, title, content, status, favorite, departmentJSON, workstreamJSON, projectJSON, userID, current.Version)
 	document, err := scanDocument(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Document{}, ErrVersionConflict
+	}
 	if err != nil {
 		return Document{}, err
 	}

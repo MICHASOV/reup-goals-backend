@@ -101,6 +101,9 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	}
 
 	hydrateWorkstreams(workstreams, risks, opportunities, hypotheses)
+	if err := s.hydrateEntityEvaluations(ctx, workspaceID, workstreams); err != nil {
+		return CurrentResponse{}, err
+	}
 	coverage, err := s.coverageGaps(ctx, workspaceID, plan.ID, workstreams)
 	if err != nil {
 		return CurrentResponse{}, err
@@ -150,6 +153,9 @@ func (s *Store) WorkstreamDetail(ctx context.Context, workspaceID int, workstrea
 	}
 	items := []Workstream{item}
 	hydrateWorkstreams(items, risks, opportunities, hypotheses)
+	if err := s.hydrateEntityEvaluations(ctx, workspaceID, items); err != nil {
+		return Workstream{}, err
+	}
 	return items[0], nil
 }
 

@@ -100,33 +100,35 @@ type CourseSummary struct {
 }
 
 type Workstream struct {
-	ID               int            `json:"id"`
-	WorkspaceID      int            `json:"-"`
-	TacticalPlanID   int            `json:"tactical_plan_id"`
-	StrategyID       int            `json:"strategy_id"`
-	CourseID         *int           `json:"course_id"`
-	Title            string         `json:"title"`
-	Description      string         `json:"description"`
-	Goal             string         `json:"goal"`
-	CKP              string         `json:"ckp"`
-	Reason           string         `json:"reason"`
-	ClosesRisk       string         `json:"closes_risk"`
-	MetricName       string         `json:"metric_name"`
-	MetricCurrent    string         `json:"metric_current"`
-	MetricTarget     string         `json:"metric_target"`
-	Metrics          []TacticMetric `json:"metrics"`
-	Status           string         `json:"status"`
-	HealthStatus     string         `json:"health_status"`
-	ContributionType string         `json:"contribution_type"`
-	Confidence       *float64       `json:"confidence"`
-	Source           string         `json:"source"`
-	SortOrder        int            `json:"sort_order"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	Projects         []Project      `json:"projects"`
-	Risks            []Risk         `json:"risks"`
-	Opportunities    []Opportunity  `json:"opportunities"`
-	Hypotheses       []Hypothesis   `json:"hypotheses"`
+	ID               int                       `json:"id"`
+	WorkspaceID      int                       `json:"-"`
+	TacticalPlanID   int                       `json:"tactical_plan_id"`
+	StrategyID       int                       `json:"strategy_id"`
+	CourseID         *int                      `json:"course_id"`
+	Title            string                    `json:"title"`
+	Description      string                    `json:"description"`
+	Goal             string                    `json:"goal"`
+	CKP              string                    `json:"ckp"`
+	Reason           string                    `json:"reason"`
+	ClosesRisk       string                    `json:"closes_risk"`
+	MetricName       string                    `json:"metric_name"`
+	MetricCurrent    string                    `json:"metric_current"`
+	MetricTarget     string                    `json:"metric_target"`
+	Metrics          []TacticMetric            `json:"metrics"`
+	Status           string                    `json:"status"`
+	HealthStatus     string                    `json:"health_status"`
+	ContributionType string                    `json:"contribution_type"`
+	Confidence       *float64                  `json:"confidence"`
+	Source           string                    `json:"source"`
+	SortOrder        int                       `json:"sort_order"`
+	CreatedAt        time.Time                 `json:"created_at"`
+	UpdatedAt        time.Time                 `json:"updated_at"`
+	EvaluationStatus string                    `json:"evaluation_status"`
+	Evaluation       *TacticalEntityEvaluation `json:"evaluation,omitempty"`
+	Projects         []Project                 `json:"projects"`
+	Risks            []Risk                    `json:"risks"`
+	Opportunities    []Opportunity             `json:"opportunities"`
+	Hypotheses       []Hypothesis              `json:"hypotheses"`
 }
 
 type TacticMetric struct {
@@ -136,22 +138,52 @@ type TacticMetric struct {
 }
 
 type Project struct {
-	ID              int       `json:"id"`
-	WorkspaceID     int       `json:"-"`
-	WorkstreamID    int       `json:"workstream_id"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description"`
-	WhyNeeded       string    `json:"why_needed"`
-	SuccessCriteria string    `json:"success_criteria"`
-	FailureCriteria string    `json:"failure_criteria"`
-	MetricName      string    `json:"metric_name"`
-	ExpectedValue   string    `json:"expected_value"`
-	Status          string    `json:"status"`
-	Confidence      *float64  `json:"confidence"`
-	Source          string    `json:"source"`
-	SortOrder       int       `json:"sort_order"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID               int                       `json:"id"`
+	WorkspaceID      int                       `json:"-"`
+	WorkstreamID     int                       `json:"workstream_id"`
+	Title            string                    `json:"title"`
+	Description      string                    `json:"description"`
+	WhyNeeded        string                    `json:"why_needed"`
+	SuccessCriteria  string                    `json:"success_criteria"`
+	FailureCriteria  string                    `json:"failure_criteria"`
+	MetricName       string                    `json:"metric_name"`
+	ExpectedValue    string                    `json:"expected_value"`
+	Status           string                    `json:"status"`
+	Confidence       *float64                  `json:"confidence"`
+	Source           string                    `json:"source"`
+	SortOrder        int                       `json:"sort_order"`
+	CreatedAt        time.Time                 `json:"created_at"`
+	UpdatedAt        time.Time                 `json:"updated_at"`
+	EvaluationStatus string                    `json:"evaluation_status"`
+	Evaluation       *TacticalEntityEvaluation `json:"evaluation,omitempty"`
+}
+
+type TacticalEntityEvaluation struct {
+	ID                 int64     `json:"id"`
+	EntityType         string    `json:"entity_type"`
+	EntityID           int       `json:"entity_id"`
+	StrategicRelevance int       `json:"strategic_relevance"`
+	ExpectedImpact     int       `json:"expected_impact"`
+	Clarity            int       `json:"clarity"`
+	Feasibility        int       `json:"feasibility"`
+	Measurability      int       `json:"measurability"`
+	Confidence         int       `json:"confidence"`
+	PriorityScore      int       `json:"priority_score"`
+	PriorityTier       string    `json:"priority_tier"`
+	PriorityReason     string    `json:"priority_reason"`
+	MissingInformation []string  `json:"missing_information"`
+	ContextFingerprint string    `json:"-"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
+type TacticalEntityEvaluationJob struct {
+	ID          int64
+	WorkspaceID int
+	EntityType  string
+	EntityID    int
+	RequestedBy *int
+	Attempts    int
+	Revision    int
 }
 
 type Risk struct {

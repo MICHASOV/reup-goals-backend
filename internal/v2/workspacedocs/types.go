@@ -9,6 +9,7 @@ var (
 	ErrInvalidDocument = errors.New("invalid_workspace_document")
 	ErrInvalidLink     = errors.New("invalid_workspace_document_link")
 	ErrInvalidParent   = errors.New("invalid_workspace_document_parent")
+	ErrVersionConflict = errors.New("workspace_document_version_conflict")
 )
 
 type Document struct {
@@ -52,4 +53,5 @@ type Input struct {
 	DepartmentIDs *[]int  `json:"linked_department_ids"`
 	WorkstreamIDs *[]int  `json:"linked_workstream_ids"`
 	ProjectIDs    *[]int  `json:"linked_project_ids"`
+	BaseVersion   *int    `json:"base_version"`
 }

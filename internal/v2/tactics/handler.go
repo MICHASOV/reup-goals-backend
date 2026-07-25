@@ -24,10 +24,11 @@ import (
 const maxTacticsFileBytes = 25 << 20
 
 type Handler struct {
-	store       *Store
-	workspaces  *workspaces.Store
-	facilitator *FacilitatorService
-	readiness   *TacticsReadinessService
+	store           *Store
+	workspaces      *workspaces.Store
+	facilitator     *FacilitatorService
+	readiness       *TacticsReadinessService
+	entityEvaluator *TacticalEntityEvaluatorService
 }
 
 func (h *Handler) WithContextIndex(index *contextindex.Service) *Handler {
@@ -36,16 +37,19 @@ func (h *Handler) WithContextIndex(index *contextindex.Service) *Handler {
 	return h
 }
 
-func NewHandler(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *Handler {
+func NewHandler(dbx *sql.DB, aiClient ai.Provider, evaluatorAIClient ai.Provider, compactThreshold int, managers ...*jobs.Manager) *Handler {
 	readiness := NewTacticsReadinessService(dbx, aiClient, compactThreshold)
 	facilitator := NewFacilitatorService(dbx, aiClient, compactThreshold, managers...)
+	entityEvaluator := NewTacticalEntityEvaluatorService(dbx, evaluatorAIClient)
 	facilitator.SetReadinessService(readiness)
 	readiness.StartWorker()
+	entityEvaluator.StartWorker()
 	return &Handler{
-		store:       NewStore(dbx),
-		workspaces:  workspaces.NewStore(dbx),
-		facilitator: facilitator,
-		readiness:   readiness,
+		store:           NewStore(dbx),
+		workspaces:      workspaces.NewStore(dbx),
+		facilitator:     facilitator,
+		readiness:       readiness,
+		entityEvaluator: entityEvaluator,
 	}
 }
 
@@ -549,6 +553,11 @@ func (h *Handler) Workstreams(w http.ResponseWriter, r *http.Request) {
 		workstream, err := h.store.CreateWorkstream(r.Context(), workspace.ID, userID, input)
 		if err == nil {
 			h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeWorkstream, workstream.ID, workstream)
+			if evaluationStatus, queueErr := h.entityEvaluator.Queue(r.Context(), workspace.ID, userID, EntityWorkstream, workstream.ID); queueErr != nil {
+				log.Printf("[WARN] queue workstream evaluation workspace_id=%d id=%d: %v", workspace.ID, workstream.ID, queueErr)
+			} else {
+				workstream.EvaluationStatus = evaluationStatus
+			}
 		}
 		writeEntity(w, err, "workstream", workstream, "workstream_create_failed")
 		return
@@ -575,6 +584,11 @@ func (h *Handler) Workstreams(w http.ResponseWriter, r *http.Request) {
 	workstream, err := h.store.UpdateWorkstream(r.Context(), workspace.ID, workstreamID, input)
 	if err == nil {
 		h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeWorkstream, workstream.ID, workstream)
+		if evaluationStatus, queueErr := h.entityEvaluator.Queue(r.Context(), workspace.ID, userID, EntityWorkstream, workstream.ID); queueErr != nil {
+			log.Printf("[WARN] queue workstream evaluation workspace_id=%d id=%d: %v", workspace.ID, workstream.ID, queueErr)
+		} else {
+			workstream.EvaluationStatus = evaluationStatus
+		}
 	}
 	writeEntity(w, err, "workstream", workstream, "workstream_update_failed")
 }
@@ -601,6 +615,11 @@ func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
 		project, err := h.store.CreateProject(r.Context(), workspace.ID, userID, input)
 		if err == nil {
 			h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeProject, project.ID, project)
+			if evaluationStatus, queueErr := h.entityEvaluator.Queue(r.Context(), workspace.ID, userID, EntityProject, project.ID); queueErr != nil {
+				log.Printf("[WARN] queue project evaluation workspace_id=%d id=%d: %v", workspace.ID, project.ID, queueErr)
+			} else {
+				project.EvaluationStatus = evaluationStatus
+			}
 		}
 		writeEntity(w, err, "project", project, "project_create_failed")
 		return
@@ -638,6 +657,11 @@ func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
 	project, err := h.store.UpdateProject(r.Context(), workspace.ID, projectID, input)
 	if err == nil {
 		h.captureTacticsEntity(r.Context(), workspace.ID, userID, strategicmemory.SourceTypeProject, project.ID, project)
+		if evaluationStatus, queueErr := h.entityEvaluator.Queue(r.Context(), workspace.ID, userID, EntityProject, project.ID); queueErr != nil {
+			log.Printf("[WARN] queue project evaluation workspace_id=%d id=%d: %v", workspace.ID, project.ID, queueErr)
+		} else {
+			project.EvaluationStatus = evaluationStatus
+		}
 	}
 	writeEntity(w, err, "project", project, "project_update_failed")
 }
