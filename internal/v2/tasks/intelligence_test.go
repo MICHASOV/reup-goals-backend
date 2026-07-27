@@ -2,8 +2,18 @@ package tasks
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func TestTaskEvaluatorSupportsBusinessContextWithoutStrategyOrCourse(t *testing.T) {
+	if !strings.Contains(taskEvaluatorPrompt, "Never refuse to evaluate a task because an approved strategy or course is absent") {
+		t.Fatal("task evaluator must support business-context-only evaluation")
+	}
+	if !strings.Contains(taskEvaluatorPrompt, "when no course exists") {
+		t.Fatal("course alignment must define a fallback when no course exists")
+	}
+}
 
 func TestBrainstormConversationInputsKeepWorkspaceContextOutOfEveryTurn(t *testing.T) {
 	pack := taskContextPack{Workstream: &WorkstreamSummary{ID: 8, Title: "Платящий сегмент"}}
