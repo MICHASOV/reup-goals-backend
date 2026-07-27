@@ -74,3 +74,24 @@ func TestDedupePositiveIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestInvitationCooldownRemaining(t *testing.T) {
+	now := time.Date(2026, time.July, 27, 12, 0, 0, 0, time.UTC)
+
+	if got := invitationCooldownRemaining(now.Add(-30*time.Second), now); got != 90*time.Second {
+		t.Fatalf("expected 90 seconds, got %s", got)
+	}
+	if got := invitationCooldownRemaining(now.Add(-invitationResendCooldown), now); got != 0 {
+		t.Fatalf("expected expired cooldown, got %s", got)
+	}
+	if got := invitationCooldownRemaining(now.Add(time.Second), now); got != invitationResendCooldown {
+		t.Fatalf("expected clock skew to be capped at %s, got %s", invitationResendCooldown, got)
+	}
+}
+
+func TestInvitationResendTooSoonRetryAfterRoundsUp(t *testing.T) {
+	value := &InvitationResendTooSoonError{RetryAfter: 1500 * time.Millisecond}
+	if got := value.RetryAfterSeconds(); got != 2 {
+		t.Fatalf("expected two seconds, got %d", got)
+	}
+}
