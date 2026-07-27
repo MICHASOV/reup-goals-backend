@@ -49,7 +49,9 @@ func sessionVersionMatches(ctx context.Context, dbx *sql.DB, userID int, expecte
 		return false
 	}
 	var actual int
-	return dbx.QueryRowContext(ctx, `SELECT auth_version FROM users WHERE id=$1`, userID).Scan(&actual) == nil && actual == expected
+	var emailVerified bool
+	return dbx.QueryRowContext(ctx, `SELECT auth_version, email_verified FROM users WHERE id=$1`, userID).
+		Scan(&actual, &emailVerified) == nil && actual == expected && emailVerified
 }
 
 func ContextWithUserID(ctx context.Context, userID int) context.Context {

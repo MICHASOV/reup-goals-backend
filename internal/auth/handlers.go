@@ -1,15 +1,23 @@
 package auth
 
 import (
+	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"reup-goals-backend/internal/legal"
-	"reup-goals-backend/internal/v2/workspaces"
 )
 
-func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, secureCookie bool, browserAuthOnly bool) http.HandlerFunc {
+const (
+	workspaceOnboardingCreate = "create"
+	workspaceOnboardingJoin   = "join"
+)
+
+func RegisterHandler(dbx *sql.DB, emailService *EmailService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
@@ -18,6 +26,8 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, sec
 		var body struct {
 			Email       string                  `json:"email"`
 			Password    string                  `json:"password"`
+			Name        string                  `json:"name"`
+			InviteToken string                  `json:"invite_token"`
 			Acceptances []legal.AcceptanceInput `json:"acceptances"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -38,6 +48,19 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, sec
 		if len(password) < 12 || len(password) > 1024 {
 			http.Error(w, "weak_password", http.StatusBadRequest)
 			return
+		}
+		name := strings.TrimSpace(body.Name)
+		if len([]rune(name)) < 2 || len([]rune(name)) > 120 {
+			http.Error(w, "invalid_name", http.StatusBadRequest)
+			return
+		}
+		onboardingMode := workspaceOnboardingCreate
+		if strings.TrimSpace(body.InviteToken) != "" {
+			if !validPendingInvitation(r.Context(), dbx, email, body.InviteToken) {
+				http.Error(w, "invitation_invalid_or_expired", http.StatusUnprocessableEntity)
+				return
+			}
+			onboardingMode = workspaceOnboardingJoin
 		}
 		acceptances, err := legal.ValidateRegistrationAcceptances(body.Acceptances)
 		if err != nil {
@@ -65,10 +88,10 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, sec
 
 		var id int
 		err = tx.QueryRowContext(r.Context(), `
-			INSERT INTO users (email, password, privacy_subject_id)
-			VALUES ($1, $2, $3)
+			INSERT INTO users (email, password, privacy_subject_id, name, workspace_onboarding_mode)
+			VALUES ($1, $2, $3, $4, $5)
 			RETURNING id
-		`, email, passwordHash, subjectKey).Scan(&id)
+		`, email, passwordHash, subjectKey, name, onboardingMode).Scan(&id)
 
 		if err != nil {
 			http.Error(w, "user_already_exists", http.StatusBadRequest)
@@ -83,33 +106,38 @@ func RegisterHandler(dbx *sql.DB, secret []byte, emailService *EmailService, sec
 			return
 		}
 
-		workspaceStore := workspaces.NewStore(dbx)
-		if _, _, err := workspaceStore.GetOrCreateDefault(r.Context(), id); err != nil {
-			cleanupFailedRegistration(dbx, id, subjectKey)
-			http.Error(w, "workspace_create_failed", http.StatusInternalServerError)
-			return
-		}
-
 		if err := createAndSendCode(dbx, emailService, email, id, codeTypeVerifyEmail); err != nil {
 			cleanupFailedRegistration(dbx, id, subjectKey)
 			writeCodeError(w, err)
 			return
 		}
 
-		token, err := GenerateToken(secret, id, 1)
-		if err != nil {
-			http.Error(w, "token generation failed", http.StatusInternalServerError)
-			return
-		}
-		SetSessionCookie(w, token, secureCookie)
-
 		w.Header().Set("Content-Type", "application/json")
-		response := map[string]any{"user_id": id}
-		if !browserAuthOnly {
-			response["token"] = token
-		}
-		_ = json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"user_id":               id,
+			"verification_required": true,
+		})
 	}
+}
+
+func validPendingInvitation(ctx context.Context, dbx *sql.DB, email, token string) bool {
+	token = strings.TrimSpace(token)
+	if len(token) != 64 {
+		return false
+	}
+	hash := sha256.Sum256([]byte(token))
+	var exists bool
+	err := dbx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM workspace_invitations
+			WHERE token_hash=$1
+				AND lower(email)=lower($2)
+				AND status='pending'
+				AND expires_at>NOW()
+		)
+	`, hex.EncodeToString(hash[:]), email).Scan(&exists)
+	return err == nil && exists
 }
 
 func cleanupFailedRegistration(dbx *sql.DB, userID int, subjectKey string) {
@@ -162,12 +190,19 @@ func LoginHandler(dbx *sql.DB, secret []byte, secureCookie bool, browserAuthOnly
 		var id int
 		var storedPassword string
 		var authVersion int
+		var emailVerified bool
+		var onboardingMode string
 		err := dbx.QueryRow(`
-			SELECT id, password, auth_version FROM users WHERE email=$1
-		`, email).Scan(&id, &storedPassword, &authVersion)
+			SELECT id, password, auth_version, email_verified, workspace_onboarding_mode
+			FROM users WHERE email=$1
+		`, email).Scan(&id, &storedPassword, &authVersion, &emailVerified, &onboardingMode)
 
 		if err != nil || !passwordMatches(storedPassword, password) {
 			http.Error(w, "invalid login", http.StatusUnauthorized)
+			return
+		}
+		if !emailVerified {
+			http.Error(w, "email_not_verified", http.StatusForbidden)
 			return
 		}
 
@@ -196,7 +231,7 @@ func LoginHandler(dbx *sql.DB, secret []byte, secureCookie bool, browserAuthOnly
 		SetSessionCookie(w, token, secureCookie)
 
 		w.Header().Set("Content-Type", "application/json")
-		response := map[string]any{"user_id": id}
+		response := map[string]any{"user_id": id, "workspace_onboarding_mode": onboardingMode}
 		if !browserAuthOnly {
 			response["token"] = token
 		}
@@ -216,8 +251,10 @@ func MeHandler(dbx *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		var email string
-		err := dbx.QueryRow(`SELECT email FROM users WHERE id=$1`, uid).Scan(&email)
+		var email, onboardingMode string
+		err := dbx.QueryRow(`
+			SELECT email, workspace_onboarding_mode FROM users WHERE id=$1
+		`, uid).Scan(&email, &onboardingMode)
 		if err != nil {
 			http.Error(w, "user not found", http.StatusNotFound)
 			return
@@ -225,8 +262,9 @@ func MeHandler(dbx *sql.DB) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"user_id": uid,
-			"email":   email,
+			"user_id":                   uid,
+			"email":                     email,
+			"workspace_onboarding_mode": onboardingMode,
 		})
 	}
 }

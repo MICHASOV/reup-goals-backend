@@ -10,6 +10,8 @@ type Store struct {
 	dbx *sql.DB
 }
 
+var ErrWorkspaceSetupRequired = errors.New("workspace_setup_required")
+
 func NewStore(dbx *sql.DB) *Store {
 	return &Store{dbx: dbx}
 }
@@ -39,6 +41,13 @@ func (s *Store) GetOrCreateDefault(ctx context.Context, userID int) (Workspace, 
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Workspace{}, Membership{}, err
 	}
+	var onboardingMode string
+	if err := tx.QueryRowContext(ctx, `SELECT workspace_onboarding_mode FROM users WHERE id=$1`, userID).Scan(&onboardingMode); err != nil {
+		return Workspace{}, Membership{}, err
+	}
+	if onboardingMode != "complete" {
+		return Workspace{}, Membership{}, ErrWorkspaceSetupRequired
+	}
 
 	workspace, err := createWorkspace(ctx, tx, userID)
 	if err != nil {
@@ -49,11 +58,70 @@ func (s *Store) GetOrCreateDefault(ctx context.Context, userID int) (Workspace, 
 	if err != nil {
 		return Workspace{}, Membership{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET workspace_onboarding_mode='complete' WHERE id=$1`, userID); err != nil {
+		return Workspace{}, Membership{}, err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return Workspace{}, Membership{}, err
 	}
 
+	return workspace, membership, nil
+}
+
+func (s *Store) Setup(ctx context.Context, userID int, name string) (Workspace, Membership, error) {
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return Workspace{}, Membership{}, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, userID); err != nil {
+		return Workspace{}, Membership{}, err
+	}
+	if workspace, membership, err := s.current(ctx, tx, userID); err == nil {
+		if err := tx.Commit(); err != nil {
+			return Workspace{}, Membership{}, err
+		}
+		return workspace, membership, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return Workspace{}, Membership{}, err
+	}
+
+	var onboardingMode string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT workspace_onboarding_mode FROM users WHERE id=$1 FOR UPDATE
+	`, userID).Scan(&onboardingMode); err != nil {
+		return Workspace{}, Membership{}, err
+	}
+	if onboardingMode != "create" {
+		return Workspace{}, Membership{}, ErrWorkspaceSetupRequired
+	}
+
+	workspace, err := createWorkspace(ctx, tx, userID)
+	if err != nil {
+		return Workspace{}, Membership{}, err
+	}
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE workspaces
+		SET name=$1, display_name=$1, updated_at=NOW()
+		WHERE id=$2
+		RETURNING name, display_name, updated_at
+	`, name, workspace.ID).Scan(&workspace.Name, &workspace.DisplayName, &workspace.UpdatedAt); err != nil {
+		return Workspace{}, Membership{}, err
+	}
+	membership, err := createMembership(ctx, tx, userID, workspace.ID)
+	if err != nil {
+		return Workspace{}, Membership{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE users SET workspace_onboarding_mode='complete' WHERE id=$1
+	`, userID); err != nil {
+		return Workspace{}, Membership{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Workspace{}, Membership{}, err
+	}
 	return workspace, membership, nil
 }
 

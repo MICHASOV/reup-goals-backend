@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
+
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -19,6 +21,7 @@ var (
 	ErrMemberLimitReached = errors.New("workspace_member_limit_reached")
 	ErrAlreadyMember      = errors.New("workspace_member_already_exists")
 	ErrInvalidMemberRole  = errors.New("invalid_member_role")
+	ErrInvalidDepartments = errors.New("invalid_invitation_departments")
 )
 
 type Store struct {
@@ -56,9 +59,8 @@ func (s *Store) Overview(ctx context.Context, userID int, checkoutAvailable bool
 		return Overview{}, err
 	}
 	if err := s.dbx.QueryRowContext(ctx, `
-		SELECT
-			(SELECT COUNT(*) FROM workspace_memberships WHERE workspace_id=$1 AND status='active') +
-			(SELECT COUNT(*) FROM workspace_invitations WHERE workspace_id=$1 AND status='pending' AND expires_at>NOW())
+		SELECT COUNT(*) FROM workspace_memberships
+		WHERE workspace_id=$1 AND status='active'
 	`, workspace.ID).Scan(&subscription.SeatsUsed); err != nil {
 		return Overview{}, err
 	}
@@ -236,9 +238,9 @@ func (s *Store) Members(ctx context.Context, workspaceID, currentUserID int) ([]
 	}
 
 	invitationRows, err := s.dbx.QueryContext(ctx, `
-		SELECT id, email, role, status, expires_at, created_at
+		SELECT id, email, role, status, department_ids, expires_at, created_at
 		FROM workspace_invitations
-		WHERE workspace_id=$1 AND status <> 'accepted'
+		WHERE workspace_id=$1 AND status='pending' AND expires_at>NOW()
 		ORDER BY created_at DESC, id DESC
 	`, workspaceID)
 	if err != nil {
@@ -248,7 +250,10 @@ func (s *Store) Members(ctx context.Context, workspaceID, currentUserID int) ([]
 	for invitationRows.Next() {
 		var item Member
 		var expiresAt time.Time
-		if err := invitationRows.Scan(&item.ID, &item.Email, &item.Role, &item.Status, &expiresAt, &item.CreatedAt); err != nil {
+		if err := invitationRows.Scan(
+			&item.ID, &item.Email, &item.Role, &item.Status,
+			pq.Array(&item.DepartmentIDs), &expiresAt, &item.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		item.Kind = "invitation"
@@ -260,10 +265,17 @@ func (s *Store) Members(ctx context.Context, workspaceID, currentUserID int) ([]
 	return result, invitationRows.Err()
 }
 
-func (s *Store) Invite(ctx context.Context, workspaceID, invitedBy int, email, role string, memberLimit int) (Member, string, error) {
+func (s *Store) Invite(
+	ctx context.Context,
+	workspaceID, invitedBy int,
+	email, role string,
+	departmentIDs []int,
+	memberLimit int,
+) (Member, string, error) {
 	if role != roleAdmin && role != roleMember {
 		return Member{}, "", ErrInvalidMemberRole
 	}
+	departmentIDs = dedupePositiveIDs(departmentIDs)
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return Member{}, "", err
@@ -279,6 +291,19 @@ func (s *Store) Invite(ctx context.Context, workspaceID, invitedBy int, email, r
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, workspaceID); err != nil {
 		return Member{}, "", err
+	}
+	if len(departmentIDs) > 0 {
+		var validDepartmentCount int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM v2_departments
+			WHERE workspace_id=$1 AND status='active' AND id=ANY($2)
+		`, workspaceID, pq.Array(departmentIDs)).Scan(&validDepartmentCount); err != nil {
+			return Member{}, "", err
+		}
+		if validDepartmentCount != len(departmentIDs) {
+			return Member{}, "", ErrInvalidDepartments
+		}
 	}
 	var alreadyMember bool
 	if err := tx.QueryRowContext(ctx, `
@@ -306,10 +331,9 @@ func (s *Store) Invite(ctx context.Context, workspaceID, invitedBy int, email, r
 	if !pendingExists && memberLimit > 0 {
 		var seatsUsed int
 		if err := tx.QueryRowContext(ctx, `
-			SELECT
-				(SELECT COUNT(*) FROM workspace_memberships WHERE workspace_id=$1 AND status='active') +
-				(SELECT COUNT(*) FROM workspace_invitations WHERE workspace_id=$1 AND status='pending' AND expires_at>NOW())
-		`, workspaceID).Scan(&seatsUsed); err != nil {
+				SELECT COUNT(*) FROM workspace_memberships
+				WHERE workspace_id=$1 AND status='active'
+			`, workspaceID).Scan(&seatsUsed); err != nil {
 			return Member{}, "", err
 		}
 		if seatsUsed >= memberLimit {
@@ -319,17 +343,18 @@ func (s *Store) Invite(ctx context.Context, workspaceID, invitedBy int, email, r
 
 	var invitationID int64
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO workspace_invitations (
-			workspace_id, email, role, status, invited_by, token_hash, expires_at
-		) VALUES ($1,$2,$3,'pending',$4,$5,$6)
-		ON CONFLICT (workspace_id, (lower(email))) WHERE status='pending' DO UPDATE SET
-			invited_by=EXCLUDED.invited_by,
-			role=EXCLUDED.role,
-			token_hash=EXCLUDED.token_hash,
-			expires_at=EXCLUDED.expires_at,
-			updated_at=NOW()
-		RETURNING id
-	`, workspaceID, email, role, invitedBy, hex.EncodeToString(tokenHash[:]), expiresAt).Scan(&invitationID)
+			INSERT INTO workspace_invitations (
+				workspace_id, email, role, status, invited_by, token_hash, department_ids, expires_at
+			) VALUES ($1,$2,$3,'pending',$4,$5,$6,$7)
+			ON CONFLICT (workspace_id, (lower(email))) WHERE status='pending' DO UPDATE SET
+				invited_by=EXCLUDED.invited_by,
+				role=EXCLUDED.role,
+				token_hash=EXCLUDED.token_hash,
+				department_ids=EXCLUDED.department_ids,
+				expires_at=EXCLUDED.expires_at,
+				updated_at=NOW()
+			RETURNING id
+		`, workspaceID, email, role, invitedBy, hex.EncodeToString(tokenHash[:]), pq.Array(departmentIDs), expiresAt).Scan(&invitationID)
 	if err != nil {
 		return Member{}, "", err
 	}
@@ -338,7 +363,8 @@ func (s *Store) Invite(ctx context.Context, workspaceID, invitedBy int, email, r
 	}
 	return Member{
 		ID: invitationID, Kind: "invitation", Email: email, Role: role,
-		Status: invitationPending, ExpiresAt: &expiresAt, CreatedAt: time.Now().UTC(),
+		DepartmentIDs: departmentIDs,
+		Status:        invitationPending, ExpiresAt: &expiresAt, CreatedAt: time.Now().UTC(),
 		CanBeRemoved: true, CanChangeRole: true,
 	}, token, nil
 }
@@ -367,8 +393,9 @@ func (s *Store) AcceptInvitation(ctx context.Context, userID int, token string) 
 		return err
 	}
 	var role string
+	var departmentIDs []int
 	err = tx.QueryRowContext(ctx, `
-		SELECT invitation.role
+		SELECT invitation.role, invitation.department_ids
 		FROM workspace_invitations invitation
 		JOIN users ON users.id=$1
 		WHERE invitation.token_hash=$2
@@ -377,7 +404,7 @@ func (s *Store) AcceptInvitation(ctx context.Context, userID int, token string) 
 			AND invitation.status='pending'
 			AND invitation.expires_at > NOW()
 		FOR UPDATE
-	`, userID, hash, workspaceID).Scan(&role)
+	`, userID, hash, workspaceID).Scan(&role, pq.Array(&departmentIDs))
 	if err != nil {
 		return err
 	}
@@ -433,6 +460,22 @@ func (s *Store) AcceptInvitation(ctx context.Context, userID int, token string) 
 	`, workspaceID, userID, role); err != nil {
 		return err
 	}
+	for _, departmentID := range dedupePositiveIDs(departmentIDs) {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO v2_department_members (department_id, workspace_id, user_id, role)
+			SELECT id, workspace_id, $3, 'member'
+			FROM v2_departments
+			WHERE id=$1 AND workspace_id=$2 AND status='active'
+			ON CONFLICT (department_id, user_id) DO NOTHING
+		`, departmentID, workspaceID, userID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE users SET workspace_onboarding_mode='complete' WHERE id=$1
+	`, userID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE workspace_invitations
 		SET status='accepted', accepted_by=$1, accepted_at=NOW(), updated_at=NOW()
@@ -441,6 +484,82 @@ func (s *Store) AcceptInvitation(ctx context.Context, userID int, token string) 
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) PreviewInvitation(ctx context.Context, token string) (InvitationPreview, error) {
+	token = strings.TrimSpace(token)
+	if len(token) != 64 {
+		return InvitationPreview{}, sql.ErrNoRows
+	}
+	tokenHash := sha256.Sum256([]byte(token))
+	var result InvitationPreview
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(NULLIF(workspace.display_name, ''), workspace.name),
+			invitation.email,
+			COALESCE(NULLIF(inviter.name, ''), inviter.email, 'Команда REUP.goals'),
+			COALESCE(inviter.email, ''),
+			invitation.role,
+			invitation.department_ids,
+			invitation.expires_at
+		FROM workspace_invitations invitation
+		JOIN workspaces workspace ON workspace.id=invitation.workspace_id
+		LEFT JOIN users inviter ON inviter.id=invitation.invited_by
+		WHERE invitation.token_hash=$1
+			AND invitation.status='pending'
+			AND invitation.expires_at>NOW()
+			AND workspace.status='active'
+	`, hex.EncodeToString(tokenHash[:])).Scan(
+		&result.WorkspaceName,
+		&result.InvitedEmail,
+		&result.InviterName,
+		&result.InviterEmail,
+		&result.Role,
+		pq.Array(&result.DepartmentIDs),
+		&result.ExpiresAt,
+	)
+	if err != nil {
+		return InvitationPreview{}, err
+	}
+	if len(result.DepartmentIDs) > 0 {
+		rows, err := s.dbx.QueryContext(ctx, `
+			SELECT name
+			FROM v2_departments
+			WHERE id=ANY($1) AND status='active'
+			ORDER BY sort_order, lower(name)
+		`, pq.Array(result.DepartmentIDs))
+		if err != nil {
+			return InvitationPreview{}, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return InvitationPreview{}, err
+			}
+			result.DepartmentNames = append(result.DepartmentNames, name)
+		}
+		if err := rows.Err(); err != nil {
+			return InvitationPreview{}, err
+		}
+	}
+	return result, nil
+}
+
+func dedupePositiveIDs(values []int) []int {
+	result := make([]int, 0, len(values))
+	seen := make(map[int]struct{}, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *Store) RemoveMember(ctx context.Context, workspaceID, actorUserID int, kind string, id int64) error {

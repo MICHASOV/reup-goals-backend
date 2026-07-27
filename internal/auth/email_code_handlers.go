@@ -36,7 +36,7 @@ var (
 	errInvalidResetToken = errors.New("invalid_reset_token")
 )
 
-func VerifyEmailHandler(dbx *sql.DB) http.HandlerFunc {
+func VerifyEmailHandler(dbx *sql.DB, secret []byte, secureCookie bool, browserAuthOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeAPIError(w, "method_not_allowed", http.StatusMethodNotAllowed)
@@ -95,7 +95,33 @@ func VerifyEmailHandler(dbx *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		writeOK(w, map[string]any{"ok": true})
+		if userID == 0 {
+			if err := dbx.QueryRowContext(r.Context(), `SELECT id FROM users WHERE lower(email)=lower($1)`, email).Scan(&userID); err != nil {
+				writeAPIError(w, "user_not_found", http.StatusNotFound)
+				return
+			}
+		}
+		var authVersion int
+		var onboardingMode string
+		if err := dbx.QueryRowContext(r.Context(), `
+			SELECT auth_version, workspace_onboarding_mode FROM users WHERE id=$1
+		`, userID).Scan(&authVersion, &onboardingMode); err != nil {
+			writeAPIError(w, "user_not_found", http.StatusNotFound)
+			return
+		}
+		token, err := GenerateToken(secret, userID, authVersion)
+		if err != nil {
+			writeAPIError(w, "token_generation_failed", http.StatusInternalServerError)
+			return
+		}
+		SetSessionCookie(w, token, secureCookie)
+		response := map[string]any{
+			"ok": true, "user_id": userID, "workspace_onboarding_mode": onboardingMode,
+		}
+		if !browserAuthOnly {
+			response["token"] = token
+		}
+		writeOK(w, response)
 	}
 }
 

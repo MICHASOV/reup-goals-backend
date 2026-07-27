@@ -17,6 +17,7 @@ import (
 	"reup-goals-backend/internal/config"
 	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/v2/api"
+	"reup-goals-backend/internal/v2/workspaces"
 )
 
 type Handler struct {
@@ -31,6 +32,23 @@ func NewHandler(dbx *sql.DB, cfg *config.Config, emailService *auth.EmailService
 	return &Handler{
 		store: NewStore(dbx), dbx: dbx, cfg: cfg, emailService: emailService, payments: payments,
 	}
+}
+
+func (h *Handler) InvitationPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	result, err := h.store.PreviewInvitation(r.Context(), r.URL.Query().Get("token"))
+	if errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusNotFound, "invitation_invalid_or_expired")
+		return
+	}
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "invitation_preview_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) Profile(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +66,10 @@ func (h *Handler) Profile(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(segments) == 2 && segments[0] == "invitations" && segments[1] == "accept" {
 		h.acceptInvitation(w, r, userID)
+		return
+	}
+	if len(segments) == 2 && segments[0] == "workspace" && segments[1] == "setup" {
+		h.workspaceSetup(w, r, userID)
 		return
 	}
 
@@ -77,6 +99,52 @@ func (h *Handler) Profile(w http.ResponseWriter, r *http.Request) {
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) workspaceSetup(w http.ResponseWriter, r *http.Request, userID int) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	var body struct {
+		Name        string `json:"name"`
+		CompanyRole string `json:"company_role"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	body.CompanyRole = strings.TrimSpace(body.CompanyRole)
+	if len([]rune(body.Name)) < 2 || len([]rune(body.Name)) > 120 || len([]rune(body.CompanyRole)) > 120 {
+		api.WriteError(w, http.StatusUnprocessableEntity, "invalid_workspace_setup")
+		return
+	}
+	workspace, membership, err := workspaces.NewStore(h.dbx).Setup(r.Context(), userID, body.Name)
+	if errors.Is(err, workspaces.ErrWorkspaceSetupRequired) {
+		api.WriteError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "workspace_setup_failed")
+		return
+	}
+	if _, err := h.dbx.ExecContext(r.Context(), `
+		UPDATE users SET company_role=$1 WHERE id=$2
+	`, body.CompanyRole, userID); err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "profile_update_failed")
+		return
+	}
+	displayName := workspace.Name
+	if workspace.DisplayName != nil && strings.TrimSpace(*workspace.DisplayName) != "" {
+		displayName = strings.TrimSpace(*workspace.DisplayName)
+	}
+	api.WriteJSON(w, http.StatusCreated, map[string]any{
+		"workspace": WorkspaceSummary{
+			ID: workspace.ID, Name: workspace.Name, DisplayName: displayName,
+			Status: workspace.Status, MemberCount: 1,
+		},
+		"membership": MembershipSummary{Role: membership.Role, Status: membership.Status},
+	})
 }
 
 func (h *Handler) overview(w http.ResponseWriter, r *http.Request, userID int) {
@@ -217,7 +285,7 @@ func (h *Handler) members(w http.ResponseWriter, r *http.Request, userID int, ov
 		return
 	}
 	if !overview.Capabilities.ManageMembers {
-		api.WriteError(w, http.StatusForbidden, "owner_required")
+		api.WriteError(w, http.StatusForbidden, "member_management_required")
 		return
 	}
 	if len(segments) != 3 {
@@ -277,12 +345,13 @@ func (h *Handler) invitations(w http.ResponseWriter, r *http.Request, userID int
 		return
 	}
 	if !overview.Capabilities.ManageMembers {
-		api.WriteError(w, http.StatusForbidden, "owner_required")
+		api.WriteError(w, http.StatusForbidden, "member_management_required")
 		return
 	}
 	var body struct {
-		Email string `json:"email"`
-		Role  string `json:"role"`
+		Email         string `json:"email"`
+		Role          string `json:"role"`
+		DepartmentIDs []int  `json:"department_ids"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -301,7 +370,13 @@ func (h *Handler) invitations(w http.ResponseWriter, r *http.Request, userID int
 		return
 	}
 	item, token, err := h.store.Invite(
-		r.Context(), overview.Workspace.ID, userID, email, body.Role, overview.Subscription.MemberLimit,
+		r.Context(),
+		overview.Workspace.ID,
+		userID,
+		email,
+		body.Role,
+		body.DepartmentIDs,
+		overview.Subscription.MemberLimit,
 	)
 	if err != nil {
 		if errors.Is(err, ErrMemberLimitReached) {
@@ -316,13 +391,17 @@ func (h *Handler) invitations(w http.ResponseWriter, r *http.Request, userID int
 			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 			return
 		}
+		if errors.Is(err, ErrInvalidDepartments) {
+			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
 		api.WriteError(w, http.StatusInternalServerError, "invitation_create_failed")
 		return
 	}
 	emailDelivered := true
 	if token != "" {
-		inviteURL := strings.TrimRight(h.cfg.FrontendBaseURL, "/") + "/login?invite=" +
-			url.QueryEscape(token) + "&email=" + url.QueryEscape(email)
+		inviteURL := strings.TrimRight(h.cfg.FrontendBaseURL, "/") + "/invite?token=" +
+			url.QueryEscape(token)
 		roleLabel := "участника"
 		if body.Role == roleAdmin {
 			roleLabel = "администратора"

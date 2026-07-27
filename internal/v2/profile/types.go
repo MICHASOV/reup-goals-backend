@@ -76,10 +76,22 @@ type Member struct {
 	CompanyRole   string     `json:"company_role"`
 	Role          string     `json:"role"`
 	Status        string     `json:"status"`
+	DepartmentIDs []int      `json:"department_ids"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	CanBeRemoved  bool       `json:"can_be_removed"`
 	CanChangeRole bool       `json:"can_change_role"`
+}
+
+type InvitationPreview struct {
+	WorkspaceName   string    `json:"workspace_name"`
+	InvitedEmail    string    `json:"invited_email"`
+	InviterName     string    `json:"inviter_name"`
+	InviterEmail    string    `json:"inviter_email"`
+	Role            string    `json:"role"`
+	DepartmentIDs   []int     `json:"department_ids"`
+	DepartmentNames []string  `json:"department_names"`
+	ExpiresAt       time.Time `json:"expires_at"`
 }
 
 type Settings struct {

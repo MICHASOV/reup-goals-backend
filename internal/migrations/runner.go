@@ -3062,6 +3062,28 @@ var migrations = []Migration{
 						AND document.archived_at IS NULL
 						AND document.linked_project_ids @> jsonb_build_array(project.id)
 				);
+			`,
+	},
+	{
+		ID: "20260727_050_auth_invitation_flow",
+		SQL: `
+			ALTER TABLE users
+				ADD COLUMN IF NOT EXISTS workspace_onboarding_mode TEXT NOT NULL DEFAULT 'complete';
+
+			ALTER TABLE workspace_invitations
+				ADD COLUMN IF NOT EXISTS department_ids INTEGER[] NOT NULL DEFAULT '{}'::INTEGER[];
+
+			DO $$
+			BEGIN
+				IF NOT EXISTS (
+					SELECT 1 FROM pg_constraint
+					WHERE conname='chk_users_workspace_onboarding_mode'
+				) THEN
+					ALTER TABLE users
+						ADD CONSTRAINT chk_users_workspace_onboarding_mode
+						CHECK (workspace_onboarding_mode IN ('create', 'join', 'complete'));
+				END IF;
+			END $$;
 		`,
 	},
 }

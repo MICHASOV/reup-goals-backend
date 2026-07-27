@@ -22,7 +22,9 @@ func RequireAuth(dbx *sql.DB, secret []byte, next http.HandlerFunc) http.Handler
 		}
 		if dbx != nil {
 			var version int
-			if dbx.QueryRowContext(r.Context(), `SELECT auth_version FROM users WHERE id=$1`, claims.UserID).Scan(&version) != nil || version != claims.AuthVersion {
+			var emailVerified bool
+			if dbx.QueryRowContext(r.Context(), `SELECT auth_version, email_verified FROM users WHERE id=$1`, claims.UserID).
+				Scan(&version, &emailVerified) != nil || version != claims.AuthVersion || !emailVerified {
 				WriteError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}

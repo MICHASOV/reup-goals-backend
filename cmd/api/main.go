@@ -139,15 +139,16 @@ func main() {
 	// -----------------------
 	// AUTH (public)
 	// -----------------------
-	mux.Handle("/auth/register", authLimiter.Wrap(auth.RegisterHandler(database, jwtSecret, emailService, secureCookie, cfg.BrowserAuthOnly)))
+	mux.Handle("/auth/register", authLimiter.Wrap(auth.RegisterHandler(database, emailService)))
 	mux.Handle("/auth/login", authLimiter.Wrap(auth.LoginHandler(database, jwtSecret, secureCookie, cfg.BrowserAuthOnly)))
-	mux.Handle("/auth/verify-email", authLimiter.Wrap(auth.VerifyEmailHandler(database)))
+	mux.Handle("/auth/verify-email", authLimiter.Wrap(auth.VerifyEmailHandler(database, jwtSecret, secureCookie, cfg.BrowserAuthOnly)))
 	mux.Handle("/auth/resend-code", authLimiter.Wrap(auth.ResendCodeHandler(database, emailService)))
 	mux.Handle("/auth/forgot-password", authLimiter.Wrap(auth.ForgotPasswordHandler(database, emailService)))
 	mux.Handle("/auth/verify-reset-code", authLimiter.Wrap(auth.VerifyResetCodeHandler(database)))
 	mux.Handle("/auth/reset-password", authLimiter.Wrap(auth.ResetPasswordHandler(database)))
 	mux.Handle("/auth/me", mw.Wrap(auth.MeHandler(database)))
 	mux.HandleFunc("/api/v2/privacy/legal-documents", privacyHandler.Documents)
+	mux.HandleFunc("/api/v2/invitations/preview", profileHandler.InvitationPreview)
 	mux.Handle("/api/v2/privacy/acceptances", v2api.RequireAuth(database, jwtSecret, privacyHandler.Acceptances))
 	mux.Handle("/api/v2/privacy/requests", v2api.RequireAuth(database, jwtSecret, privacyHandler.Requests))
 	mux.Handle("/api/v2/profile", v2api.RequireAuth(database, jwtSecret, profileHandler.Profile))

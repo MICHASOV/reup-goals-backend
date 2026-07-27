@@ -61,3 +61,16 @@ func TestValidSettings(t *testing.T) {
 		t.Fatal("expected unsupported theme to be rejected")
 	}
 }
+
+func TestDedupePositiveIDs(t *testing.T) {
+	got := dedupePositiveIDs([]int{4, 0, 2, 4, -1, 2, 9})
+	want := []int{4, 2, 9}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("expected %v, got %v", want, got)
+		}
+	}
+}
