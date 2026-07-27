@@ -17,6 +17,10 @@ var ErrPaymentRequired = errors.New("payment_required")
 type QuotaSummary struct {
 	UsedPercent         int       `json:"used_percent"`
 	RemainingPercent    int       `json:"remaining_percent"`
+	WeeklyLimit         int       `json:"weekly_limit"`
+	WeeklyUsed          int       `json:"weekly_used"`
+	PurchasedBalance    int       `json:"purchased_balance"`
+	RemainingMessages   int       `json:"remaining_messages"`
 	State               string    `json:"state"`
 	WindowStartedAt     time.Time `json:"window_started_at"`
 	ResetsAt            time.Time `json:"resets_at"`
@@ -398,7 +402,10 @@ func (state quotaState) summary() QuotaSummary {
 	}
 	return QuotaSummary{
 		UsedPercent: used, RemainingPercent: max(0, 100-used), State: status,
-		WindowStartedAt: state.windowStartedAt, ResetsAt: state.windowEndsAt,
+		WeeklyLimit: state.baseLimit, WeeklyUsed: min(state.baseUsed, state.baseLimit),
+		PurchasedBalance:  state.purchasedBalance,
+		RemainingMessages: max(0, state.baseLimit-state.baseUsed) + state.purchasedBalance,
+		WindowStartedAt:   state.windowStartedAt, ResetsAt: state.windowEndsAt,
 		Timezone: state.timezone, ExtraCapacityActive: state.purchasedBalance > 0,
 		AIAvailable: available, WarningThreshold: state.warningLevel(),
 		baseLimit: state.baseLimit, baseUsed: state.baseUsed, purchasedBalance: state.purchasedBalance,

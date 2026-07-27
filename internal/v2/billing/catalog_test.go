@@ -52,4 +52,8 @@ func TestQuotaSummaryUsesPurchasedCapacityAfterBaseLimit(t *testing.T) {
 	if !summary.AIAvailable || !summary.ExtraCapacityActive || summary.UsedPercent != 100 {
 		t.Fatalf("unexpected quota summary: %+v", summary)
 	}
+	if summary.WeeklyLimit != 150 || summary.WeeklyUsed != 150 ||
+		summary.PurchasedBalance != 25 || summary.RemainingMessages != 25 {
+		t.Fatalf("unexpected quota counters: %+v", summary)
+	}
 }

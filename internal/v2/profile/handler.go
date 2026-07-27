@@ -197,7 +197,8 @@ func (h *Handler) aiUsage(w http.ResponseWriter, r *http.Request, userID int) {
 		return
 	}
 	usage := billing.QuotaSummary{
-		State: "available", RemainingPercent: 100, AIAvailable: true, Timezone: "Europe/Moscow",
+		State: "available", RemainingPercent: 100, WeeklyLimit: plan.WeeklyAILimit,
+		RemainingMessages: plan.WeeklyAILimit, AIAvailable: true, Timezone: "Europe/Moscow",
 	}
 	if h.quotaService != nil {
 		usage, err = h.quotaService.Summary(r.Context(), workspace.ID)

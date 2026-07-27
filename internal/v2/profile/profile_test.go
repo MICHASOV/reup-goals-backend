@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"reup-goals-backend/internal/v2/billing"
 )
 
 func TestBuildInvoicePDF(t *testing.T) {
@@ -65,6 +67,9 @@ func TestAIUsageResponseJSONContract(t *testing.T) {
 	payload, err := json.Marshal(AIUsageResponse{
 		PlanCode: "team", PlanName: "Team", ResetAmount: 2990, Currency: "RUB",
 		CanManageSubscription: true,
+		AIUsage: billing.QuotaSummary{
+			WeeklyLimit: 400, WeeklyUsed: 168, PurchasedBalance: 25, RemainingMessages: 257,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +80,10 @@ func TestAIUsageResponseJSONContract(t *testing.T) {
 		`"reset_amount":2990`,
 		`"can_manage_subscription":true`,
 		`"ai_usage"`,
+		`"weekly_limit":400`,
+		`"weekly_used":168`,
+		`"purchased_balance":25`,
+		`"remaining_messages":257`,
 	} {
 		if !strings.Contains(body, field) {
 			t.Fatalf("expected %s in %s", field, body)
