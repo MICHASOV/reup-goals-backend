@@ -1,0 +1,78 @@
+package billing
+
+import (
+	"errors"
+	"strings"
+)
+
+const (
+	PlanFounder = "founder"
+	PlanTeam    = "team"
+	PlanCompany = "company"
+
+	PeriodMonthly = "monthly"
+	PeriodAnnual  = "annual"
+
+	OrderSubscription = "subscription"
+	OrderQuotaReset   = "quota_reset"
+)
+
+var ErrPlanNotFound = errors.New("billing_plan_not_found")
+
+type Plan struct {
+	Code              string  `json:"code"`
+	Name              string  `json:"name"`
+	MonthlyAmount     float64 `json:"monthly_amount"`
+	AnnualAmount      float64 `json:"annual_amount"`
+	Currency          string  `json:"currency"`
+	MemberLimit       int     `json:"member_limit"`
+	WeeklyAILimit     int     `json:"weekly_ai_limit"`
+	ResetAmount       float64 `json:"reset_amount"`
+	StandardResponses int     `json:"standard_responses_month"`
+	EquivalentTokens  int     `json:"equivalent_tokens_month"`
+}
+
+var plans = []Plan{
+	{
+		Code: PlanFounder, Name: "Founder", MonthlyAmount: 3490, AnnualAmount: 33504,
+		Currency: "RUB", MemberLimit: 1, WeeklyAILimit: 150, ResetAmount: 890,
+		StandardResponses: 650, EquivalentTokens: 5_000_000,
+	},
+	{
+		Code: PlanTeam, Name: "Team", MonthlyAmount: 11990, AnnualAmount: 115104,
+		Currency: "RUB", MemberLimit: 5, WeeklyAILimit: 400, ResetAmount: 2990,
+		StandardResponses: 1730, EquivalentTokens: 12_000_000,
+	},
+	{
+		Code: PlanCompany, Name: "Company", MonthlyAmount: 29990, AnnualAmount: 287904,
+		Currency: "RUB", MemberLimit: 0, WeeklyAILimit: 1200, ResetAmount: 7490,
+		StandardResponses: 5200, EquivalentTokens: 36_000_000,
+	},
+}
+
+func Plans() []Plan {
+	result := make([]Plan, len(plans))
+	copy(result, plans)
+	return result
+}
+
+func PlanByCode(code string) (Plan, error) {
+	code = strings.ToLower(strings.TrimSpace(code))
+	for _, item := range plans {
+		if item.Code == code {
+			return item, nil
+		}
+	}
+	return Plan{}, ErrPlanNotFound
+}
+
+func Price(plan Plan, period string) (float64, error) {
+	switch strings.ToLower(strings.TrimSpace(period)) {
+	case PeriodMonthly:
+		return plan.MonthlyAmount, nil
+	case PeriodAnnual:
+		return plan.AnnualAmount, nil
+	default:
+		return 0, errors.New("billing_period_invalid")
+	}
+}

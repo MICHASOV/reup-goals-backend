@@ -1,6 +1,10 @@
 package profile
 
-import "time"
+import (
+	"time"
+
+	"reup-goals-backend/internal/v2/billing"
+)
 
 const (
 	roleOwner  = "owner"
@@ -50,20 +54,26 @@ type Capabilities struct {
 }
 
 type SubscriptionSummary struct {
-	Plan              string     `json:"plan"`
-	Status            string     `json:"status"`
-	Amount            float64    `json:"amount"`
-	Currency          string     `json:"currency"`
-	PaymentMethod     string     `json:"payment_method"`
-	PaymentProvider   string     `json:"payment_provider"`
-	PeriodEnd         *time.Time `json:"period_end"`
-	NextRenewal       *time.Time `json:"next_renewal"`
-	GraceUntil        *time.Time `json:"grace_until"`
-	Access            bool       `json:"access"`
-	DisplayStatus     string     `json:"display_status"`
-	CheckoutAvailable bool       `json:"checkout_available"`
-	MemberLimit       int        `json:"member_limit"`
-	SeatsUsed         int        `json:"seats_used"`
+	Plan              string               `json:"plan"`
+	PlanCode          string               `json:"plan_code"`
+	BillingPeriod     string               `json:"billing_period"`
+	Status            string               `json:"status"`
+	Amount            float64              `json:"amount"`
+	AnnualAmount      float64              `json:"annual_amount"`
+	ResetAmount       float64              `json:"reset_amount"`
+	Currency          string               `json:"currency"`
+	PaymentMethod     string               `json:"payment_method"`
+	PaymentProvider   string               `json:"payment_provider"`
+	PeriodEnd         *time.Time           `json:"period_end"`
+	NextRenewal       *time.Time           `json:"next_renewal"`
+	GraceUntil        *time.Time           `json:"grace_until"`
+	Access            bool                 `json:"access"`
+	DisplayStatus     string               `json:"display_status"`
+	CheckoutAvailable bool                 `json:"checkout_available"`
+	MemberLimit       int                  `json:"member_limit"`
+	SeatsUsed         int                  `json:"seats_used"`
+	AIUsage           billing.QuotaSummary `json:"ai_usage"`
+	AvailablePlans    []billing.Plan       `json:"available_plans"`
 }
 
 type Member struct {
@@ -115,7 +125,13 @@ type BillingOrganization struct {
 
 type Invoice struct {
 	ID             int64      `json:"id"`
+	OrderID        *int64     `json:"order_id,omitempty"`
 	Number         string     `json:"number"`
+	OrderKind      string     `json:"order_kind"`
+	PlanCode       string     `json:"plan_code"`
+	BillingPeriod  string     `json:"billing_period"`
+	Description    string     `json:"description"`
+	TaxLabel       string     `json:"tax_label"`
 	Amount         float64    `json:"amount"`
 	Currency       string     `json:"currency"`
 	Status         string     `json:"status"`
@@ -125,6 +141,27 @@ type Invoice struct {
 	PaidAt         *time.Time `json:"paid_at,omitempty"`
 	EmailedAt      *time.Time `json:"emailed_at,omitempty"`
 	DocumentID     *int64     `json:"document_id,omitempty"`
+}
+
+type SellerProfile struct {
+	FullName             string `json:"full_name"`
+	INN                  string `json:"inn"`
+	KPP                  string `json:"kpp"`
+	RegistrationNumber   string `json:"registration_number"`
+	LegalAddress         string `json:"legal_address"`
+	BankName             string `json:"bank_name"`
+	SettlementAccount    string `json:"settlement_account"`
+	CorrespondentAccount string `json:"correspondent_account"`
+	BIC                  string `json:"bic"`
+	DirectorName         string `json:"director_name"`
+	AccountingEmail      string `json:"accounting_email"`
+	TaxLabel             string `json:"tax_label"`
+}
+
+type InvoiceRequest struct {
+	PlanCode      string
+	BillingPeriod string
+	OrderKind     string
 }
 
 type BillingDocument struct {

@@ -3,9 +3,11 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"reup-goals-backend/internal/auth"
+	"reup-goals-backend/internal/v2/billing"
 )
 
 func RequireAuth(dbx *sql.DB, secret []byte, next http.HandlerFunc) http.HandlerFunc {
@@ -43,4 +45,16 @@ func WriteJSON(w http.ResponseWriter, status int, data any) {
 
 func WriteError(w http.ResponseWriter, status int, code string) {
 	WriteJSON(w, status, map[string]string{"error": code})
+}
+
+func WriteAIError(w http.ResponseWriter, err error, fallbackStatus int, fallbackCode string) {
+	if errors.Is(err, billing.ErrQuotaExceeded) {
+		WriteError(w, http.StatusTooManyRequests, billing.ErrQuotaExceeded.Error())
+		return
+	}
+	if errors.Is(err, billing.ErrPaymentRequired) {
+		WriteError(w, http.StatusPaymentRequired, billing.ErrPaymentRequired.Error())
+		return
+	}
+	WriteError(w, fallbackStatus, fallbackCode)
 }

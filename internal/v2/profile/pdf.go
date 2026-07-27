@@ -7,19 +7,28 @@ import (
 	"unicode/utf16"
 )
 
-func BuildInvoicePDF(invoice Invoice, organization BillingOrganization) []byte {
+func BuildInvoicePDF(invoice Invoice, seller SellerProfile, buyer BillingOrganization) []byte {
 	lines := []string{
 		"REUP.goals",
 		"Счёт на оплату № " + invoice.Number,
-		"Получатель: " + organization.FullName,
-		"ИНН: " + organization.INN,
-		"КПП: " + valueOrDash(organization.KPP),
-		"ОГРН / ОГРНИП: " + organization.RegistrationNumber,
-		"Юридический адрес: " + organization.LegalAddress,
+		"Поставщик: " + seller.FullName,
+		"ИНН / КПП: " + seller.INN + " / " + seller.KPP,
+		"ОГРН: " + seller.RegistrationNumber,
+		"Юридический адрес: " + seller.LegalAddress,
+		"Банк: " + seller.BankName,
+		"Расчётный счёт: " + seller.SettlementAccount,
+		"Корр. счёт: " + seller.CorrespondentAccount,
+		"БИК: " + seller.BIC,
+		"Покупатель: " + buyer.FullName,
+		"ИНН / КПП: " + buyer.INN + " / " + valueOrDash(buyer.KPP),
+		"ОГРН / ОГРНИП: " + buyer.RegistrationNumber,
+		"Адрес покупателя: " + buyer.LegalAddress,
+		"Услуга: " + invoice.Description,
 		fmt.Sprintf("Сумма: %.2f %s", invoice.Amount, invoice.Currency),
+		"Налог: " + valueOrDash(invoice.TaxLabel),
 		"Дата выставления: " + invoice.IssuedAt.Format("02.01.2006"),
 		"Оплатить до: " + invoice.DueAt.Format("02.01.2006"),
-		"Назначение платежа: подписка REUP.goals",
+		"Назначение платежа: оплата по счёту " + invoice.Number,
 	}
 
 	var content strings.Builder
@@ -32,7 +41,7 @@ func BuildInvoicePDF(invoice Invoice, organization BillingOrganization) []byte {
 		}
 		content.WriteString("<")
 		content.WriteString(pdfUTF16Hex(line))
-		content.WriteString("> Tj\n0 -26 Td\n")
+		content.WriteString("> Tj\n0 -22 Td\n")
 	}
 	content.WriteString("ET\n")
 

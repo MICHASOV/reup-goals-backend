@@ -98,3 +98,26 @@ func TestLoadSecureCookieOverride(t *testing.T) {
 		t.Fatal("expected COOKIE_SECURE to enable secure session cookies")
 	}
 }
+
+func TestValidateRejectsBillingEnforcementWithoutActivationPath(t *testing.T) {
+	config := &Config{
+		DBHost: "127.0.0.1", DBUser: "user", DBName: "reup", OpenAIKey: "key",
+		DBSSLMode: "disable", JWTSecret: strings.Repeat("x", 32), PrivacyMode: "test",
+		BillingEnforcementEnabled: true,
+	}
+	err := config.Validate()
+	if err == nil || !strings.Contains(err.Error(), "manual confirmation") {
+		t.Fatalf("expected billing activation path error, got %v", err)
+	}
+}
+
+func TestValidateAllowsManualBillingConfirmation(t *testing.T) {
+	config := &Config{
+		DBHost: "127.0.0.1", DBUser: "user", DBName: "reup", OpenAIKey: "key",
+		DBSSLMode: "disable", JWTSecret: strings.Repeat("x", 32), PrivacyMode: "test",
+		BillingEnforcementEnabled: true, BillingAdminKey: strings.Repeat("b", 32),
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("expected manual billing activation path to be valid, got %v", err)
+	}
+}

@@ -57,7 +57,7 @@ func (h *Handler) Transcriptions(w http.ResponseWriter, r *http.Request) {
 	aiCtx := ai.WithScenario(r.Context(), workspaceID, userID, "audio_transcription", "v1")
 	text, err := h.ai.TranscribeAudio(aiCtx, security.SafeFilename(header.Filename), language, file)
 	if err != nil {
-		api.WriteError(w, http.StatusBadGateway, "audio_transcription_failed")
+		api.WriteAIError(w, err, http.StatusBadGateway, "audio_transcription_failed")
 		return
 	}
 

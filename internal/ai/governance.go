@@ -15,10 +15,11 @@ type CallMetadata struct {
 }
 
 type ResolvedCall struct {
-	Metadata     CallMetadata
-	Instructions string
-	Model        string
-	Provider     string
+	Metadata      CallMetadata
+	Instructions  string
+	Model         string
+	Provider      string
+	ReservationID string
 }
 
 type CallResult struct {

@@ -236,7 +236,7 @@ func (h *Handler) advisorMessage(w http.ResponseWriter, r *http.Request) {
 		case err.Error() == "invalid_tactics_scope":
 			api.WriteError(w, http.StatusBadRequest, err.Error())
 		default:
-			api.WriteError(w, http.StatusInternalServerError, "advisor_message_failed")
+			api.WriteAIError(w, err, http.StatusInternalServerError, "advisor_message_failed")
 		}
 		return
 	}
@@ -393,7 +393,7 @@ func (h *Handler) facilitatorMessage(w http.ResponseWriter, r *http.Request) {
 		case "invalid_tactics_scope":
 			api.WriteError(w, http.StatusBadRequest, "invalid_tactics_scope")
 		default:
-			api.WriteError(w, http.StatusInternalServerError, "tactics_facilitator_message_failed")
+			api.WriteAIError(w, err, http.StatusInternalServerError, "tactics_facilitator_message_failed")
 		}
 		return
 	}

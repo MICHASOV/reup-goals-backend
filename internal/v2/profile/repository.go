@@ -14,6 +14,7 @@ import (
 
 	"github.com/lib/pq"
 
+	"reup-goals-backend/internal/v2/billing"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -113,25 +114,32 @@ func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, 
 	var result SubscriptionSummary
 	var periodEnd, nextRenewal, graceUntil sql.NullTime
 	err := s.dbx.QueryRowContext(ctx, `
-		SELECT plan_name, status, amount, currency, payment_method, payment_provider,
-			current_period_end, next_payment_at, grace_until, member_limit
+		SELECT plan_name, plan_code, billing_period, status, amount, currency,
+			payment_method, payment_provider, current_period_end, next_payment_at,
+			grace_until, member_limit
 		FROM subscriptions
 		WHERE workspace_id=$1 OR (workspace_id IS NULL AND user_id=$2)
 		ORDER BY CASE WHEN workspace_id=$1 THEN 0 ELSE 1 END, updated_at DESC
 		LIMIT 1
 	`, workspaceID, ownerUserID).Scan(
-		&result.Plan, &result.Status, &result.Amount, &result.Currency,
-		&result.PaymentMethod, &result.PaymentProvider, &periodEnd, &nextRenewal, &graceUntil,
-		&result.MemberLimit,
+		&result.Plan, &result.PlanCode, &result.BillingPeriod, &result.Status,
+		&result.Amount, &result.Currency, &result.PaymentMethod, &result.PaymentProvider,
+		&periodEnd, &nextRenewal, &graceUntil, &result.MemberLimit,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
+		plan, _ := billing.PlanByCode(billing.PlanFounder)
 		return SubscriptionSummary{
-			Plan:              "REUP.goals Pro",
+			Plan:              plan.Name,
+			PlanCode:          plan.Code,
+			BillingPeriod:     billing.PeriodMonthly,
 			Status:            "inactive",
-			Currency:          "RUB",
+			Amount:            plan.MonthlyAmount,
+			AnnualAmount:      plan.AnnualAmount,
+			ResetAmount:       plan.ResetAmount,
+			Currency:          plan.Currency,
 			DisplayStatus:     "inactive",
 			CheckoutAvailable: checkoutAvailable,
-			MemberLimit:       5,
+			MemberLimit:       plan.MemberLimit,
 		}, nil
 	}
 	if err != nil {
@@ -732,7 +740,28 @@ func (s *Store) SaveBillingOrganization(ctx context.Context, workspaceID, userID
 	return result, err
 }
 
-func (s *Store) CreateInvoice(ctx context.Context, workspaceID, userID int, amount float64, currency string) (Invoice, error) {
+func (s *Store) SellerProfile(ctx context.Context) (SellerProfile, error) {
+	var result SellerProfile
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT full_name, inn, kpp, registration_number, legal_address, bank_name,
+			settlement_account, correspondent_account, bic, director_name,
+			accounting_email, tax_label
+		FROM billing_seller_profiles
+		WHERE id=1
+	`).Scan(
+		&result.FullName, &result.INN, &result.KPP, &result.RegistrationNumber,
+		&result.LegalAddress, &result.BankName, &result.SettlementAccount,
+		&result.CorrespondentAccount, &result.BIC, &result.DirectorName,
+		&result.AccountingEmail, &result.TaxLabel,
+	)
+	return result, err
+}
+
+func (s *Store) CreateInvoice(
+	ctx context.Context,
+	workspaceID, userID int,
+	request InvoiceRequest,
+) (Invoice, error) {
 	organization, err := s.BillingOrganization(ctx, workspaceID)
 	if err != nil {
 		return Invoice{}, err
@@ -740,9 +769,39 @@ func (s *Store) CreateInvoice(ctx context.Context, workspaceID, userID int, amou
 	if organization == nil {
 		return Invoice{}, errors.New("billing_organization_required")
 	}
-	snapshot, err := json.Marshal(organization)
+	seller, err := s.SellerProfile(ctx)
 	if err != nil {
 		return Invoice{}, err
+	}
+	buyerSnapshot, err := json.Marshal(organization)
+	if err != nil {
+		return Invoice{}, err
+	}
+	sellerSnapshot, err := json.Marshal(seller)
+	if err != nil {
+		return Invoice{}, err
+	}
+	plan, err := billing.PlanByCode(request.PlanCode)
+	if err != nil {
+		return Invoice{}, err
+	}
+	request.PlanCode = plan.Code
+	request.BillingPeriod = strings.ToLower(strings.TrimSpace(request.BillingPeriod))
+	request.OrderKind = strings.ToLower(strings.TrimSpace(request.OrderKind))
+	amount, err := billing.Price(plan, request.BillingPeriod)
+	if err != nil {
+		return Invoice{}, err
+	}
+	description := fmt.Sprintf("Подписка REUP.goals, тариф %s, оплата за месяц", plan.Name)
+	if request.BillingPeriod == billing.PeriodAnnual {
+		description = fmt.Sprintf("Подписка REUP.goals, тариф %s, оплата за год со скидкой 20%%", plan.Name)
+	}
+	if request.OrderKind == billing.OrderQuotaReset {
+		request.BillingPeriod = billing.PeriodMonthly
+		amount = plan.ResetAmount
+		description = fmt.Sprintf("Сброс недельного AI-лимита REUP.goals, тариф %s", plan.Name)
+	} else if request.OrderKind != billing.OrderSubscription {
+		return Invoice{}, errors.New("billing_order_kind_invalid")
 	}
 
 	tx, err := s.dbx.BeginTx(ctx, nil)
@@ -750,6 +809,16 @@ func (s *Store) CreateInvoice(ctx context.Context, workspaceID, userID int, amou
 		return Invoice{}, err
 	}
 	defer tx.Rollback()
+	var orderID int64
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO workspace_billing_orders (
+			workspace_id, created_by, order_kind, plan_code, billing_period,
+			amount, currency, status, provider
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,'waiting','manual')
+		RETURNING id
+	`, workspaceID, userID, request.OrderKind, plan.Code, request.BillingPeriod, amount, plan.Currency).Scan(&orderID); err != nil {
+		return Invoice{}, err
+	}
 	var id int64
 	if err := tx.QueryRowContext(ctx, `SELECT nextval('workspace_billing_invoices_id_seq')`).Scan(&id); err != nil {
 		return Invoice{}, err
@@ -758,18 +827,25 @@ func (s *Store) CreateInvoice(ctx context.Context, workspaceID, userID int, amou
 	dueAt := now.Add(5 * 24 * time.Hour)
 	number := fmt.Sprintf("REUP-%d-%06d", now.Year(), id)
 	invoice := Invoice{
-		ID: id, Number: number, Amount: amount, Currency: currency, Status: "waiting",
+		ID: id, OrderID: &orderID, Number: number, OrderKind: request.OrderKind,
+		PlanCode: plan.Code, BillingPeriod: request.BillingPeriod, Description: description,
+		TaxLabel: seller.TaxLabel, Amount: amount, Currency: plan.Currency, Status: "waiting",
 		RecipientEmail: organization.AccountingEmail, IssuedAt: now, DueAt: dueAt,
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO workspace_billing_invoices (
 			id, workspace_id, number, amount, currency, status, organization_snapshot,
-			recipient_email, issued_by, issued_at, due_at
-		) VALUES ($1,$2,$3,$4,$5,'waiting',$6,$7,$8,$9,$10)
-	`, id, workspaceID, number, amount, currency, snapshot, organization.AccountingEmail, userID, now, dueAt); err != nil {
+			recipient_email, issued_by, issued_at, due_at, order_id, order_kind,
+			plan_code, billing_period, description, tax_label, seller_snapshot
+		) VALUES (
+			$1,$2,$3,$4,$5,'waiting',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17
+		)
+	`, id, workspaceID, number, amount, plan.Currency, buyerSnapshot, organization.AccountingEmail,
+		userID, now, dueAt, orderID, request.OrderKind, plan.Code, request.BillingPeriod,
+		description, seller.TaxLabel, sellerSnapshot); err != nil {
 		return Invoice{}, err
 	}
-	pdf := BuildInvoicePDF(invoice, *organization)
+	pdf := BuildInvoicePDF(invoice, seller, *organization)
 	var documentID int64
 	if err := tx.QueryRowContext(ctx, `
 		INSERT INTO workspace_billing_documents (
@@ -788,7 +864,9 @@ func (s *Store) CreateInvoice(ctx context.Context, workspaceID, userID int, amou
 
 func (s *Store) Invoices(ctx context.Context, workspaceID int) ([]Invoice, error) {
 	rows, err := s.dbx.QueryContext(ctx, `
-		SELECT invoice.id, invoice.number, invoice.amount, invoice.currency,
+		SELECT invoice.id, invoice.order_id, invoice.number, invoice.order_kind,
+			invoice.plan_code, invoice.billing_period, invoice.description, invoice.tax_label,
+			invoice.amount, invoice.currency,
 			CASE WHEN invoice.status='waiting' AND invoice.due_at <= NOW() THEN 'expired' ELSE invoice.status END,
 			invoice.recipient_email, invoice.issued_at, invoice.due_at, invoice.paid_at, invoice.emailed_at,
 			document.id
@@ -809,10 +887,16 @@ func (s *Store) Invoices(ctx context.Context, workspaceID int) ([]Invoice, error
 	for rows.Next() {
 		var item Invoice
 		var paidAt, emailedAt sql.NullTime
-		var documentID sql.NullInt64
-		if err := rows.Scan(&item.ID, &item.Number, &item.Amount, &item.Currency, &item.Status,
+		var orderID, documentID sql.NullInt64
+		if err := rows.Scan(&item.ID, &orderID, &item.Number, &item.OrderKind,
+			&item.PlanCode, &item.BillingPeriod, &item.Description, &item.TaxLabel,
+			&item.Amount, &item.Currency, &item.Status,
 			&item.RecipientEmail, &item.IssuedAt, &item.DueAt, &paidAt, &emailedAt, &documentID); err != nil {
 			return nil, err
+		}
+		if orderID.Valid {
+			value := orderID.Int64
+			item.OrderID = &value
 		}
 		item.PaidAt = nullableTime(paidAt)
 		item.EmailedAt = nullableTime(emailedAt)
@@ -870,12 +954,23 @@ func (s *Store) DocumentContent(ctx context.Context, workspaceID int, documentID
 func (s *Store) MarkInvoiceEmailed(ctx context.Context, workspaceID int, invoiceID int64) (Invoice, error) {
 	var item Invoice
 	var paidAt, emailedAt sql.NullTime
+	var orderID sql.NullInt64
 	err := s.dbx.QueryRowContext(ctx, `
 		UPDATE workspace_billing_invoices SET emailed_at=NOW(), updated_at=NOW()
 		WHERE id=$1 AND workspace_id=$2
-		RETURNING id, number, amount, currency, status, recipient_email, issued_at, due_at, paid_at, emailed_at
-	`, invoiceID, workspaceID).Scan(&item.ID, &item.Number, &item.Amount, &item.Currency,
-		&item.Status, &item.RecipientEmail, &item.IssuedAt, &item.DueAt, &paidAt, &emailedAt)
+		RETURNING id, order_id, number, order_kind, plan_code, billing_period,
+			description, tax_label, amount, currency, status, recipient_email,
+			issued_at, due_at, paid_at, emailed_at
+	`, invoiceID, workspaceID).Scan(
+		&item.ID, &orderID, &item.Number, &item.OrderKind, &item.PlanCode,
+		&item.BillingPeriod, &item.Description, &item.TaxLabel, &item.Amount,
+		&item.Currency, &item.Status, &item.RecipientEmail, &item.IssuedAt,
+		&item.DueAt, &paidAt, &emailedAt,
+	)
+	if orderID.Valid {
+		value := orderID.Int64
+		item.OrderID = &value
+	}
 	item.PaidAt = nullableTime(paidAt)
 	item.EmailedAt = nullableTime(emailedAt)
 	return item, err

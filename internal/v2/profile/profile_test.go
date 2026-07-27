@@ -10,9 +10,16 @@ func TestBuildInvoicePDF(t *testing.T) {
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
 	document := BuildInvoicePDF(Invoice{
 		Number: "REUP-2026-000001", Amount: 2990, Currency: "RUB",
+		Description: "Подписка REUP.goals, тариф Founder", TaxLabel: "Без НДС",
 		IssuedAt: now, DueAt: now.Add(5 * 24 * time.Hour),
+	}, SellerProfile{
+		FullName: "ООО РЕАП", INN: "5262392668", KPP: "526201001",
+		RegistrationNumber: "1235200026995", LegalAddress: "Нижний Новгород",
+		BankName: "АО Т-Банк", SettlementAccount: "40702810110001489655",
+		CorrespondentAccount: "30101810145250000974", BIC: "044525974",
+		TaxLabel: "Без НДС",
 	}, BillingOrganization{
-		FullName: "ООО РЕАП", INN: "7701234567", RegistrationNumber: "1027700123456",
+		FullName: "ООО Покупатель", INN: "7701234567", RegistrationNumber: "1027700123456",
 		LegalAddress: "Москва", AccountingEmail: "billing@example.com", ContactPerson: "Иван",
 	})
 	if !bytes.HasPrefix(document, []byte("%PDF-1.4")) {

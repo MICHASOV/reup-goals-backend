@@ -76,12 +76,15 @@ type Config struct {
 	CloudPaymentsCurrency           string
 	CloudPaymentsTrialDays          int
 
-	TopPaymentsCheckoutURL string
-	FrontendBaseURL        string
-	AppVersion             string
-	SupportEmail           string
-	DocumentationURL       string
-	ChangelogURL           string
+	TopPaymentsCheckoutURL    string
+	BillingPaymentsEnabled    bool
+	BillingEnforcementEnabled bool
+	BillingAdminKey           string
+	FrontendBaseURL           string
+	AppVersion                string
+	SupportEmail              string
+	DocumentationURL          string
+	ChangelogURL              string
 }
 
 func Load() *Config {
@@ -153,18 +156,18 @@ func Load() *Config {
 
 	cloudPaymentsPlanName := os.Getenv("CLOUDPAYMENTS_PLAN_NAME")
 	if cloudPaymentsPlanName == "" {
-		cloudPaymentsPlanName = "REUP.goals Pro"
+		cloudPaymentsPlanName = "REUP.goals Founder"
 	}
 
-	cloudPaymentsAmount := parseFloatEnv("CLOUDPAYMENTS_AMOUNT", 199)
-	cloudPaymentsFirstPaymentAmount := parseFloatEnv("CLOUDPAYMENTS_FIRST_PAYMENT_AMOUNT", 1)
+	cloudPaymentsAmount := parseFloatEnv("CLOUDPAYMENTS_AMOUNT", 3490)
+	cloudPaymentsFirstPaymentAmount := parseFloatEnv("CLOUDPAYMENTS_FIRST_PAYMENT_AMOUNT", 3490)
 
 	cloudPaymentsCurrency := os.Getenv("CLOUDPAYMENTS_CURRENCY")
 	if cloudPaymentsCurrency == "" {
 		cloudPaymentsCurrency = "RUB"
 	}
 
-	cloudPaymentsTrialDays := parseIntEnv("CLOUDPAYMENTS_TRIAL_DAYS", 14)
+	cloudPaymentsTrialDays := parseIntEnv("CLOUDPAYMENTS_TRIAL_DAYS", 0)
 	frontendBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("FRONTEND_BASE_URL")), "/")
 	if frontendBaseURL == "" {
 		frontendBaseURL = "http://localhost:3000"
@@ -249,12 +252,15 @@ func Load() *Config {
 		CloudPaymentsCurrency:           cloudPaymentsCurrency,
 		CloudPaymentsTrialDays:          cloudPaymentsTrialDays,
 
-		TopPaymentsCheckoutURL: strings.TrimSpace(os.Getenv("TOPPAYMENTS_CHECKOUT_URL")),
-		FrontendBaseURL:        frontendBaseURL,
-		AppVersion:             appVersion,
-		SupportEmail:           supportEmail,
-		DocumentationURL:       strings.TrimSpace(os.Getenv("DOCUMENTATION_URL")),
-		ChangelogURL:           strings.TrimSpace(os.Getenv("CHANGELOG_URL")),
+		TopPaymentsCheckoutURL:    strings.TrimSpace(os.Getenv("TOPPAYMENTS_CHECKOUT_URL")),
+		BillingPaymentsEnabled:    parseBoolEnv("BILLING_PAYMENTS_ENABLED"),
+		BillingEnforcementEnabled: parseBoolEnv("BILLING_ENFORCEMENT_ENABLED"),
+		BillingAdminKey:           strings.TrimSpace(os.Getenv("BILLING_ADMIN_KEY")),
+		FrontendBaseURL:           frontendBaseURL,
+		AppVersion:                appVersion,
+		SupportEmail:              supportEmail,
+		DocumentationURL:          strings.TrimSpace(os.Getenv("DOCUMENTATION_URL")),
+		ChangelogURL:              strings.TrimSpace(os.Getenv("CHANGELOG_URL")),
 	}
 }
 
@@ -394,6 +400,17 @@ func (c *Config) Validate() error {
 	}
 	if (strings.TrimSpace(c.CloudPaymentsPublicID) == "") != (strings.TrimSpace(c.CloudPaymentsAPISecret) == "") {
 		return fmt.Errorf("CLOUDPAYMENTS_PUBLIC_ID and CLOUDPAYMENTS_API_SECRET must be configured together")
+	}
+	if c.BillingAdminKey != "" && len(c.BillingAdminKey) < 32 {
+		return fmt.Errorf("BILLING_ADMIN_KEY must contain at least 32 characters")
+	}
+	if c.BillingPaymentsEnabled &&
+		strings.TrimSpace(c.TopPaymentsCheckoutURL) == "" &&
+		strings.TrimSpace(c.CloudPaymentsPublicID) == "" {
+		return fmt.Errorf("BILLING_PAYMENTS_ENABLED requires a configured payment provider")
+	}
+	if c.BillingEnforcementEnabled && !c.BillingPaymentsEnabled && strings.TrimSpace(c.BillingAdminKey) == "" {
+		return fmt.Errorf("billing enforcement requires either real payments or manual confirmation")
 	}
 	return nil
 }

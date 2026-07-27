@@ -468,7 +468,7 @@ func (h *Handler) facilitatorMessage(w http.ResponseWriter, r *http.Request) {
 		case "message_too_long":
 			api.WriteError(w, http.StatusUnprocessableEntity, "message_too_long")
 		default:
-			api.WriteError(w, http.StatusInternalServerError, "strategy_facilitator_message_failed")
+			api.WriteAIError(w, err, http.StatusInternalServerError, "strategy_facilitator_message_failed")
 		}
 		return
 	}

@@ -133,7 +133,7 @@ func (h *Handler) documentChat(w http.ResponseWriter, r *http.Request, workspace
 			case "message_too_short", "message_too_long":
 				api.WriteError(w, http.StatusBadRequest, err.Error())
 			default:
-				api.WriteError(w, http.StatusBadGateway, "document_chat_failed")
+				api.WriteAIError(w, err, http.StatusBadGateway, "document_chat_failed")
 			}
 			return
 		}
@@ -170,7 +170,7 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request, workspaceID i
 			api.WriteError(w, http.StatusBadRequest, "message_too_long")
 			return
 		}
-		api.WriteError(w, http.StatusInternalServerError, "strategic_memory_message_failed")
+		api.WriteAIError(w, err, http.StatusInternalServerError, "strategic_memory_message_failed")
 		return
 	}
 

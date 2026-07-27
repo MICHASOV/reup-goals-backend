@@ -25,6 +25,7 @@ import (
 	"reup-goals-backend/internal/v2/aiplatform"
 	v2api "reup-goals-backend/internal/v2/api"
 	audioapi "reup-goals-backend/internal/v2/audio"
+	"reup-goals-backend/internal/v2/billing"
 	"reup-goals-backend/internal/v2/bootstrap"
 	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/course"
@@ -70,11 +71,13 @@ func main() {
 	rootCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 
+	billingService := billing.NewService(database, cfg.BillingEnforcementEnabled)
+	billingAdminHandler := billing.NewAdminHandler(billingService, cfg.BillingAdminKey)
 	aiGovernance := aiplatform.NewGovernance(database, aiplatform.Limits{
 		RequestsPerMinute: cfg.AIRequestsPerMinute,
 		DailyBudgetUSD:    cfg.AIDailyBudgetUSD,
 		MonthlyBudgetUSD:  cfg.AIMonthlyBudgetUSD,
-	})
+	}, billingService)
 	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel, cfg.OpenAIProxyURL).WithGovernance(aiGovernance)
 	auditorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIAuditorModel, cfg.OpenAIProxyURL).
 		WithMaxOutputTokens(cfg.OpenAIAuditorMaxOutputTokens).
@@ -95,7 +98,7 @@ func main() {
 	audioHandler := audioapi.NewHandler(database, transcriptionAIClient)
 	aiActionsHandler := aiactions.NewHandler(database)
 	aiPlatformHandler := aiplatform.NewHandler(database, cfg.AIAdminKey)
-	bootstrapHandler := bootstrap.NewHandler(database)
+	bootstrapHandler := bootstrap.NewHandler(database, cfg.BillingEnforcementEnabled)
 	courseHandler := course.NewHandler(database)
 	departmentHandler := departments.NewHandler(database, strategicSourceRecorder)
 	metricsHandler := metrics.NewHandler(database)
@@ -108,7 +111,7 @@ func main() {
 	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, taskEvaluatorAIClient, cfg.OpenAIAuditorCompactThreshold, strategicSourceRecorder).WithContextIndex(workspaceContextIndex)
 	operationsHandler := operations.NewHandler(database, jobManager)
 	privacyHandler := privacy.NewHandler(database)
-	profileHandler := profile.NewHandler(database, cfg, emailService, cloudPayments)
+	profileHandler := profile.NewHandler(database, cfg, emailService, cloudPayments, billingService)
 	operationsCollector := operations.NewCollector(database, jwtSecret)
 	operationsCollector.Start(rootCtx)
 	defer operationsCollector.Stop()
@@ -153,19 +156,21 @@ func main() {
 	mux.Handle("/api/v2/privacy/requests", v2api.RequireAuth(database, jwtSecret, privacyHandler.Requests))
 	mux.Handle("/api/v2/profile", v2api.RequireAuth(database, jwtSecret, profileHandler.Profile))
 	mux.Handle("/api/v2/profile/", v2api.RequireAuth(database, jwtSecret, profileHandler.Profile))
+	mux.HandleFunc("/api/v2/admin/billing/invoices/confirm", billingAdminHandler.ConfirmInvoice)
 
 	// -----------------------
 	// SUBSCRIPTIONS
 	// -----------------------
 	mux.Handle("/subscription/status", mw.Wrap(subscriptionHandler.Status))
-	mux.Handle("/subscription/checkout-config", mw.Wrap(subscriptionHandler.CheckoutConfig))
 	mux.Handle("/subscription/cancel", mw.Wrap(subscriptionHandler.Cancel))
-
-	mux.Handle("/payments/cloudpayments/check", subscriptionHandler.CloudPaymentsWebhook("check"))
-	mux.Handle("/payments/cloudpayments/pay", subscriptionHandler.CloudPaymentsWebhook("pay"))
-	mux.Handle("/payments/cloudpayments/fail", subscriptionHandler.CloudPaymentsWebhook("fail"))
-	mux.Handle("/payments/cloudpayments/recurrent", subscriptionHandler.CloudPaymentsWebhook("recurrent"))
-	mux.Handle("/payments/cloudpayments/cancel", subscriptionHandler.CloudPaymentsWebhook("cancel"))
+	if cfg.BillingPaymentsEnabled {
+		mux.Handle("/subscription/checkout-config", mw.Wrap(subscriptionHandler.CheckoutConfig))
+		mux.Handle("/payments/cloudpayments/check", subscriptionHandler.CloudPaymentsWebhook("check"))
+		mux.Handle("/payments/cloudpayments/pay", subscriptionHandler.CloudPaymentsWebhook("pay"))
+		mux.Handle("/payments/cloudpayments/fail", subscriptionHandler.CloudPaymentsWebhook("fail"))
+		mux.Handle("/payments/cloudpayments/recurrent", subscriptionHandler.CloudPaymentsWebhook("recurrent"))
+		mux.Handle("/payments/cloudpayments/cancel", subscriptionHandler.CloudPaymentsWebhook("cancel"))
+	}
 
 	// -----------------------
 	// V2 FOUNDATION
@@ -281,7 +286,10 @@ func main() {
 			http.MethodDelete,
 			http.MethodOptions,
 		},
-		AllowedHeaders: []string{"Authorization", "Content-Type", "X-Request-ID", "X-AI-Admin-Key"},
+		AllowedHeaders: []string{
+			"Authorization", "Content-Type", "X-Request-ID", "X-AI-Admin-Key",
+			"X-Billing-Admin-Key",
+		},
 		ExposedHeaders: []string{"X-Request-ID", "Server-Timing"},
 	}).Handler(mux)
 	globalLimiter := security.NewLimiter(300, time.Minute)

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/billing"
 	"reup-goals-backend/internal/v2/operations"
 )
 
@@ -21,10 +22,15 @@ type Limits struct {
 type Governance struct {
 	dbx      *sql.DB
 	defaults Limits
+	quotas   *billing.Service
 }
 
-func NewGovernance(dbx *sql.DB, defaults Limits) *Governance {
-	return &Governance{dbx: dbx, defaults: defaults}
+func NewGovernance(dbx *sql.DB, defaults Limits, quotaServices ...*billing.Service) *Governance {
+	result := &Governance{dbx: dbx, defaults: defaults}
+	if len(quotaServices) > 0 {
+		result.quotas = quotaServices[0]
+	}
+	return result
 }
 
 func (g *Governance) BeforeCall(ctx context.Context, metadata ai.CallMetadata, fallbackInstructions string, fallbackModel string) (ai.ResolvedCall, error) {
@@ -68,10 +74,28 @@ func (g *Governance) BeforeCall(ctx context.Context, metadata ai.CallMetadata, f
 		g.logRejected(ctx, resolved, err)
 		return ai.ResolvedCall{}, err
 	}
+	if g.quotas != nil {
+		reservation, err := g.quotas.Reserve(
+			ctx, resolved.Metadata.WorkspaceID, resolved.Metadata.UserID, resolved.Metadata.Module,
+		)
+		if err != nil {
+			g.logRejected(ctx, resolved, err)
+			return ai.ResolvedCall{}, err
+		}
+		resolved.ReservationID = reservation.ID
+	}
 	return resolved, nil
 }
 
 func (g *Governance) AfterCall(ctx context.Context, call ai.ResolvedCall, result ai.CallResult) {
+	if g.quotas != nil && call.ReservationID != "" {
+		if err := g.quotas.Settle(ctx, call.ReservationID, result.Err == nil); err != nil {
+			log.Printf(
+				"[ERROR] ai quota settlement failed workspace_id=%d module=%s: %v",
+				call.Metadata.WorkspaceID, call.Metadata.Module, err,
+			)
+		}
+	}
 	status := "success"
 	errorText := ""
 	if result.Err != nil {

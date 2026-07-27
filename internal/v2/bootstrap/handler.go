@@ -12,15 +12,19 @@ import (
 )
 
 type Handler struct {
-	dbx        *sql.DB
-	workspaces *workspaces.Store
+	dbx                *sql.DB
+	workspaces         *workspaces.Store
+	billingEnforcement bool
 }
 
-func NewHandler(dbx *sql.DB) *Handler {
-	return &Handler{
-		dbx:        dbx,
-		workspaces: workspaces.NewStore(dbx),
+func NewHandler(dbx *sql.DB, enforcement ...bool) *Handler {
+	result := &Handler{
+		dbx: dbx, workspaces: workspaces.NewStore(dbx),
 	}
+	if len(enforcement) > 0 {
+		result.billingEnforcement = enforcement[0]
+	}
+	return result
 }
 
 type response struct {
@@ -122,18 +126,24 @@ func (h *Handler) userEmail(uid int) (string, error) {
 
 func (h *Handler) subscription(workspaceID int, ownerUserID int) (subscriptionResponse, error) {
 	var row struct {
-		Status     string
-		GraceUntil sql.NullTime
+		Status           string
+		CurrentPeriodEnd sql.NullTime
+		GraceUntil       sql.NullTime
 	}
 
 	err := h.dbx.QueryRow(`
-		SELECT status, grace_until
+		SELECT status, current_period_end, grace_until
 		FROM subscriptions
 		WHERE workspace_id=$1 OR (workspace_id IS NULL AND user_id=$2)
 		ORDER BY CASE WHEN workspace_id=$1 THEN 0 ELSE 1 END, updated_at DESC
 		LIMIT 1
-	`, workspaceID, ownerUserID).Scan(&row.Status, &row.GraceUntil)
+	`, workspaceID, ownerUserID).Scan(&row.Status, &row.CurrentPeriodEnd, &row.GraceUntil)
 	if errors.Is(err, sql.ErrNoRows) {
+		if h.billingEnforcement {
+			return subscriptionResponse{
+				Status: "inactive", Access: false, AccessReason: "payment_required",
+			}, nil
+		}
 		return subscriptionResponse{
 			Status:       "active",
 			Access:       true,
@@ -163,8 +173,10 @@ func (h *Handler) subscription(workspaceID int, ownerUserID int) (subscriptionRe
 			accessReason = "grace_period"
 		}
 	case "cancelled":
-		access = true
-		accessReason = "cancelled_period"
+		if row.CurrentPeriodEnd.Valid && now.Before(row.CurrentPeriodEnd.Time) {
+			access = true
+			accessReason = "cancelled_period"
+		}
 	}
 
 	var graceUntil *time.Time

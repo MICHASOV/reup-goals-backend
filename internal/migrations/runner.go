@@ -3114,6 +3114,213 @@ var migrations = []Migration{
 				FOREIGN KEY (course_id) REFERENCES v2_courses(id) ON DELETE SET NULL;
 		`,
 	},
+	{
+		ID: "20260727_053_workspace_billing_plans_and_ai_quotas",
+		SQL: `
+			ALTER TABLE workspaces
+				ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'Europe/Moscow';
+
+			CREATE TABLE IF NOT EXISTS billing_plans (
+				code TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				monthly_amount NUMERIC(12,2) NOT NULL,
+				annual_amount NUMERIC(12,2) NOT NULL,
+				currency TEXT NOT NULL DEFAULT 'RUB',
+				member_limit INTEGER NOT NULL,
+				weekly_ai_limit INTEGER NOT NULL,
+				reset_amount NUMERIC(12,2) NOT NULL,
+				standard_responses_month INTEGER NOT NULL,
+				equivalent_tokens_month BIGINT NOT NULL,
+				active BOOLEAN NOT NULL DEFAULT TRUE,
+				sort_order INTEGER NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				CHECK (member_limit=0 OR member_limit > 0),
+				CHECK (weekly_ai_limit > 0)
+			);
+
+			INSERT INTO billing_plans (
+				code, name, monthly_amount, annual_amount, currency, member_limit,
+				weekly_ai_limit, reset_amount, standard_responses_month,
+				equivalent_tokens_month, sort_order
+			) VALUES
+				('founder', 'Founder', 3490, 33504, 'RUB', 1, 150, 890, 650, 5000000, 10),
+				('team', 'Team', 11990, 115104, 'RUB', 5, 400, 2990, 1730, 12000000, 20),
+				('company', 'Company', 29990, 287904, 'RUB', 0, 1200, 7490, 5200, 36000000, 30)
+			ON CONFLICT (code) DO UPDATE SET
+				name=EXCLUDED.name,
+				monthly_amount=EXCLUDED.monthly_amount,
+				annual_amount=EXCLUDED.annual_amount,
+				currency=EXCLUDED.currency,
+				member_limit=EXCLUDED.member_limit,
+				weekly_ai_limit=EXCLUDED.weekly_ai_limit,
+				reset_amount=EXCLUDED.reset_amount,
+				standard_responses_month=EXCLUDED.standard_responses_month,
+				equivalent_tokens_month=EXCLUDED.equivalent_tokens_month,
+				sort_order=EXCLUDED.sort_order,
+				updated_at=NOW();
+
+			ALTER TABLE subscriptions
+				ADD COLUMN IF NOT EXISTS plan_code TEXT NOT NULL DEFAULT 'founder',
+				ADD COLUMN IF NOT EXISTS billing_period TEXT NOT NULL DEFAULT 'monthly',
+				ADD COLUMN IF NOT EXISTS quota_anchor_at TIMESTAMPTZ NULL;
+
+			UPDATE subscriptions
+			SET plan_code=CASE
+				WHEN member_limit=0 THEN 'company'
+				WHEN member_limit=1 THEN 'founder'
+				ELSE 'team'
+			END
+			WHERE plan_code='founder' AND member_limit <> 1;
+
+			UPDATE subscriptions subscription
+			SET
+				plan_name=plan.name,
+				amount=CASE
+					WHEN subscription.billing_period='annual' THEN plan.annual_amount
+					ELSE plan.monthly_amount
+				END,
+				currency=plan.currency,
+				member_limit=plan.member_limit,
+				quota_anchor_at=COALESCE(
+					subscription.quota_anchor_at,
+					subscription.current_period_start,
+					subscription.created_at
+				)
+			FROM billing_plans plan
+			WHERE plan.code=subscription.plan_code;
+
+			DO $$
+			BEGIN
+					IF NOT EXISTS (
+						SELECT 1 FROM pg_constraint
+						WHERE conname='chk_subscriptions_billing_period'
+					) THEN
+						ALTER TABLE subscriptions
+							ADD CONSTRAINT chk_subscriptions_billing_period
+							CHECK (billing_period IN ('monthly', 'annual'));
+					END IF;
+					IF NOT EXISTS (
+						SELECT 1 FROM pg_constraint
+						WHERE conname='fk_subscriptions_plan_code'
+					) THEN
+						ALTER TABLE subscriptions
+							ADD CONSTRAINT fk_subscriptions_plan_code
+							FOREIGN KEY (plan_code) REFERENCES billing_plans(code);
+					END IF;
+				END $$;
+
+			CREATE TABLE IF NOT EXISTS billing_seller_profiles (
+				id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id=1),
+				full_name TEXT NOT NULL,
+				inn TEXT NOT NULL,
+				kpp TEXT NOT NULL,
+				registration_number TEXT NOT NULL,
+				legal_address TEXT NOT NULL,
+				bank_name TEXT NOT NULL,
+				settlement_account TEXT NOT NULL,
+				correspondent_account TEXT NOT NULL,
+				bic TEXT NOT NULL,
+				director_name TEXT NOT NULL,
+				accounting_email TEXT NOT NULL,
+				tax_label TEXT NOT NULL DEFAULT 'Без НДС',
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			INSERT INTO billing_seller_profiles (
+				id, full_name, inn, kpp, registration_number, legal_address,
+				bank_name, settlement_account, correspondent_account, bic,
+				director_name, accounting_email, tax_label
+			) VALUES (
+				1, 'ООО "Реап"', '5262392668', '526201001', '1235200026995',
+				'603105, Нижегородская область, г. Нижний Новгород, ул. Агрономическая, д. 136, кв. 32',
+				'АО "Тинькофф Банк"', '40702810110001489655',
+				'30101810145250000974', '044525974',
+				'Михасов Никита Игоревич', 'nikitamichasov@yandex.ru', 'Без НДС'
+			)
+			ON CONFLICT (id) DO UPDATE SET
+				full_name=EXCLUDED.full_name,
+				inn=EXCLUDED.inn,
+				kpp=EXCLUDED.kpp,
+				registration_number=EXCLUDED.registration_number,
+				legal_address=EXCLUDED.legal_address,
+				bank_name=EXCLUDED.bank_name,
+				settlement_account=EXCLUDED.settlement_account,
+				correspondent_account=EXCLUDED.correspondent_account,
+				bic=EXCLUDED.bic,
+				director_name=EXCLUDED.director_name,
+				accounting_email=EXCLUDED.accounting_email,
+				tax_label=EXCLUDED.tax_label,
+				updated_at=NOW();
+
+			CREATE TABLE IF NOT EXISTS workspace_billing_orders (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				order_kind TEXT NOT NULL CHECK (order_kind IN ('subscription', 'quota_reset')),
+				plan_code TEXT NOT NULL REFERENCES billing_plans(code),
+				billing_period TEXT NOT NULL CHECK (billing_period IN ('monthly', 'annual')),
+				amount NUMERIC(12,2) NOT NULL,
+				currency TEXT NOT NULL DEFAULT 'RUB',
+				status TEXT NOT NULL DEFAULT 'draft'
+					CHECK (status IN ('draft', 'waiting', 'paid', 'cancelled', 'expired')),
+				provider TEXT NOT NULL DEFAULT 'manual',
+				external_id TEXT NOT NULL DEFAULT '',
+				paid_at TIMESTAMPTZ NULL,
+				metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_workspace_billing_orders_workspace
+				ON workspace_billing_orders (workspace_id, created_at DESC);
+
+			ALTER TABLE workspace_billing_invoices
+				ADD COLUMN IF NOT EXISTS order_id BIGINT NULL REFERENCES workspace_billing_orders(id) ON DELETE SET NULL,
+				ADD COLUMN IF NOT EXISTS order_kind TEXT NOT NULL DEFAULT 'subscription',
+				ADD COLUMN IF NOT EXISTS plan_code TEXT NOT NULL DEFAULT 'founder',
+				ADD COLUMN IF NOT EXISTS billing_period TEXT NOT NULL DEFAULT 'monthly',
+				ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT 'Подписка REUP.goals',
+				ADD COLUMN IF NOT EXISTS tax_label TEXT NOT NULL DEFAULT 'Без НДС',
+				ADD COLUMN IF NOT EXISTS seller_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+				ADD COLUMN IF NOT EXISTS confirmed_by TEXT NOT NULL DEFAULT '';
+
+			CREATE TABLE IF NOT EXISTS workspace_ai_quotas (
+				workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+				plan_code TEXT NOT NULL REFERENCES billing_plans(code),
+				window_started_at TIMESTAMPTZ NOT NULL,
+				window_ends_at TIMESTAMPTZ NOT NULL,
+				base_limit INTEGER NOT NULL,
+				base_used INTEGER NOT NULL DEFAULT 0,
+				purchased_balance INTEGER NOT NULL DEFAULT 0,
+				warning_level INTEGER NOT NULL DEFAULT 0,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				CHECK (base_limit > 0),
+				CHECK (base_used >= 0),
+				CHECK (purchased_balance >= 0),
+				CHECK (warning_level IN (0, 70, 90, 100))
+			);
+
+			CREATE TABLE IF NOT EXISTS workspace_ai_quota_events (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				reservation_key TEXT NOT NULL UNIQUE,
+				event_type TEXT NOT NULL,
+				source TEXT NOT NULL,
+				amount INTEGER NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('reserved', 'consumed', 'refunded')),
+				ai_module TEXT NOT NULL DEFAULT '',
+				metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				settled_at TIMESTAMPTZ NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_workspace_ai_quota_events_workspace
+				ON workspace_ai_quota_events (workspace_id, created_at DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

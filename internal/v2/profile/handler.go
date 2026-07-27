@@ -17,6 +17,7 @@ import (
 	"reup-goals-backend/internal/config"
 	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/v2/api"
+	"reup-goals-backend/internal/v2/billing"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -26,12 +27,23 @@ type Handler struct {
 	cfg          *config.Config
 	emailService *auth.EmailService
 	payments     *subscriptions.CloudPaymentsClient
+	quotaService *billing.Service
 }
 
-func NewHandler(dbx *sql.DB, cfg *config.Config, emailService *auth.EmailService, payments *subscriptions.CloudPaymentsClient) *Handler {
-	return &Handler{
+func NewHandler(
+	dbx *sql.DB,
+	cfg *config.Config,
+	emailService *auth.EmailService,
+	payments *subscriptions.CloudPaymentsClient,
+	billingServices ...*billing.Service,
+) *Handler {
+	result := &Handler{
 		store: NewStore(dbx), dbx: dbx, cfg: cfg, emailService: emailService, payments: payments,
 	}
+	if len(billingServices) > 0 {
+		result.quotaService = billingServices[0]
+	}
+	return result
 }
 
 func (h *Handler) InvitationPreview(w http.ResponseWriter, r *http.Request) {
@@ -523,6 +535,10 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
+	if !h.cfg.BillingPaymentsEnabled {
+		api.WriteError(w, http.StatusServiceUnavailable, "checkout_not_configured")
+		return
+	}
 	if h.cfg.TopPaymentsCheckoutURL != "" {
 		checkoutURL, err := url.Parse(h.cfg.TopPaymentsCheckoutURL)
 		if err != nil || checkoutURL.Scheme != "https" {
@@ -601,17 +617,44 @@ func (h *Handler) invoices(w http.ResponseWriter, r *http.Request, userID int, o
 			}
 			api.WriteJSON(w, http.StatusOK, map[string]any{"invoices": items})
 		case http.MethodPost:
-			amount := overview.Subscription.Amount
-			currency := overview.Subscription.Currency
-			if amount <= 0 && h.payments != nil {
-				amount = h.payments.Amount()
-				currency = h.payments.Currency()
+			request := InvoiceRequest{
+				PlanCode: overview.Subscription.PlanCode, BillingPeriod: billing.PeriodMonthly,
+				OrderKind: billing.OrderSubscription,
 			}
-			if amount <= 0 {
-				api.WriteError(w, http.StatusServiceUnavailable, "billing_plan_not_configured")
+			if r.ContentLength != 0 && !decodeJSON(w, r, &request) {
 				return
 			}
-			item, err := h.store.CreateInvoice(r.Context(), overview.Workspace.ID, userID, amount, currency)
+			if strings.TrimSpace(request.PlanCode) == "" {
+				request.PlanCode = billing.PlanFounder
+			}
+			if strings.TrimSpace(request.BillingPeriod) == "" {
+				request.BillingPeriod = billing.PeriodMonthly
+			}
+			if strings.TrimSpace(request.OrderKind) == "" {
+				request.OrderKind = billing.OrderSubscription
+			}
+			request.PlanCode = strings.ToLower(strings.TrimSpace(request.PlanCode))
+			request.BillingPeriod = strings.ToLower(strings.TrimSpace(request.BillingPeriod))
+			request.OrderKind = strings.ToLower(strings.TrimSpace(request.OrderKind))
+			if request.OrderKind != billing.OrderSubscription && request.OrderKind != billing.OrderQuotaReset {
+				api.WriteError(w, http.StatusUnprocessableEntity, "billing_order_kind_invalid")
+				return
+			}
+			if request.OrderKind == billing.OrderQuotaReset &&
+				request.PlanCode != overview.Subscription.PlanCode {
+				api.WriteError(w, http.StatusUnprocessableEntity, "billing_reset_plan_mismatch")
+				return
+			}
+			plan, err := billing.PlanByCode(request.PlanCode)
+			if err != nil {
+				api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+				return
+			}
+			if _, err := billing.Price(plan, request.BillingPeriod); err != nil {
+				api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+				return
+			}
+			item, err := h.store.CreateInvoice(r.Context(), overview.Workspace.ID, userID, request)
 			if err != nil {
 				if strings.Contains(err.Error(), "billing_organization_required") {
 					api.WriteError(w, http.StatusUnprocessableEntity, "billing_organization_required")
@@ -745,6 +788,9 @@ func (h *Handler) about(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) checkoutAvailable() bool {
+	if !h.cfg.BillingPaymentsEnabled {
+		return false
+	}
 	return h.cfg.TopPaymentsCheckoutURL != "" || (h.payments != nil && h.payments.PublicID() != "")
 }
 
@@ -757,6 +803,24 @@ func (h *Handler) loadOverview(r *http.Request, userID int) (Overview, error) {
 		result.Subscription.Amount = h.payments.Amount()
 		result.Subscription.Currency = h.payments.Currency()
 		result.Subscription.Plan = h.payments.PlanName()
+	}
+	if plan, planErr := billing.PlanByCode(result.Subscription.PlanCode); planErr == nil {
+		result.Subscription.Plan = plan.Name
+		if amount, amountErr := billing.Price(plan, result.Subscription.BillingPeriod); amountErr == nil {
+			result.Subscription.Amount = amount
+		}
+		result.Subscription.AnnualAmount = plan.AnnualAmount
+		result.Subscription.ResetAmount = plan.ResetAmount
+		result.Subscription.Currency = plan.Currency
+		result.Subscription.MemberLimit = plan.MemberLimit
+	}
+	result.Subscription.AvailablePlans = billing.Plans()
+	if h.quotaService != nil {
+		usage, usageErr := h.quotaService.Summary(r.Context(), result.Workspace.ID)
+		if usageErr != nil {
+			return Overview{}, usageErr
+		}
+		result.Subscription.AIUsage = usage
 	}
 	return result, nil
 }

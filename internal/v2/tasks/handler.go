@@ -180,7 +180,7 @@ func (h *Handler) brainstormMessage(w http.ResponseWriter, r *http.Request, work
 		case "invalid_brainstorm_message", "brainstorm_message_too_long":
 			api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		default:
-			api.WriteError(w, http.StatusBadGateway, "task_brainstorm_failed")
+			api.WriteAIError(w, err, http.StatusBadGateway, "task_brainstorm_failed")
 		}
 		return
 	}
@@ -552,7 +552,7 @@ func writeTask(w http.ResponseWriter, task Task, err error, fallback string) {
 		return
 	}
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, fallback)
+		api.WriteAIError(w, err, http.StatusInternalServerError, fallback)
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, map[string]any{"task": task})
