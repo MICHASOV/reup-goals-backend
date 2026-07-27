@@ -3100,6 +3100,20 @@ var migrations = []Migration{
 				);
 		`,
 	},
+	{
+		ID: "20260727_052_tasks_without_active_course",
+		SQL: `
+			ALTER TABLE v2_tasks
+				ALTER COLUMN course_id DROP NOT NULL;
+
+			ALTER TABLE v2_tasks
+				DROP CONSTRAINT IF EXISTS v2_tasks_course_id_fkey;
+
+			ALTER TABLE v2_tasks
+				ADD CONSTRAINT v2_tasks_course_id_fkey
+				FOREIGN KEY (course_id) REFERENCES v2_courses(id) ON DELETE SET NULL;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

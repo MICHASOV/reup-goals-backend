@@ -527,10 +527,6 @@ func decodeTaskInput(w http.ResponseWriter, r *http.Request) (TaskInput, bool) {
 }
 
 func writeTask(w http.ResponseWriter, task Task, err error, fallback string) {
-	if errors.Is(err, ErrNoActiveCourse) {
-		api.WriteError(w, http.StatusConflict, "no_active_course")
-		return
-	}
 	if errors.Is(err, ErrNoTacticalPlan) {
 		api.WriteError(w, http.StatusConflict, "no_tactical_plan")
 		return

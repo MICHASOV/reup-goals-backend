@@ -114,7 +114,7 @@ func (s *TaskEvaluatorService) execute(ctx context.Context, job TaskEvaluationJo
 	aiCtx := ai.WithScenario(ctx, job.WorkspaceID, 0, "task_evaluator_v2", taskEvaluatorPromptVersion)
 	started := time.Now()
 	result, err := s.ai.GenerateJSONNative(aiCtx, taskEvaluatorPrompt, string(rawInput), ai.ResponseContextOptions{
-		PromptCacheKey:  fmt.Sprintf("reupgoals-task-evaluator-workspace-%d-v5", job.WorkspaceID),
+		PromptCacheKey:  fmt.Sprintf("reupgoals-task-evaluator-workspace-%d-v5-1", job.WorkspaceID),
 		MaxOutputTokens: 900, RequestTimeout: taskEvaluationTimeout,
 	})
 	duration := time.Since(started).Milliseconds()
@@ -147,7 +147,7 @@ func (s *TaskEvaluatorService) buildEvaluationInput(ctx context.Context, workspa
 	if err != nil {
 		return nil, "", err
 	}
-	if state.Course == nil || state.Workstream == nil || state.TacticalPlan == nil || task.ProjectID == nil {
+	if state.Workstream == nil || state.TacticalPlan == nil || task.ProjectID == nil {
 		return nil, "", ErrInvalidInput
 	}
 
@@ -165,13 +165,15 @@ func (s *TaskEvaluatorService) buildEvaluationInput(ctx context.Context, workspa
 
 	var strategyTitle string
 	var strategySummary string
-	err = s.store.dbx.QueryRowContext(ctx, `
-		SELECT title, summary
-		FROM v2_strategies
-		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
-	`, state.TacticalPlan.StrategyID, workspaceID).Scan(&strategyTitle, &strategySummary)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, "", err
+	if state.TacticalPlan.StrategyID > 0 {
+		err = s.store.dbx.QueryRowContext(ctx, `
+			SELECT title, summary
+			FROM v2_strategies
+			WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
+		`, state.TacticalPlan.StrategyID, workspaceID).Scan(&strategyTitle, &strategySummary)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, "", err
+		}
 	}
 
 	businessStage := ""
@@ -206,17 +208,29 @@ func (s *TaskEvaluatorService) buildEvaluationInput(ctx context.Context, workspa
 		}
 	}
 
+	globalGoal := map[string]any{
+		"context_mode":     "business_context_only",
+		"strategy_title":   strategyTitle,
+		"strategy_summary": truncateRunes(strategySummary, 1200),
+	}
+	if strategyTitle != "" || strategySummary != "" {
+		globalGoal["context_mode"] = "strategy_available"
+	}
+	if state.Course != nil {
+		globalGoal["context_mode"] = "active_course"
+		globalGoal["course_direction"] = state.Course.Direction
+		globalGoal["strategic_goal"] = state.Course.StrategicGoal
+		globalGoal["key_metric"] = state.Course.KeyMetric
+		globalGoal["success_criterion"] = state.Course.SuccessCriterion
+	}
+
 	input := map[string]any{
 		"task": map[string]any{
 			"id": task.ID, "title": task.Title, "description": task.Description,
 			"expected_result": task.ExpectedResult,
 			"blocking_tasks":  task.BlockingTasks,
 		},
-		"global_company_goal": map[string]any{
-			"strategy_title": strategyTitle, "strategy_summary": truncateRunes(strategySummary, 1200),
-			"course_direction": state.Course.Direction, "strategic_goal": state.Course.StrategicGoal,
-			"key_metric": state.Course.KeyMetric, "success_criterion": state.Course.SuccessCriterion,
-		},
+		"global_company_goal": globalGoal,
 		"company_context": map[string]any{
 			"business_stage": businessStage, "snapshot_excerpt": businessSnapshot,
 		},

@@ -15,7 +15,6 @@ import (
 )
 
 var (
-	ErrNoActiveCourse           = errors.New("no_active_course")
 	ErrNoTacticalPlan           = errors.New("no_tactical_plan")
 	ErrForbidden                = errors.New("forbidden")
 	ErrInvalidOwner             = errors.New("invalid_task_owner")
@@ -37,11 +36,8 @@ func NewStore(dbx *sql.DB) *Store {
 
 func (s *Store) Overview(ctx context.Context, workspaceID int) (OverviewResponse, error) {
 	ctxData, err := s.currentContext(ctx, workspaceID)
-	if errors.Is(err, ErrNoActiveCourse) {
-		return OverviewResponse{Workstreams: []WorkstreamSummary{}, Tasks: []Task{}, Reason: "no_active_course", Message: "Сначала нужен активный курс."}, nil
-	}
 	if errors.Is(err, ErrNoTacticalPlan) {
-		return OverviewResponse{Course: ctxData.Course, Workstreams: []WorkstreamSummary{}, Tasks: []Task{}, Reason: "no_tactical_plan", Message: "Сначала соберите тактику."}, nil
+		return OverviewResponse{Course: ctxData.Course, Workstreams: []WorkstreamSummary{}, Tasks: []Task{}, Reason: "no_tactical_plan", Message: "Сначала создайте направление и проект."}, nil
 	}
 	if err != nil {
 		return OverviewResponse{}, err
@@ -61,17 +57,6 @@ func (s *Store) Overview(ctx context.Context, workspaceID int) (OverviewResponse
 }
 
 func (s *Store) Workstream(ctx context.Context, workspaceID int, workstreamID int) (WorkstreamResponse, error) {
-	ctxData, err := s.currentContext(ctx, workspaceID)
-	if errors.Is(err, ErrNoActiveCourse) {
-		return WorkstreamResponse{Reason: "no_active_course", Message: "Сначала нужен активный курс."}, nil
-	}
-	if errors.Is(err, ErrNoTacticalPlan) {
-		return WorkstreamResponse{Course: ctxData.Course, Reason: "no_tactical_plan", Message: "Сначала соберите тактику."}, nil
-	}
-	if err != nil {
-		return WorkstreamResponse{}, err
-	}
-
 	workstreamRef, err := s.workstreamByID(ctx, workspaceID, workstreamID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkstreamResponse{}, ErrForbidden
@@ -79,8 +64,22 @@ func (s *Store) Workstream(ctx context.Context, workspaceID int, workstreamID in
 	if err != nil {
 		return WorkstreamResponse{}, err
 	}
-	if workstreamRef.TacticalPlanID != ctxData.Plan.ID {
+	plan, err := s.planSummaryByID(ctx, workspaceID, workstreamRef.TacticalPlanID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return WorkstreamResponse{}, ErrForbidden
+	}
+	if err != nil {
+		return WorkstreamResponse{}, err
+	}
+	ctxData := currentContextData{Plan: &plan}
+	if plan.CourseID != nil {
+		course, courseErr := s.courseByID(ctx, workspaceID, *plan.CourseID)
+		if courseErr != nil && !errors.Is(courseErr, sql.ErrNoRows) {
+			return WorkstreamResponse{}, courseErr
+		}
+		if courseErr == nil {
+			ctxData.Course = &course
+		}
 	}
 	workstream, err := s.workstreamSummaryByID(ctx, workspaceID, workstreamID)
 	if err != nil {
@@ -292,15 +291,12 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 		return Task{}, ErrForbidden
 	}
 
-	ctxData, err := s.currentContext(ctx, workspaceID)
-	if err != nil {
-		return Task{}, err
-	}
 	workstream, err := s.workstreamByID(ctx, workspaceID, input.WorkstreamID)
 	if err != nil {
 		return Task{}, ErrForbidden
 	}
-	if workstream.TacticalPlanID != ctxData.Plan.ID {
+	plan, err := s.planSummaryByID(ctx, workspaceID, workstream.TacticalPlanID)
+	if err != nil || workstream.TacticalPlanID != plan.ID {
 		return Task{}, ErrForbidden
 	}
 	if err := s.validateLinks(ctx, workspaceID, workstream, input); err != nil {
@@ -313,7 +309,7 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 	if err != nil {
 		return Task{}, err
 	}
-	secondaryWorkstreamIDs, err := s.validateSecondaryWorkstreams(ctx, workspaceID, ctxData.Plan.ID, workstream.ID, input.SecondaryWorkstreamIDs)
+	secondaryWorkstreamIDs, err := s.validateSecondaryWorkstreams(ctx, workspaceID, plan.ID, workstream.ID, input.SecondaryWorkstreamIDs)
 	if err != nil {
 		return Task{}, err
 	}
@@ -351,7 +347,7 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 			due_date::TEXT, source_type, source_id, created_by, updated_by, created_at,
 			updated_at, started_at, completed_at, archived_at,
 			completion_result, completion_evidence, completion_learning, hypothesis_outcome, next_step
-	`, workspaceID, ctxData.Course.ID, ctxData.Plan.ID, workstream.ID, departmentID, nullableInt(input.ProjectID),
+	`, workspaceID, nullableInt(plan.CourseID), plan.ID, workstream.ID, departmentID, nullableInt(input.ProjectID),
 		nullableInt(input.RiskID), nullableInt(input.OpportunityID), strings.TrimSpace(*input.Title),
 		valueOrEmpty(input.Description), valueOrEmpty(input.ExpectedResult), valueOrEmpty(input.SuccessCriteria),
 		valueOrEmpty(input.WhyNow), status, blocked, backlogCategory, nullableInt(input.PriorityOrder), nullableInt(input.OwnerUserID),
@@ -790,46 +786,58 @@ type currentContextData struct {
 }
 
 func (s *Store) currentContext(ctx context.Context, workspaceID int) (currentContextData, error) {
-	course, err := s.activeCourse(ctx, workspaceID)
+	plan, err := s.currentPlan(ctx, workspaceID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return currentContextData{}, ErrNoActiveCourse
+		return currentContextData{}, ErrNoTacticalPlan
 	}
 	if err != nil {
 		return currentContextData{}, err
 	}
-	plan, err := s.currentPlan(ctx, workspaceID, course.ID)
+	result := currentContextData{Plan: &plan}
+	if plan.CourseID == nil {
+		return result, nil
+	}
+	course, err := s.courseByID(ctx, workspaceID, *plan.CourseID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return currentContextData{Course: &course}, ErrNoTacticalPlan
+		return result, nil
 	}
 	if err != nil {
 		return currentContextData{}, err
 	}
-	return currentContextData{Course: &course, Plan: &plan}, nil
+	result.Course = &course
+	return result, nil
 }
 
-func (s *Store) activeCourse(ctx context.Context, workspaceID int) (CourseSummary, error) {
+func (s *Store) courseByID(ctx context.Context, workspaceID int, courseID int) (CourseSummary, error) {
 	var course CourseSummary
 	err := s.dbx.QueryRowContext(ctx, `
 		SELECT id, direction, strategic_goal, key_metric, success_criterion
 		FROM v2_courses
-		WHERE workspace_id=$1 AND status='active' AND archived_at IS NULL
-		ORDER BY activated_at DESC NULLS LAST, created_at DESC
-		LIMIT 1
-	`, workspaceID).Scan(&course.ID, &course.Direction, &course.StrategicGoal, &course.KeyMetric, &course.SuccessCriterion)
+		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
+	`, courseID, workspaceID).Scan(&course.ID, &course.Direction, &course.StrategicGoal, &course.KeyMetric, &course.SuccessCriterion)
 	return course, err
 }
 
-func (s *Store) currentPlan(ctx context.Context, workspaceID int, courseID int) (TacticalPlanSummary, error) {
+func (s *Store) currentPlan(ctx context.Context, workspaceID int) (TacticalPlanSummary, error) {
 	var plan TacticalPlanSummary
 	err := s.dbx.QueryRowContext(ctx, `
 		SELECT id, strategy_id, course_id
 		FROM v2_tactical_plans
 		WHERE workspace_id=$1
 			AND archived_at IS NULL
-			AND (course_id=$2 OR course_id IS NULL)
 		ORDER BY CASE status WHEN 'active' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END, updated_at DESC
 		LIMIT 1
-	`, workspaceID, courseID).Scan(&plan.ID, &plan.StrategyID, &plan.CourseID)
+	`, workspaceID).Scan(&plan.ID, &plan.StrategyID, &plan.CourseID)
+	return plan, err
+}
+
+func (s *Store) planSummaryByID(ctx context.Context, workspaceID int, planID int) (TacticalPlanSummary, error) {
+	var plan TacticalPlanSummary
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id, strategy_id, course_id
+		FROM v2_tactical_plans
+		WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
+	`, planID, workspaceID).Scan(&plan.ID, &plan.StrategyID, &plan.CourseID)
 	return plan, err
 }
 
@@ -1240,6 +1248,7 @@ type scanner interface {
 
 func scanTask(scanner scanner) (Task, error) {
 	var task Task
+	var courseID sql.NullInt64
 	var departmentID sql.NullInt64
 	var projectID sql.NullInt64
 	var riskID sql.NullInt64
@@ -1257,7 +1266,7 @@ func scanTask(scanner scanner) (Task, error) {
 	var archivedAt sql.NullTime
 
 	err := scanner.Scan(
-		&task.ID, &task.WorkspaceID, &task.CourseID, &task.TacticalPlanID, &task.WorkstreamID,
+		&task.ID, &task.WorkspaceID, &courseID, &task.TacticalPlanID, &task.WorkstreamID,
 		&departmentID, &projectID, &riskID, &opportunityID, &task.Title, &task.Description, &task.ExpectedResult,
 		&task.SuccessCriteria, &task.WhyNow, &task.Status, &task.Blocked, &task.BacklogCategory, &priorityOrder, &manualPriorityScore,
 		&manualPriorityTier, &ownerUserID, &dueDate, &task.SourceType, &sourceID, &createdBy,
@@ -1271,6 +1280,7 @@ func scanTask(scanner scanner) (Task, error) {
 		task.DepartmentID = int(departmentID.Int64)
 	}
 
+	task.CourseID = intPtr(courseID)
 	task.ProjectID = intPtr(projectID)
 	task.RiskID = intPtr(riskID)
 	task.OpportunityID = intPtr(opportunityID)
