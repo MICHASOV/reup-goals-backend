@@ -61,6 +61,27 @@ func TestInvoiceRequestJSONContract(t *testing.T) {
 	}
 }
 
+func TestAIUsageResponseJSONContract(t *testing.T) {
+	payload, err := json.Marshal(AIUsageResponse{
+		PlanCode: "team", PlanName: "Team", ResetAmount: 2990, Currency: "RUB",
+		CanManageSubscription: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(payload)
+	for _, field := range []string{
+		`"plan_code":"team"`,
+		`"reset_amount":2990`,
+		`"can_manage_subscription":true`,
+		`"ai_usage"`,
+	} {
+		if !strings.Contains(body, field) {
+			t.Fatalf("expected %s in %s", field, body)
+		}
+	}
+}
+
 func TestSubscriptionDisplayStatus(t *testing.T) {
 	soon := time.Now().UTC().Add(48 * time.Hour)
 	if got := subscriptionDisplayStatus("active", &soon, nil); got != "expires_soon" {

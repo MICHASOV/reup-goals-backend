@@ -76,6 +76,15 @@ type SubscriptionSummary struct {
 	AvailablePlans    []billing.Plan       `json:"available_plans"`
 }
 
+type AIUsageResponse struct {
+	PlanCode              string               `json:"plan_code"`
+	PlanName              string               `json:"plan_name"`
+	ResetAmount           float64              `json:"reset_amount"`
+	Currency              string               `json:"currency"`
+	CanManageSubscription bool                 `json:"can_manage_subscription"`
+	AIUsage               billing.QuotaSummary `json:"ai_usage"`
+}
+
 type Member struct {
 	ID            int64      `json:"id"`
 	Kind          string     `json:"kind"`

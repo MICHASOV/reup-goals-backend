@@ -84,6 +84,10 @@ func (h *Handler) Profile(w http.ResponseWriter, r *http.Request) {
 		h.workspaceSetup(w, r, userID)
 		return
 	}
+	if len(segments) == 1 && segments[0] == "ai-usage" {
+		h.aiUsage(w, r, userID)
+		return
+	}
 
 	overview, err := h.loadOverview(r, userID)
 	if err != nil {
@@ -170,6 +174,44 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request, userID int) {
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) aiUsage(w http.ResponseWriter, r *http.Request, userID int) {
+	if r.Method != http.MethodGet {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	workspace, membership, err := h.store.workspaces.GetOrCreateDefault(r.Context(), userID)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "workspace_unavailable")
+		return
+	}
+	subscription, err := h.store.Subscription(r.Context(), workspace.ID, workspace.OwnerUserID, h.checkoutAvailable())
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "subscription_load_failed")
+		return
+	}
+	plan, err := billing.PlanByCode(subscription.PlanCode)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "billing_plan_not_found")
+		return
+	}
+	usage := billing.QuotaSummary{
+		State: "available", RemainingPercent: 100, AIAvailable: true, Timezone: "Europe/Moscow",
+	}
+	if h.quotaService != nil {
+		usage, err = h.quotaService.Summary(r.Context(), workspace.ID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "ai_usage_load_failed")
+			return
+		}
+	}
+	api.WriteJSON(w, http.StatusOK, AIUsageResponse{
+		PlanCode: plan.Code, PlanName: plan.Name, ResetAmount: plan.ResetAmount,
+		Currency:              plan.Currency,
+		CanManageSubscription: membership.Role == workspaces.MembershipRoleOwner,
+		AIUsage:               usage,
+	})
 }
 
 func (h *Handler) account(w http.ResponseWriter, r *http.Request, userID int) {
