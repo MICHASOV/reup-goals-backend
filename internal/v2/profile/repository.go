@@ -24,6 +24,24 @@ var (
 	ErrInvalidDepartments = errors.New("invalid_invitation_departments")
 )
 
+const invitationResendCooldown = 2 * time.Minute
+
+type InvitationResendTooSoonError struct {
+	RetryAfter time.Duration
+}
+
+func (e *InvitationResendTooSoonError) Error() string {
+	return "invitation_resend_too_soon"
+}
+
+func (e *InvitationResendTooSoonError) RetryAfterSeconds() int {
+	seconds := int((e.RetryAfter + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
+}
+
 type Store struct {
 	dbx        *sql.DB
 	workspaces *workspaces.Store
@@ -319,14 +337,21 @@ func (s *Store) Invite(
 	if alreadyMember {
 		return Member{}, "", ErrAlreadyMember
 	}
-	var pendingExists bool
-	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM workspace_invitations
-			WHERE workspace_id=$1 AND lower(email)=lower($2) AND status='pending' AND expires_at>NOW()
-		)
-	`, workspaceID, email).Scan(&pendingExists); err != nil {
-		return Member{}, "", err
+	var pendingUpdatedAt time.Time
+	pendingErr := tx.QueryRowContext(ctx, `
+		SELECT updated_at
+		FROM workspace_invitations
+		WHERE workspace_id=$1 AND lower(email)=lower($2) AND status='pending' AND expires_at>NOW()
+		LIMIT 1
+	`, workspaceID, email).Scan(&pendingUpdatedAt)
+	pendingExists := pendingErr == nil
+	if pendingErr != nil && !errors.Is(pendingErr, sql.ErrNoRows) {
+		return Member{}, "", pendingErr
+	}
+	if pendingExists {
+		if retryAfter := invitationCooldownRemaining(pendingUpdatedAt, time.Now().UTC()); retryAfter > 0 {
+			return Member{}, "", &InvitationResendTooSoonError{RetryAfter: retryAfter}
+		}
 	}
 	if !pendingExists && memberLimit > 0 {
 		var seatsUsed int
@@ -492,7 +517,10 @@ func (s *Store) PreviewInvitation(ctx context.Context, token string) (Invitation
 		return InvitationPreview{}, sql.ErrNoRows
 	}
 	tokenHash := sha256.Sum256([]byte(token))
-	var result InvitationPreview
+	result := InvitationPreview{
+		DepartmentIDs:   []int{},
+		DepartmentNames: []string{},
+	}
 	err := s.dbx.QueryRowContext(ctx, `
 		SELECT
 			COALESCE(NULLIF(workspace.display_name, ''), workspace.name),
@@ -544,6 +572,17 @@ func (s *Store) PreviewInvitation(ctx context.Context, token string) (Invitation
 		}
 	}
 	return result, nil
+}
+
+func invitationCooldownRemaining(lastSentAt, now time.Time) time.Duration {
+	remaining := invitationResendCooldown - now.Sub(lastSentAt)
+	if remaining <= 0 {
+		return 0
+	}
+	if remaining > invitationResendCooldown {
+		return invitationResendCooldown
+	}
+	return remaining
 }
 
 func dedupePositiveIDs(values []int) []int {
