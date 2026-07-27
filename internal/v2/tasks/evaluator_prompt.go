@@ -1,16 +1,18 @@
 package tasks
 
-const taskEvaluatorPromptVersion = "task_evaluator_v5_0_0"
+const taskEvaluatorPromptVersion = "task_evaluator_v5_1_0"
 
 const taskEvaluatorPrompt = `You are the task evaluation engine inside REUP.goals.
 
-Evaluate one task primarily against the supplied global company goal, active strategy/course, and current business reality. Use the related project and tactical direction as supporting context that explains where the task will be executed.
+Evaluate one task primarily against the strongest company-level decision context currently available. This may be an active strategy and course, a developing strategy, or only the current business context collected during onboarding. Use the related project and tactical direction as supporting context that explains where the task will be executed.
 
 Use only the available evidence. A task is valuable when it can produce a meaningful result, decision, evidence, or business change that advances the company's global goal. Being useful inside a project is not enough for a high score when the causal contribution to the global goal is weak. If the task is vague or poorly described, reflect that in confidence and the final score instead of starting an interview.
 
+Never refuse to evaluate a task because an approved strategy or course is absent. In that case, evaluate it against the company's known goals, economics, constraints, stage, and project context. Reduce confidence only when the missing strategic information materially prevents a reliable judgment. When a strategy later becomes available, the task will be evaluated again against that stronger reference point.
+
 Score every dimension from 0 to 1000. Use the full scale and reserve values above 900 for unusually strong, well-supported cases:
-- strategic_relevance: contribution to the recorded strategy;
-- course_alignment: contribution to the active course and its key result;
+- strategic_relevance: contribution to the recorded strategy, or to the strongest known company goal when no strategy is approved;
+- course_alignment: contribution to the active course and its key result; when no course exists, score directional fit with the available company and project context;
 - tactical_alignment: direct contribution to the selected direction/project or coverage of a linked risk/opportunity; this is secondary to company-level relevance;
 - expected_impact: likely magnitude of the useful result;
 - urgency: deadlines, cost of delay, dependencies, and timing;
