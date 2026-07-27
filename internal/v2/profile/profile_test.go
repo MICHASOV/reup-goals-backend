@@ -68,7 +68,8 @@ func TestAIUsageResponseJSONContract(t *testing.T) {
 		PlanCode: "team", PlanName: "Team", ResetAmount: 2990, Currency: "RUB",
 		CanManageSubscription: true,
 		AIUsage: billing.QuotaSummary{
-			WeeklyLimit: 400, WeeklyUsed: 168, PurchasedBalance: 25, RemainingMessages: 257,
+			WeeklyTokenLimit: 3_000_000, WeeklyTokensUsed: 1_260_000,
+			PurchasedTokenBalance: 25_000, RemainingTokens: 1_765_000,
 		},
 	})
 	if err != nil {
@@ -80,10 +81,10 @@ func TestAIUsageResponseJSONContract(t *testing.T) {
 		`"reset_amount":2990`,
 		`"can_manage_subscription":true`,
 		`"ai_usage"`,
-		`"weekly_limit":400`,
-		`"weekly_used":168`,
-		`"purchased_balance":25`,
-		`"remaining_messages":257`,
+		`"weekly_token_limit":3000000`,
+		`"weekly_tokens_used":1260000`,
+		`"purchased_token_balance":25000`,
+		`"remaining_tokens":1765000`,
 	} {
 		if !strings.Contains(body, field) {
 			t.Fatalf("expected %s in %s", field, body)

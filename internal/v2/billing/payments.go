@@ -129,7 +129,7 @@ func (s *Service) ConfirmInvoicePayment(ctx context.Context, invoiceID int64, co
 				base_used=0,
 				warning_level=0,
 				updated_at=NOW()
-		`, workspaceID, plan.Code, now, now.Add(7*24*time.Hour), plan.WeeklyAILimit); err != nil {
+		`, workspaceID, plan.Code, now, now.Add(7*24*time.Hour), plan.WeeklyTokenLimit); err != nil {
 			return err
 		}
 	case OrderQuotaReset:
@@ -141,14 +141,14 @@ func (s *Service) ConfirmInvoicePayment(ctx context.Context, invoiceID int64, co
 			ON CONFLICT (workspace_id) DO UPDATE SET
 				purchased_balance=workspace_ai_quotas.purchased_balance + EXCLUDED.purchased_balance,
 				updated_at=NOW()
-		`, workspaceID, plan.Code, now, now.Add(7*24*time.Hour), plan.WeeklyAILimit); err != nil {
+		`, workspaceID, plan.Code, now, now.Add(7*24*time.Hour), plan.WeeklyTokenLimit); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO workspace_ai_quota_events (
 				workspace_id, reservation_key, event_type, source, amount, status, ai_module
 			) VALUES ($1,$2,'purchased_reset','purchased',$3,'consumed','billing')
-		`, workspaceID, "purchase-"+randomID(), plan.WeeklyAILimit); err != nil {
+		`, workspaceID, "purchase-"+randomID(), plan.WeeklyTokenLimit); err != nil {
 			return err
 		}
 	default:

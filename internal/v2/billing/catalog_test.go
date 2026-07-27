@@ -14,9 +14,9 @@ func TestPlanCatalog(t *testing.T) {
 		members     int
 		weeklyLimit int
 	}{
-		{PlanFounder, 3490, 33504, 890, 1, 150},
-		{PlanTeam, 11990, 115104, 2990, 5, 400},
-		{PlanCompany, 29990, 287904, 7490, 0, 1200},
+		{PlanFounder, 3490, 33504, 890, 1, 1_250_000},
+		{PlanTeam, 11990, 115104, 2990, 5, 3_000_000},
+		{PlanCompany, 29990, 287904, 7490, 0, 9_000_000},
 	}
 	for _, test := range tests {
 		plan, err := PlanByCode(test.code)
@@ -25,7 +25,7 @@ func TestPlanCatalog(t *testing.T) {
 		}
 		if plan.MonthlyAmount != test.monthly || plan.AnnualAmount != test.annual ||
 			plan.ResetAmount != test.reset || plan.MemberLimit != test.members ||
-			plan.WeeklyAILimit != test.weeklyLimit {
+			plan.WeeklyTokenLimit != test.weeklyLimit {
 			t.Fatalf("unexpected plan: %+v", plan)
 		}
 	}
@@ -46,14 +46,46 @@ func TestQuotaWindowKeepsActivationCadence(t *testing.T) {
 func TestQuotaSummaryUsesPurchasedCapacityAfterBaseLimit(t *testing.T) {
 	state := quotaState{
 		windowStartedAt: time.Now().UTC(), windowEndsAt: time.Now().UTC().Add(7 * 24 * time.Hour),
-		baseLimit: 150, baseUsed: 150, purchasedBalance: 25, timezone: "Europe/Moscow",
+		baseLimit: 1_250_000, baseUsed: 1_250_000, purchasedBalance: 25_000, timezone: "Europe/Moscow",
 	}
 	summary := state.summary()
 	if !summary.AIAvailable || !summary.ExtraCapacityActive || summary.UsedPercent != 100 {
 		t.Fatalf("unexpected quota summary: %+v", summary)
 	}
-	if summary.WeeklyLimit != 150 || summary.WeeklyUsed != 150 ||
-		summary.PurchasedBalance != 25 || summary.RemainingMessages != 25 {
+	if summary.WeeklyTokenLimit != 1_250_000 || summary.WeeklyTokensUsed != 1_250_000 ||
+		summary.PurchasedTokenBalance != 25_000 || summary.RemainingTokens != 25_000 {
 		t.Fatalf("unexpected quota counters: %+v", summary)
+	}
+}
+
+func TestSettledTokenUsageConsumesBaseThenPurchasedCapacity(t *testing.T) {
+	state := quotaState{
+		baseLimit: 10_000, baseUsed: 9_500, purchasedBalance: 2_000,
+	}
+	charge := settleReservedTokens(&state, "base", 1_200)
+	if state.baseUsed != 10_000 || state.purchasedBalance != 1_301 {
+		t.Fatalf("unexpected settled quota: %+v", state)
+	}
+	if charge.actual != 1_200 || charge.charged != 1_200 || charge.base != 501 || charge.purchased != 699 {
+		t.Fatalf("unexpected token charge: %+v", charge)
+	}
+}
+
+func TestSettledTokenUsageClampsAtAvailableCapacity(t *testing.T) {
+	state := quotaState{
+		baseLimit: 1_000, baseUsed: 901, purchasedBalance: 100,
+	}
+	charge := settleReservedTokens(&state, "base", 500)
+	if state.baseUsed != 1_000 || state.purchasedBalance != 0 {
+		t.Fatalf("unexpected exhausted quota: %+v", state)
+	}
+	if charge.actual != 500 || charge.charged != 200 {
+		t.Fatalf("unexpected clamped charge: %+v", charge)
+	}
+}
+
+func TestLegacyMessageQuotaPreservesUsageRatio(t *testing.T) {
+	if got := scaleQuotaUnits(168, 400, 3_000_000); got != 1_260_000 {
+		t.Fatalf("unexpected migrated token usage: %d", got)
 	}
 }

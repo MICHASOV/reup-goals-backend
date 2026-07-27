@@ -30,6 +30,15 @@ func TestUnknownModelHasNoInventedPrice(t *testing.T) {
 	}
 }
 
+func TestTotalTokenUsageUsesProviderTotalOrComponents(t *testing.T) {
+	if got := totalTokenUsage(ai.Usage{InputTokens: 1200, OutputTokens: 300, TotalTokens: 1400}); got != 1500 {
+		t.Fatalf("expected component total, got %d", got)
+	}
+	if got := totalTokenUsage(ai.Usage{InputTokens: 1200, OutputTokens: 300, TotalTokens: 1600}); got != 1600 {
+		t.Fatalf("expected provider total, got %d", got)
+	}
+}
+
 func TestOnlyConversationalModulesConsumeWorkspaceQuota(t *testing.T) {
 	chatModules := []string{
 		"business_auditor_openai_native",

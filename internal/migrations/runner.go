@@ -3350,6 +3350,20 @@ var migrations = []Migration{
 			END $$;
 		`,
 	},
+	{
+		ID: "20260727_055_token_based_ai_quotas",
+		SQL: `
+			UPDATE billing_plans
+			SET weekly_ai_limit=CASE code
+				WHEN 'founder' THEN 1250000
+				WHEN 'team' THEN 3000000
+				WHEN 'company' THEN 9000000
+				ELSE weekly_ai_limit
+			END,
+			updated_at=NOW()
+			WHERE code IN ('founder', 'team', 'company');
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

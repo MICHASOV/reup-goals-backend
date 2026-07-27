@@ -26,7 +26,7 @@ type Plan struct {
 	AnnualAmount      float64 `json:"annual_amount"`
 	Currency          string  `json:"currency"`
 	MemberLimit       int     `json:"member_limit"`
-	WeeklyAILimit     int     `json:"weekly_ai_limit"`
+	WeeklyTokenLimit  int     `json:"weekly_token_limit"`
 	ResetAmount       float64 `json:"reset_amount"`
 	StandardResponses int     `json:"standard_responses_month"`
 	EquivalentTokens  int     `json:"equivalent_tokens_month"`
@@ -35,17 +35,17 @@ type Plan struct {
 var plans = []Plan{
 	{
 		Code: PlanFounder, Name: "Founder", MonthlyAmount: 3490, AnnualAmount: 33504,
-		Currency: "RUB", MemberLimit: 1, WeeklyAILimit: 150, ResetAmount: 890,
+		Currency: "RUB", MemberLimit: 1, WeeklyTokenLimit: 1_250_000, ResetAmount: 890,
 		StandardResponses: 650, EquivalentTokens: 5_000_000,
 	},
 	{
 		Code: PlanTeam, Name: "Team", MonthlyAmount: 11990, AnnualAmount: 115104,
-		Currency: "RUB", MemberLimit: 5, WeeklyAILimit: 400, ResetAmount: 2990,
+		Currency: "RUB", MemberLimit: 5, WeeklyTokenLimit: 3_000_000, ResetAmount: 2990,
 		StandardResponses: 1730, EquivalentTokens: 12_000_000,
 	},
 	{
 		Code: PlanCompany, Name: "Company", MonthlyAmount: 29990, AnnualAmount: 287904,
-		Currency: "RUB", MemberLimit: 0, WeeklyAILimit: 1200, ResetAmount: 7490,
+		Currency: "RUB", MemberLimit: 0, WeeklyTokenLimit: 9_000_000, ResetAmount: 7490,
 		StandardResponses: 5200, EquivalentTokens: 36_000_000,
 	},
 }

@@ -15,19 +15,19 @@ var ErrQuotaExceeded = errors.New("ai_weekly_limit_reached")
 var ErrPaymentRequired = errors.New("payment_required")
 
 type QuotaSummary struct {
-	UsedPercent         int       `json:"used_percent"`
-	RemainingPercent    int       `json:"remaining_percent"`
-	WeeklyLimit         int       `json:"weekly_limit"`
-	WeeklyUsed          int       `json:"weekly_used"`
-	PurchasedBalance    int       `json:"purchased_balance"`
-	RemainingMessages   int       `json:"remaining_messages"`
-	State               string    `json:"state"`
-	WindowStartedAt     time.Time `json:"window_started_at"`
-	ResetsAt            time.Time `json:"resets_at"`
-	Timezone            string    `json:"timezone"`
-	ExtraCapacityActive bool      `json:"extra_capacity_active"`
-	AIAvailable         bool      `json:"ai_available"`
-	WarningThreshold    int       `json:"warning_threshold"`
+	UsedPercent           int       `json:"used_percent"`
+	RemainingPercent      int       `json:"remaining_percent"`
+	WeeklyTokenLimit      int       `json:"weekly_token_limit"`
+	WeeklyTokensUsed      int       `json:"weekly_tokens_used"`
+	PurchasedTokenBalance int       `json:"purchased_token_balance"`
+	RemainingTokens       int       `json:"remaining_tokens"`
+	State                 string    `json:"state"`
+	WindowStartedAt       time.Time `json:"window_started_at"`
+	ResetsAt              time.Time `json:"resets_at"`
+	Timezone              string    `json:"timezone"`
+	ExtraCapacityActive   bool      `json:"extra_capacity_active"`
+	AIAvailable           bool      `json:"ai_available"`
+	WarningThreshold      int       `json:"warning_threshold"`
 
 	baseLimit        int
 	baseUsed         int
@@ -167,7 +167,7 @@ func (s *Service) hasAIEntitlement(ctx context.Context, workspaceID int, now tim
 	}
 }
 
-func (s *Service) Settle(ctx context.Context, reservationID string, success bool) error {
+func (s *Service) Settle(ctx context.Context, reservationID string, success bool, tokenUsage int) error {
 	if reservationID == "" {
 		return nil
 	}
@@ -179,12 +179,13 @@ func (s *Service) Settle(ctx context.Context, reservationID string, success bool
 
 	var workspaceID int
 	var source, status string
+	var reservedAt time.Time
 	err = tx.QueryRowContext(ctx, `
-		SELECT workspace_id, source, status
+		SELECT workspace_id, source, status, created_at
 		FROM workspace_ai_quota_events
 		WHERE reservation_key=$1
 		FOR UPDATE
-	`, reservationID).Scan(&workspaceID, &source, &status)
+	`, reservationID).Scan(&workspaceID, &source, &status, &reservedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -195,10 +196,36 @@ func (s *Service) Settle(ctx context.Context, reservationID string, success bool
 		return tx.Commit()
 	}
 	if success {
+		state, stateErr := s.ensureQuota(ctx, tx, workspaceID, time.Now().UTC())
+		if stateErr != nil {
+			return stateErr
+		}
+		actualTokens := max(0, tokenUsage)
+		charge := tokenCharge{actual: actualTokens}
+		if !reservedAt.Before(state.windowStartedAt) {
+			charge = settleReservedTokens(&state, source, actualTokens)
+			if _, updateErr := tx.ExecContext(ctx, `
+				UPDATE workspace_ai_quotas
+				SET base_used=$2, purchased_balance=$3, warning_level=$4, updated_at=NOW()
+				WHERE workspace_id=$1
+			`, workspaceID, state.baseUsed, state.purchasedBalance, state.warningLevel()); updateErr != nil {
+				return updateErr
+			}
+			if warningErr := s.syncWarning(ctx, tx, workspaceID, state, !state.available()); warningErr != nil {
+				return warningErr
+			}
+		}
 		_, err = tx.ExecContext(ctx, `
-			UPDATE workspace_ai_quota_events SET status='consumed', settled_at=NOW()
+			UPDATE workspace_ai_quota_events
+			SET status='consumed', amount=$2, settled_at=NOW(),
+				metadata_json=jsonb_build_object(
+					'actual_tokens', $3,
+					'base_tokens', $4,
+					'purchased_tokens', $5,
+					'unbilled_tokens', GREATEST(0, $3 - $2)
+				)
 			WHERE reservation_key=$1
-		`, reservationID)
+		`, reservationID, charge.charged, actualTokens, charge.base, charge.purchased)
 		return commitOrRollback(tx, err)
 	}
 
@@ -206,10 +233,8 @@ func (s *Service) Settle(ctx context.Context, reservationID string, success bool
 	if err != nil {
 		return err
 	}
-	if source == "base" && state.baseUsed > 0 {
-		state.baseUsed--
-	} else if source == "purchased" {
-		state.purchasedBalance++
+	if !reservedAt.Before(state.windowStartedAt) {
+		refundReservedToken(&state, source)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE workspace_ai_quotas
@@ -269,7 +294,7 @@ func (s *Service) ensureQuota(ctx context.Context, tx *sql.Tx, workspaceID int, 
 
 	state := quotaState{
 		planCode: plan.Code, timezone: timezone, windowStartedAt: windowStart,
-		windowEndsAt: windowEnd, baseLimit: plan.WeeklyAILimit,
+		windowEndsAt: windowEnd, baseLimit: plan.WeeklyTokenLimit,
 	}
 	var storedPlan string
 	var storedStart, storedEnd time.Time
@@ -287,8 +312,8 @@ func (s *Service) ensureQuota(ctx context.Context, tx *sql.Tx, workspaceID int, 
 				workspace_id, plan_code, window_started_at, window_ends_at,
 				base_limit, base_used, purchased_balance, warning_level
 			) VALUES ($1,$2,$3,$4,$5,0,0,0)
-		`, workspaceID, plan.Code, windowStart, windowEnd, plan.WeeklyAILimit)
-		state.baseLimit = plan.WeeklyAILimit
+		`, workspaceID, plan.Code, windowStart, windowEnd, plan.WeeklyTokenLimit)
+		state.baseLimit = plan.WeeklyTokenLimit
 		return state, err
 	}
 	if err != nil {
@@ -296,21 +321,29 @@ func (s *Service) ensureQuota(ctx context.Context, tx *sql.Tx, workspaceID int, 
 	}
 
 	windowChanged := !storedStart.Equal(windowStart) || !storedEnd.Equal(windowEnd)
-	planChanged := storedPlan != plan.Code || state.baseLimit != plan.WeeklyAILimit
+	storedBaseLimit := state.baseLimit
+	planChanged := storedPlan != plan.Code || storedBaseLimit != plan.WeeklyTokenLimit
 	state.planCode = plan.Code
 	state.windowStartedAt = windowStart
 	state.windowEndsAt = windowEnd
-	state.baseLimit = plan.WeeklyAILimit
+	state.baseLimit = plan.WeeklyTokenLimit
+	legacyUnits := storedPlan == plan.Code && isLegacyMessageLimit(storedPlan, storedBaseLimit)
+	if legacyUnits {
+		state.purchasedBalance = scaleQuotaUnits(state.purchasedBalance, storedBaseLimit, plan.WeeklyTokenLimit)
+	}
 	if windowChanged {
 		state.baseUsed = 0
+	} else if legacyUnits {
+		state.baseUsed = scaleQuotaUnits(state.baseUsed, storedBaseLimit, plan.WeeklyTokenLimit)
 	}
 	if windowChanged || planChanged {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE workspace_ai_quotas
 			SET plan_code=$2, window_started_at=$3, window_ends_at=$4,
-				base_limit=$5, base_used=$6, warning_level=0, updated_at=NOW()
+				base_limit=$5, base_used=$6, purchased_balance=$7,
+				warning_level=0, updated_at=NOW()
 			WHERE workspace_id=$1
-		`, workspaceID, plan.Code, windowStart, windowEnd, plan.WeeklyAILimit, state.baseUsed)
+		`, workspaceID, plan.Code, windowStart, windowEnd, plan.WeeklyTokenLimit, state.baseUsed, state.purchasedBalance)
 		if err != nil {
 			return quotaState{}, err
 		}
@@ -319,7 +352,7 @@ func (s *Service) ensureQuota(ctx context.Context, tx *sql.Tx, workspaceID int, 
 				INSERT INTO workspace_ai_quota_events (
 					workspace_id, reservation_key, event_type, source, amount, status, ai_module
 				) VALUES ($1, $2, 'weekly_reset', 'base', $3, 'consumed', 'billing')
-			`, workspaceID, "weekly-"+randomID(), plan.WeeklyAILimit)
+			`, workspaceID, "weekly-"+randomID(), plan.WeeklyTokenLimit)
 			_, _ = tx.ExecContext(ctx, `
 				UPDATE v2_system_warnings
 				SET status='resolved', resolved_at=NOW(), updated_at=NOW()
@@ -385,6 +418,10 @@ func (state quotaState) warningLevel() int {
 	}
 }
 
+func (state quotaState) available() bool {
+	return state.baseUsed < state.baseLimit || state.purchasedBalance > 0
+}
+
 func (state quotaState) summary() QuotaSummary {
 	used := 0
 	if state.baseLimit > 0 {
@@ -393,7 +430,7 @@ func (state quotaState) summary() QuotaSummary {
 	if used > 100 {
 		used = 100
 	}
-	available := state.baseUsed < state.baseLimit || state.purchasedBalance > 0
+	available := state.available()
 	status := "available"
 	if !available {
 		status = "exhausted"
@@ -402,14 +439,76 @@ func (state quotaState) summary() QuotaSummary {
 	}
 	return QuotaSummary{
 		UsedPercent: used, RemainingPercent: max(0, 100-used), State: status,
-		WeeklyLimit: state.baseLimit, WeeklyUsed: min(state.baseUsed, state.baseLimit),
-		PurchasedBalance:  state.purchasedBalance,
-		RemainingMessages: max(0, state.baseLimit-state.baseUsed) + state.purchasedBalance,
-		WindowStartedAt:   state.windowStartedAt, ResetsAt: state.windowEndsAt,
+		WeeklyTokenLimit: state.baseLimit, WeeklyTokensUsed: min(state.baseUsed, state.baseLimit),
+		PurchasedTokenBalance: state.purchasedBalance,
+		RemainingTokens:       max(0, state.baseLimit-state.baseUsed) + state.purchasedBalance,
+		WindowStartedAt:       state.windowStartedAt, ResetsAt: state.windowEndsAt,
 		Timezone: state.timezone, ExtraCapacityActive: state.purchasedBalance > 0,
 		AIAvailable: available, WarningThreshold: state.warningLevel(),
 		baseLimit: state.baseLimit, baseUsed: state.baseUsed, purchasedBalance: state.purchasedBalance,
 	}
+}
+
+type tokenCharge struct {
+	actual    int
+	charged   int
+	base      int
+	purchased int
+}
+
+func settleReservedTokens(state *quotaState, source string, actualTokens int) tokenCharge {
+	result := tokenCharge{actual: max(0, actualTokens)}
+	if result.actual == 0 {
+		refundReservedToken(state, source)
+		return result
+	}
+
+	result.charged = 1
+	if source == "purchased" {
+		result.purchased = 1
+	} else {
+		result.base = 1
+	}
+	remaining := result.actual - 1
+	if remaining <= 0 {
+		return result
+	}
+
+	baseTokens := min(remaining, max(0, state.baseLimit-state.baseUsed))
+	state.baseUsed += baseTokens
+	result.base += baseTokens
+	result.charged += baseTokens
+	remaining -= baseTokens
+
+	purchasedTokens := min(remaining, state.purchasedBalance)
+	state.purchasedBalance -= purchasedTokens
+	result.purchased += purchasedTokens
+	result.charged += purchasedTokens
+	return result
+}
+
+func refundReservedToken(state *quotaState, source string) {
+	if source == "base" && state.baseUsed > 0 {
+		state.baseUsed--
+	} else if source == "purchased" {
+		state.purchasedBalance++
+	}
+}
+
+func isLegacyMessageLimit(planCode string, limit int) bool {
+	legacy := map[string]int{
+		PlanFounder: 150,
+		PlanTeam:    400,
+		PlanCompany: 1200,
+	}
+	return legacy[planCode] == limit
+}
+
+func scaleQuotaUnits(value, oldLimit, newLimit int) int {
+	if value <= 0 || oldLimit <= 0 || newLimit <= 0 {
+		return 0
+	}
+	return int(math.Round(float64(value) * float64(newLimit) / float64(oldLimit)))
 }
 
 func quotaWindow(anchor, now time.Time) (time.Time, time.Time) {

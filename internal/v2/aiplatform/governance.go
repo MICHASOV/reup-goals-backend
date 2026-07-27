@@ -102,7 +102,7 @@ func consumesWorkspaceQuota(module string) bool {
 
 func (g *Governance) AfterCall(ctx context.Context, call ai.ResolvedCall, result ai.CallResult) {
 	if g.quotas != nil && call.ReservationID != "" {
-		if err := g.quotas.Settle(ctx, call.ReservationID, result.Err == nil); err != nil {
+		if err := g.quotas.Settle(ctx, call.ReservationID, result.Err == nil, totalTokenUsage(result.Usage)); err != nil {
 			log.Printf(
 				"[ERROR] ai quota settlement failed workspace_id=%d module=%s: %v",
 				call.Metadata.WorkspaceID, call.Metadata.Module, err,
@@ -133,6 +133,10 @@ func (g *Governance) AfterCall(ctx context.Context, call ai.ResolvedCall, result
 	if err != nil {
 		log.Printf("[ERROR] ai call log insert failed workspace_id=%d module=%s: %v", call.Metadata.WorkspaceID, call.Metadata.Module, err)
 	}
+}
+
+func totalTokenUsage(usage ai.Usage) int {
+	return max(usage.TotalTokens, usage.InputTokens+usage.OutputTokens)
 }
 
 func (g *Governance) registerFallback(ctx context.Context, metadata ai.CallMetadata, instructions string, model string) {
