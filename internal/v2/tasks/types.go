@@ -125,7 +125,7 @@ type Opportunity struct {
 type Task struct {
 	ID                         int                       `json:"id"`
 	WorkspaceID                int                       `json:"workspace_id"`
-	CourseID                   int                       `json:"course_id"`
+	CourseID                   *int                      `json:"course_id"`
 	TacticalPlanID             int                       `json:"tactical_plan_id"`
 	WorkstreamID               int                       `json:"workstream_id"`
 	DepartmentID               int                       `json:"department_id"`
