@@ -2,6 +2,8 @@ package profile
 
 import (
 	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -42,6 +44,20 @@ func TestValidOrganization(t *testing.T) {
 	valid.INN = "123"
 	if validOrganization(valid) {
 		t.Fatal("expected short INN to be rejected")
+	}
+}
+
+func TestInvoiceRequestJSONContract(t *testing.T) {
+	var request InvoiceRequest
+	decoder := json.NewDecoder(strings.NewReader(
+		`{"plan_code":"team","billing_period":"annual","order_kind":"subscription"}`,
+	))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		t.Fatalf("decode invoice request: %v", err)
+	}
+	if request.PlanCode != "team" || request.BillingPeriod != "annual" || request.OrderKind != "subscription" {
+		t.Fatalf("unexpected invoice request: %+v", request)
 	}
 }
 

@@ -159,9 +159,9 @@ type SellerProfile struct {
 }
 
 type InvoiceRequest struct {
-	PlanCode      string
-	BillingPeriod string
-	OrderKind     string
+	PlanCode      string `json:"plan_code"`
+	BillingPeriod string `json:"billing_period"`
+	OrderKind     string `json:"order_kind"`
 }
 
 type BillingDocument struct {
