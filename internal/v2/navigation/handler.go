@@ -35,10 +35,12 @@ type response struct {
 }
 
 type account struct {
-	ID        int    `json:"id"`
-	Email     string `json:"email"`
-	Name      string `json:"name"`
-	AvatarURL string `json:"avatar_url"`
+	ID                int    `json:"id"`
+	Email             string `json:"email"`
+	Name              string `json:"name"`
+	AvatarURL         string `json:"avatar_url"`
+	ProductTourStatus string `json:"product_tour_status"`
+	ProductTourStep   int    `json:"product_tour_step"`
 }
 
 type workspace struct {
@@ -186,14 +188,86 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if result.Strategy != nil && result.Strategy.Status == "active" {
+		result.ContextReady = true
+	}
 	api.WriteJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) loadAccount(r *http.Request, userID int, target *account) error {
 	return h.dbx.QueryRowContext(r.Context(), `
-		SELECT id, email, COALESCE(name, ''), COALESCE(avatar_url, '')
+		SELECT id, email, COALESCE(name, ''), COALESCE(avatar_url, ''),
+			product_tour_status, product_tour_step
 		FROM users WHERE id=$1
-	`, userID).Scan(&target.ID, &target.Email, &target.Name, &target.AvatarURL)
+	`, userID).Scan(
+		&target.ID, &target.Email, &target.Name, &target.AvatarURL,
+		&target.ProductTourStatus, &target.ProductTourStep,
+	)
+}
+
+type productTourRequest struct {
+	Status string `json:"status"`
+	Step   int    `json:"step"`
+}
+
+type productTourResponse struct {
+	Status string `json:"status"`
+	Step   int    `json:"step"`
+}
+
+func (h *Handler) UpdateProductTour(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/v2/navigation/product-tour" {
+		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		api.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var request productTourRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	if request.Status != "in_progress" && request.Status != "completed" && request.Status != "skipped" {
+		api.WriteError(w, http.StatusBadRequest, "product_tour_status_invalid")
+		return
+	}
+	if request.Step < 0 || request.Step > 5 {
+		api.WriteError(w, http.StatusBadRequest, "product_tour_step_invalid")
+		return
+	}
+
+	var result productTourResponse
+	err := h.dbx.QueryRowContext(r.Context(), `
+		UPDATE users
+		SET
+			product_tour_status=CASE
+				WHEN product_tour_status IN ('completed', 'skipped') THEN product_tour_status
+				ELSE $2
+			END,
+			product_tour_step=CASE
+				WHEN product_tour_status IN ('completed', 'skipped') THEN product_tour_step
+				ELSE GREATEST(product_tour_step, $3)
+			END,
+			product_tour_completed_at=CASE
+				WHEN product_tour_status IN ('completed', 'skipped') THEN product_tour_completed_at
+				WHEN $2 IN ('completed', 'skipped') THEN NOW()
+				ELSE NULL
+			END
+		WHERE id=$1
+		RETURNING product_tour_status, product_tour_step
+	`, userID, request.Status, request.Step).Scan(&result.Status, &result.Step)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "product_tour_update_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, error) {

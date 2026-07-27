@@ -29,3 +29,31 @@ func TestUnknownModelHasNoInventedPrice(t *testing.T) {
 		t.Fatalf("unexpected fallback cost: %f", cost)
 	}
 }
+
+func TestOnlyConversationalModulesConsumeWorkspaceQuota(t *testing.T) {
+	chatModules := []string{
+		"business_auditor_openai_native",
+		"business_document_chat",
+		"strategy_facilitator_openai_native",
+		"tactics_advisor_openai_native",
+		"task_brainstorm",
+	}
+	for _, module := range chatModules {
+		if !consumesWorkspaceQuota(module) {
+			t.Fatalf("chat module %q must consume workspace quota", module)
+		}
+	}
+
+	backgroundModules := []string{
+		"audio_transcription",
+		"task_evaluator_v2",
+		"task_completion_evaluator",
+		"knowledge_base_deferred_extractor",
+		"strategy_readiness_auditor",
+	}
+	for _, module := range backgroundModules {
+		if consumesWorkspaceQuota(module) {
+			t.Fatalf("background module %q must remain available after chat quota is exhausted", module)
+		}
+	}
+}

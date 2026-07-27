@@ -74,7 +74,7 @@ func (g *Governance) BeforeCall(ctx context.Context, metadata ai.CallMetadata, f
 		g.logRejected(ctx, resolved, err)
 		return ai.ResolvedCall{}, err
 	}
-	if g.quotas != nil {
+	if g.quotas != nil && consumesWorkspaceQuota(resolved.Metadata.Module) {
 		reservation, err := g.quotas.Reserve(
 			ctx, resolved.Metadata.WorkspaceID, resolved.Metadata.UserID, resolved.Metadata.Module,
 		)
@@ -85,6 +85,19 @@ func (g *Governance) BeforeCall(ctx context.Context, metadata ai.CallMetadata, f
 		resolved.ReservationID = reservation.ID
 	}
 	return resolved, nil
+}
+
+func consumesWorkspaceQuota(module string) bool {
+	switch strings.TrimSpace(module) {
+	case "business_auditor_openai_native",
+		"business_document_chat",
+		"strategy_facilitator_openai_native",
+		"tactics_advisor_openai_native",
+		"task_brainstorm":
+		return true
+	default:
+		return false
+	}
 }
 
 func (g *Governance) AfterCall(ctx context.Context, call ai.ResolvedCall, result ai.CallResult) {

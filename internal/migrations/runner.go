@@ -3321,6 +3321,35 @@ var migrations = []Migration{
 				ON workspace_ai_quota_events (workspace_id, created_at DESC);
 		`,
 	},
+	{
+		ID: "20260727_054_user_product_tour",
+		SQL: `
+			ALTER TABLE users
+				ADD COLUMN IF NOT EXISTS product_tour_status TEXT NOT NULL DEFAULT 'not_started',
+				ADD COLUMN IF NOT EXISTS product_tour_step INTEGER NOT NULL DEFAULT 0,
+				ADD COLUMN IF NOT EXISTS product_tour_completed_at TIMESTAMPTZ NULL;
+
+			DO $$
+			BEGIN
+				IF NOT EXISTS (
+					SELECT 1 FROM pg_constraint
+					WHERE conname='chk_users_product_tour_status'
+				) THEN
+					ALTER TABLE users
+						ADD CONSTRAINT chk_users_product_tour_status
+						CHECK (product_tour_status IN ('not_started', 'in_progress', 'completed', 'skipped'));
+				END IF;
+				IF NOT EXISTS (
+					SELECT 1 FROM pg_constraint
+					WHERE conname='chk_users_product_tour_step'
+				) THEN
+					ALTER TABLE users
+						ADD CONSTRAINT chk_users_product_tour_step
+						CHECK (product_tour_step BETWEEN 0 AND 5);
+				END IF;
+			END $$;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
