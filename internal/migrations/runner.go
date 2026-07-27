@@ -3086,6 +3086,20 @@ var migrations = []Migration{
 			END $$;
 		`,
 	},
+	{
+		ID: "20260727_051_verify_established_workspace_members",
+		SQL: `
+			UPDATE users account
+			SET email_verified=TRUE
+			WHERE account.email_verified=FALSE
+				AND EXISTS (
+					SELECT 1
+					FROM workspace_memberships membership
+					WHERE membership.user_id=account.id
+						AND membership.status='active'
+				);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
