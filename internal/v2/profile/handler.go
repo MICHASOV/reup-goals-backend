@@ -379,6 +379,16 @@ func (h *Handler) invitations(w http.ResponseWriter, r *http.Request, userID int
 		overview.Subscription.MemberLimit,
 	)
 	if err != nil {
+		var cooldownError *InvitationResendTooSoonError
+		if errors.As(err, &cooldownError) {
+			retryAfterSeconds := cooldownError.RetryAfterSeconds()
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+			api.WriteJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":               cooldownError.Error(),
+				"retry_after_seconds": retryAfterSeconds,
+			})
+			return
+		}
 		if errors.Is(err, ErrMemberLimitReached) {
 			api.WriteError(w, http.StatusConflict, err.Error())
 			return
@@ -414,7 +424,11 @@ func (h *Handler) invitations(w http.ResponseWriter, r *http.Request, userID int
 			emailDelivered = false
 		}
 	}
-	api.WriteJSON(w, http.StatusCreated, map[string]any{"member": item, "email_delivered": emailDelivered})
+	api.WriteJSON(w, http.StatusCreated, map[string]any{
+		"member":              item,
+		"email_delivered":     emailDelivered,
+		"retry_after_seconds": int(invitationResendCooldown / time.Second),
+	})
 }
 
 func (h *Handler) acceptInvitation(w http.ResponseWriter, r *http.Request, userID int) {
