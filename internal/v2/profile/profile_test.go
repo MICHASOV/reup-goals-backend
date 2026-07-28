@@ -37,10 +37,32 @@ func TestBuildInvoicePDF(t *testing.T) {
 	if !bytes.Contains(document, []byte("startxref")) || !bytes.HasSuffix(document, []byte("%%EOF\n")) {
 		t.Fatal("expected a complete PDF file")
 	}
+	if !bytes.Contains(document, []byte("/Subtype /Image")) {
+		t.Fatal("expected the REUP.goals logo to be embedded")
+	}
 	if outputPath := strings.TrimSpace(os.Getenv("INVOICE_TEST_OUTPUT")); outputPath != "" {
 		if err := os.WriteFile(outputPath, document, 0o600); err != nil {
 			t.Fatalf("write invoice fixture: %v", err)
 		}
+	}
+}
+
+func TestInvoicePresentationHelpers(t *testing.T) {
+	invoice := Invoice{
+		IssuedAt:   time.Date(2026, time.July, 28, 12, 0, 0, 0, time.UTC),
+		IssuedDate: "28.07.2026",
+	}
+	if got := invoiceLongDate(invoice); got != "28 июля 2026 г." {
+		t.Fatalf("unexpected long date: %q", got)
+	}
+	if got := formatMoney(29990); got != "29 990,00" {
+		t.Fatalf("unexpected formatted amount: %q", got)
+	}
+	if got := russianMoneyWords(3490, "RUB"); got != "Три тысячи четыреста девяносто рублей 00 копеек." {
+		t.Fatalf("unexpected amount in words: %q", got)
+	}
+	if got := russianMoneyWords(1201.02, "RUB"); got != "Одна тысяча двести один рубль 02 копейки." {
+		t.Fatalf("unexpected amount in words with inflection: %q", got)
 	}
 }
 
