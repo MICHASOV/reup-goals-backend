@@ -66,7 +66,7 @@ func validAuthenticatedUser(ctx context.Context, dbx *sql.DB, userID int, authVe
 	if entry.valid && entry.authVersion == authVersion && now.Before(entry.staleUntil) {
 		if !entry.refreshing {
 			entry.refreshing = true
-			go refreshAuthenticatedUser(dbx, userID, authVersion, entry)
+			go refreshAuthenticatedUser(context.WithoutCancel(ctx), dbx, userID, authVersion, entry)
 		}
 		entry.mu.Unlock()
 		return true
@@ -98,8 +98,8 @@ func validAuthenticatedUser(ctx context.Context, dbx *sql.DB, userID int, authVe
 	return true
 }
 
-func refreshAuthenticatedUser(dbx *sql.DB, userID int, authVersion int, entry *authValidationEntry) {
-	ctx, cancel := context.WithTimeout(context.Background(), authValidationTimeout)
+func refreshAuthenticatedUser(parent context.Context, dbx *sql.DB, userID int, authVersion int, entry *authValidationEntry) {
+	ctx, cancel := context.WithTimeout(parent, authValidationTimeout)
 	defer cancel()
 
 	var storedVersion int
