@@ -19,11 +19,18 @@ var invoiceFontCandidates = []string{
 	"/Library/Fonts/Arial Unicode.ttf",
 }
 
+var invoiceFontRoots = []string{
+	"/usr/share/fonts",
+	"/System/Library/Fonts",
+	"/Library/Fonts",
+}
+
 func BuildInvoicePDF(invoice Invoice, seller SellerProfile, buyer BillingOrganization) ([]byte, error) {
 	fontPath, err := invoiceFontPath()
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G304 -- invoiceFontPath resolves symlinks and restricts the path to system font directories.
 	fontData, err := os.ReadFile(fontPath)
 	if err != nil {
 		return nil, fmt.Errorf("read invoice font: %w", err)
@@ -119,13 +126,39 @@ func invoiceFontPath() (string, error) {
 		candidates = append([]string{configured}, candidates...)
 	}
 	for _, candidate := range candidates {
-		path := filepath.Clean(candidate)
+		path, allowed := allowedInvoiceFontPath(candidate)
+		if !allowed {
+			continue
+		}
+		// #nosec G703 -- allowedInvoiceFontPath confines the resolved path to trusted system font roots.
 		info, err := os.Stat(path)
-		if err == nil && !info.IsDir() {
+		if err == nil && info.Mode().IsRegular() {
 			return path, nil
 		}
 	}
 	return "", errors.New("invoice_font_not_found")
+}
+
+func allowedInvoiceFontPath(candidate string) (string, bool) {
+	cleaned, err := filepath.Abs(filepath.Clean(strings.TrimSpace(candidate)))
+	if err != nil {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return "", false
+	}
+	for _, root := range invoiceFontRoots {
+		allowedRoot, rootErr := filepath.EvalSymlinks(root)
+		if rootErr != nil {
+			continue
+		}
+		relative, relativeErr := filepath.Rel(allowedRoot, resolved)
+		if relativeErr == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return resolved, true
+		}
+	}
+	return "", false
 }
 
 func valueOrDash(value string) string {

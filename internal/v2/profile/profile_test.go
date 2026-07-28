@@ -44,6 +44,23 @@ func TestBuildInvoicePDF(t *testing.T) {
 	}
 }
 
+func TestInvoiceFontPathRejectsPathsOutsideSystemFontDirectories(t *testing.T) {
+	t.Setenv("INVOICE_FONT_PATH", "/etc/passwd")
+	path, err := invoiceFontPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path == "/etc/passwd" {
+		t.Fatal("expected configured path outside system font directories to be rejected")
+	}
+}
+
+func TestAllowedInvoiceFontPathRejectsTraversal(t *testing.T) {
+	if path, allowed := allowedInvoiceFontPath("/usr/share/fonts/../../../etc/passwd"); allowed {
+		t.Fatalf("expected traversal path to be rejected, got %q", path)
+	}
+}
+
 func TestValidOrganization(t *testing.T) {
 	valid := BillingOrganization{
 		FullName: "ООО РЕАП", INN: "7701234567", KPP: "770101001",
