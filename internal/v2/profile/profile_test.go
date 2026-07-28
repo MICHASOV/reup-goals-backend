@@ -3,6 +3,7 @@ package profile
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -12,25 +13,34 @@ import (
 
 func TestBuildInvoicePDF(t *testing.T) {
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	document := BuildInvoicePDF(Invoice{
+	document, err := BuildInvoicePDF(Invoice{
 		Number: "REUP-2026-000001", Amount: 2990, Currency: "RUB",
-		Description: "Подписка REUP.goals, тариф Founder", TaxLabel: "Без НДС",
+		Description: "Подписка REUP.goals, тариф Founder, доступ к системе стратегического управления компанией и AI-советнику", TaxLabel: "Без НДС",
 		IssuedAt: now, DueAt: now.Add(5 * 24 * time.Hour),
+		IssuedDate: "20.07.2026", DueDate: "25.07.2026", Timezone: "Europe/Moscow",
 	}, SellerProfile{
 		FullName: "ООО РЕАП", INN: "5262392668", KPP: "526201001",
-		RegistrationNumber: "1235200026995", LegalAddress: "Нижний Новгород",
+		RegistrationNumber: "1235200026995", LegalAddress: "603000, Нижегородская область, город Нижний Новгород, улица Большая Покровская, дом 15, помещение 24",
 		BankName: "АО Т-Банк", SettlementAccount: "40702810110001489655",
 		CorrespondentAccount: "30101810145250000974", BIC: "044525974",
 		TaxLabel: "Без НДС",
 	}, BillingOrganization{
 		FullName: "ООО Покупатель", INN: "7701234567", RegistrationNumber: "1027700123456",
-		LegalAddress: "Москва", AccountingEmail: "billing@example.com", ContactPerson: "Иван",
+		LegalAddress: "125009, город Москва, Тверская улица, дом 10, строение 3, этаж 5, помещение 18", AccountingEmail: "billing@example.com", ContactPerson: "Иван",
 	})
-	if !bytes.HasPrefix(document, []byte("%PDF-1.4")) {
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(document, []byte("%PDF-")) {
 		t.Fatalf("expected a PDF header, got %q", document[:min(12, len(document))])
 	}
 	if !bytes.Contains(document, []byte("startxref")) || !bytes.HasSuffix(document, []byte("%%EOF\n")) {
 		t.Fatal("expected a complete PDF file")
+	}
+	if outputPath := strings.TrimSpace(os.Getenv("INVOICE_TEST_OUTPUT")); outputPath != "" {
+		if err := os.WriteFile(outputPath, document, 0o600); err != nil {
+			t.Fatalf("write invoice fixture: %v", err)
+		}
 	}
 }
 
@@ -52,13 +62,13 @@ func TestValidOrganization(t *testing.T) {
 func TestInvoiceRequestJSONContract(t *testing.T) {
 	var request InvoiceRequest
 	decoder := json.NewDecoder(strings.NewReader(
-		`{"plan_code":"team","billing_period":"annual","order_kind":"subscription"}`,
+		`{"plan_code":"team","billing_period":"annual","order_kind":"subscription","idempotency_key":"invoice-test-1"}`,
 	))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		t.Fatalf("decode invoice request: %v", err)
 	}
-	if request.PlanCode != "team" || request.BillingPeriod != "annual" || request.OrderKind != "subscription" {
+	if request.PlanCode != "team" || request.BillingPeriod != "annual" || request.OrderKind != "subscription" || request.IdempotencyKey != "invoice-test-1" {
 		t.Fatalf("unexpected invoice request: %+v", request)
 	}
 }
@@ -105,7 +115,7 @@ func TestSubscriptionDisplayStatus(t *testing.T) {
 
 func TestValidSettings(t *testing.T) {
 	value := Settings{
-		InterfaceLanguage: "ru", Theme: "dark", DateFormat: "DD.MM.YYYY", AILanguage: "ru",
+		InterfaceLanguage: "ru", Theme: "light", DateFormat: "DD.MM.YYYY", AILanguage: "ru",
 	}
 	if !validSettings(value) {
 		t.Fatal("expected settings to be valid")

@@ -506,10 +506,30 @@ func compactTacticsReadinessFeedback(run *TacticsReadinessRun) any {
 
 func parseTacticsFacilitatorOutput(raw string) (tacticsFacilitatorModelOutput, error) {
 	var output tacticsFacilitatorModelOutput
-	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &output); err != nil {
+	clean := strings.TrimSpace(raw)
+	for depth := 0; depth < 2 && strings.HasPrefix(clean, `"`); depth++ {
+		var decoded string
+		if err := json.Unmarshal([]byte(clean), &decoded); err != nil {
+			break
+		}
+		clean = strings.TrimSpace(decoded)
+	}
+	if err := json.Unmarshal([]byte(clean), &output); err != nil {
 		return tacticsFacilitatorModelOutput{}, err
 	}
 	output.Message = cleanTacticsAssistantMessage(output.Message)
+	if ai.LooksLikeJSONObject(output.Message) {
+		var nested tacticsFacilitatorModelOutput
+		if err := json.Unmarshal([]byte(output.Message), &nested); err == nil {
+			nested.Message = cleanTacticsAssistantMessage(nested.Message)
+			if nested.Message != "" && !ai.LooksLikeJSONObject(nested.Message) {
+				if len(nested.DraftChanges) == 0 {
+					nested.DraftChanges = output.DraftChanges
+				}
+				output = nested
+			}
+		}
+	}
 	if output.Message == "" {
 		return tacticsFacilitatorModelOutput{}, fmt.Errorf("tactics facilitator returned empty message")
 	}

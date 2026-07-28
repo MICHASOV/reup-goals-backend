@@ -498,14 +498,14 @@ func (h *Handler) facilitatorFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	if err := security.ValidateBusinessDocument(header.Filename, header.Size, maxStrategyFileBytes); err != nil {
+	content, contentType, err := security.InspectBusinessDocument(header.Filename, header.Size, maxStrategyFileBytes, file)
+	if err != nil {
 		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 
-	contentType := header.Header.Get("Content-Type")
 	filename := security.SafeFilename(header.Filename)
-	response, err := h.facilitator.UploadFile(r.Context(), workspace.ID, userID, filename, contentType, header.Size, file)
+	response, err := h.facilitator.UploadFile(r.Context(), workspace.ID, userID, filename, contentType, header.Size, content)
 	if err != nil {
 		api.WriteError(w, http.StatusBadGateway, "strategy_file_upload_failed")
 		return

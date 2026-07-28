@@ -59,7 +59,7 @@ jobs:
           set -euo pipefail
 
           for attempt in $(seq 1 20); do
-            if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot python3-certbot-nginx; then
+            if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot python3-certbot-nginx fonts-dejavu-core; then
               break
             fi
             if [ "$attempt" -eq 20 ]; then
@@ -116,12 +116,13 @@ jobs:
           BROWSER_AUTH_ONLY=true
           FRONTEND_BASE_URL=https://staging.reupgoals.pro
           APP_VERSION="REUP.goals v2"
-          SUPPORT_EMAIL=reupgoals@gmail.com
+          SUPPORT_EMAIL=support@reupgoals.pro
           DOCUMENTATION_URL=
           CHANGELOG_URL=
           PRIVACY_MODE=test
           DATA_RESIDENCY_REGION=eu-de
-          PRIVACY_CONTACT_EMAIL=reupgoals@gmail.com
+          PRIVACY_CONTACT_EMAIL=privacy@reupgoals.pro
+          INVOICE_FONT_PATH=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
           CROSS_BORDER_TRANSFER_REGISTERED=false
           GDPR_TRANSFER_MECHANISM=
           RETENTION_INTERVAL=24h
@@ -187,10 +188,11 @@ jobs:
             'BROWSER_AUTH_ONLY=true' \
             'FRONTEND_BASE_URL=https://staging.reupgoals.pro' \
             'APP_VERSION=REUP.goals v2' \
-            'SUPPORT_EMAIL=reupgoals@gmail.com' \
+            'SUPPORT_EMAIL=support@reupgoals.pro' \
             'PRIVACY_MODE=test' \
             'DATA_RESIDENCY_REGION=eu-de' \
-            'PRIVACY_CONTACT_EMAIL=reupgoals@gmail.com' \
+            'PRIVACY_CONTACT_EMAIL=privacy@reupgoals.pro' \
+            'INVOICE_FONT_PATH=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf' \
             'CROSS_BORDER_TRANSFER_REGISTERED=false' \
             'RETENTION_INTERVAL=24h' \
             'AUTH_CODE_RETENTION_DAYS=30' \
@@ -207,6 +209,14 @@ jobs:
               printf '\n%s\n' "$setting" >> /etc/reup-goals-staging/backend.env
             fi
           done
+          if ! grep -Eq '^BILLING_ADMIN_KEY=.{32,}$' /etc/reup-goals-staging/backend.env; then
+            generated_billing_key=$(openssl rand -hex 32)
+            if grep -q '^BILLING_ADMIN_KEY=' /etc/reup-goals-staging/backend.env; then
+              sed -i "s|^BILLING_ADMIN_KEY=.*|BILLING_ADMIN_KEY=${generated_billing_key}|" /etc/reup-goals-staging/backend.env
+            else
+              printf '\nBILLING_ADMIN_KEY=%s\n' "$generated_billing_key" >> /etc/reup-goals-staging/backend.env
+            fi
+          fi
 
           if ! id reupgoals >/dev/null 2>&1; then
             useradd --system --home /opt/reup-goals-staging --shell /usr/sbin/nologin reupgoals

@@ -11,19 +11,15 @@ type AccountDataCleaner interface {
 	CleanupUserData(context.Context, int) error
 }
 
-func LogoutHandler(dbx *sql.DB, secureCookie bool) http.HandlerFunc {
+func LogoutHandler(_ *sql.DB, secureCookie bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		uid, ok := UserIDFromContext(r.Context())
+		_, ok := UserIDFromContext(r.Context())
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if _, err := dbx.ExecContext(r.Context(), `UPDATE users SET auth_version=auth_version+1 WHERE id=$1`, uid); err != nil {
-			http.Error(w, "logout_failed", http.StatusInternalServerError)
 			return
 		}
 		ClearSessionCookie(w, secureCookie)

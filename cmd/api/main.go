@@ -193,6 +193,7 @@ func main() {
 	mux.Handle("/api/v2/ai/prompts/", v2api.RequireAuth(database, jwtSecret, aiPlatformHandler.Prompts))
 	mux.Handle("/api/v2/ai/usage-policy", v2api.RequireAuth(database, jwtSecret, aiPlatformHandler.UsagePolicy))
 	mux.Handle("/api/v2/operations/overview", v2api.RequireAuth(database, jwtSecret, operationsHandler.Overview))
+	mux.Handle("/api/v2/operations/warnings", v2api.RequireAuth(database, jwtSecret, operationsHandler.Warnings))
 	mux.Handle("/api/v2/strategic-director/messages", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/state", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/files", v2api.RequireAuth(database, jwtSecret, strategicMemoryHandler.StrategicDirector))

@@ -3364,6 +3364,22 @@ var migrations = []Migration{
 			WHERE code IN ('founder', 'team', 'company');
 		`,
 	},
+	{
+		ID: "20260728_056_billing_invoice_idempotency",
+		SQL: `
+			ALTER TABLE workspace_billing_orders
+				ADD COLUMN IF NOT EXISTS idempotency_key TEXT NOT NULL DEFAULT '';
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_billing_orders_idempotency
+				ON workspace_billing_orders (workspace_id, idempotency_key)
+				WHERE idempotency_key <> '';
+
+			ALTER TABLE user_profile_settings
+				ALTER COLUMN theme SET DEFAULT 'light';
+
+			UPDATE user_profile_settings SET theme='light' WHERE theme='dark';
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

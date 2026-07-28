@@ -201,14 +201,14 @@ func (h *Handler) files(w http.ResponseWriter, r *http.Request, workspaceID int)
 		return
 	}
 	defer file.Close()
-	if err := security.ValidateBusinessDocument(header.Filename, header.Size, maxStrategicFileUploadBytes); err != nil {
+	content, contentType, err := security.InspectBusinessDocument(header.Filename, header.Size, maxStrategicFileUploadBytes, file)
+	if err != nil {
 		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 
-	contentType := header.Header.Get("Content-Type")
 	filename := security.SafeFilename(header.Filename)
-	response, err := h.service.UploadFile(r.Context(), workspaceID, userID, filename, contentType, header.Size, file)
+	response, err := h.service.UploadFile(r.Context(), workspaceID, userID, filename, contentType, header.Size, content)
 	if err != nil {
 		api.WriteError(w, http.StatusBadGateway, "strategic_file_upload_failed")
 		return

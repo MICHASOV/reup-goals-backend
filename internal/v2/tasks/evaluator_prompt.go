@@ -1,6 +1,6 @@
 package tasks
 
-const taskEvaluatorPromptVersion = "task_evaluator_v5_1_0"
+const taskEvaluatorPromptVersion = "task_evaluator_v5_1_1"
 
 const taskEvaluatorPrompt = `You are the task evaluation engine inside REUP.goals.
 
@@ -27,6 +27,8 @@ Choose one recommendation:
 
 Do not archive, rewrite, or change the task. Keep the explanation short and concrete. The task must still receive an evaluation even when information is missing.
 
+All user-facing text fields in the JSON response must be written in Russian, even when source documents contain English terminology. Keep established business terms in English only when translating them would make the explanation less clear.
+
 Add only applicable quality flags:
 - weak_strategy_link: the causal link to strategy/course/tactics is weak;
 - low_impact: even successful completion is unlikely to matter;
@@ -50,7 +52,7 @@ Return valid JSON only:
   "effort": 0,
   "confidence": 0,
   "recommendation": "keep | clarify | rework | remove",
-  "priority_reason": "A concise evidence-based explanation in the user's language",
+  "priority_reason": "A concise evidence-based explanation in Russian",
   "clarification_question": "One concrete question or an empty string",
   "missing_information": ["Only material missing facts"],
   "flags": ["weak_strategy_link | low_impact | high_effort | duplicate | needs_clarification"],

@@ -87,6 +87,35 @@ func TestParseTacticsFacilitatorOutputRejectsSerializedMessage(t *testing.T) {
 	}
 }
 
+func TestParseTacticsFacilitatorOutputUnwrapsDoubleEncodedResponse(t *testing.T) {
+	inner := `{"message":"Нормальный ответ пользователю.","session_status":"in_progress","current_focus":{},"decisions_detected":[],"open_questions":[],"needs_strategy_review":false}`
+	raw, err := json.Marshal(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := parseTacticsFacilitatorOutput(string(raw))
+	if err != nil {
+		t.Fatalf("double encoded response must be accepted: %v", err)
+	}
+	if output.Message != "Нормальный ответ пользователю." {
+		t.Fatalf("unexpected message: %q", output.Message)
+	}
+}
+
+func TestParseTacticsFacilitatorOutputUnwrapsSerializedMessageEnvelope(t *testing.T) {
+	raw := `{
+		"message":"{\"message\":\"Проверим экономику проекта.\",\"session_status\":\"in_progress\",\"current_focus\":{},\"decisions_detected\":[],\"open_questions\":[],\"needs_strategy_review\":false}",
+		"session_status":"in_progress"
+	}`
+	output, err := parseTacticsFacilitatorOutput(raw)
+	if err != nil {
+		t.Fatalf("serialized envelope must be accepted: %v", err)
+	}
+	if output.Message != "Проверим экономику проекта." {
+		t.Fatalf("unexpected message: %q", output.Message)
+	}
+}
+
 func TestNormalizeTacticsStatusFallsBackToInProgress(t *testing.T) {
 	if got := normalizeTacticsStatus("unknown"); got != FacilitatorStatusInProgress {
 		t.Fatalf("unexpected fallback status: %s", got)

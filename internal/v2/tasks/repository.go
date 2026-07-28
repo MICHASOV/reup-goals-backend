@@ -98,7 +98,7 @@ func (s *Store) Workstream(ctx context.Context, workspaceID int, workstreamID in
 	if err != nil {
 		return WorkstreamResponse{}, err
 	}
-	tasks, err := s.List(ctx, workspaceID, ListFilter{WorkstreamID: &workstreamID, IncludeArchived: true})
+	tasks, err := s.List(ctx, workspaceID, ListFilter{WorkstreamID: &workstreamID, IncludeArchived: false})
 	if err != nil {
 		return WorkstreamResponse{}, err
 	}

@@ -147,6 +147,9 @@ type Invoice struct {
 	RecipientEmail string     `json:"recipient_email"`
 	IssuedAt       time.Time  `json:"issued_at"`
 	DueAt          time.Time  `json:"due_at"`
+	IssuedDate     string     `json:"issued_date"`
+	DueDate        string     `json:"due_date"`
+	Timezone       string     `json:"timezone"`
 	PaidAt         *time.Time `json:"paid_at,omitempty"`
 	EmailedAt      *time.Time `json:"emailed_at,omitempty"`
 	DocumentID     *int64     `json:"document_id,omitempty"`
@@ -168,9 +171,10 @@ type SellerProfile struct {
 }
 
 type InvoiceRequest struct {
-	PlanCode      string `json:"plan_code"`
-	BillingPeriod string `json:"billing_period"`
-	OrderKind     string `json:"order_kind"`
+	PlanCode       string `json:"plan_code"`
+	BillingPeriod  string `json:"billing_period"`
+	OrderKind      string `json:"order_kind"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 type BillingDocument struct {

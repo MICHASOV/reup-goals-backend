@@ -103,8 +103,8 @@ func (r *SourceRecorder) Capture(
 			return sourceID, true, err
 		}
 	}
-	if r.jobs != nil {
-		_, err = r.jobs.Enqueue(
+	if created && r.jobs != nil {
+		_, err = r.jobs.EnqueueDebounced(
 			ctx,
 			workspaceID,
 			jobTypeKnowledgeContextRefresh,

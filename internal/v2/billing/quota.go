@@ -14,6 +14,8 @@ import (
 var ErrQuotaExceeded = errors.New("ai_weekly_limit_reached")
 var ErrPaymentRequired = errors.New("payment_required")
 
+const maxChatReservationTokens = 75_000
+
 type QuotaSummary struct {
 	UsedPercent           int       `json:"used_percent"`
 	RemainingPercent      int       `json:"remaining_percent"`
@@ -93,14 +95,8 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 		return Reservation{}, err
 	}
 
-	source := ""
-	if state.baseUsed < state.baseLimit {
-		source = "base"
-		state.baseUsed++
-	} else if state.purchasedBalance > 0 {
-		source = "purchased"
-		state.purchasedBalance--
-	} else {
+	reservation := reserveQuotaTokens(&state, maxChatReservationTokens)
+	if reservation.total <= 0 {
 		if err := s.syncWarning(ctx, tx, workspaceID, state, true); err != nil {
 			return Reservation{}, err
 		}
@@ -108,6 +104,12 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 			return Reservation{}, err
 		}
 		return Reservation{}, ErrQuotaExceeded
+	}
+	source := "mixed"
+	if reservation.purchased == 0 {
+		source = "base"
+	} else if reservation.base == 0 {
+		source = "purchased"
 	}
 
 	reservationID := randomID()
@@ -120,9 +122,13 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO workspace_ai_quota_events (
-			workspace_id, user_id, reservation_key, event_type, source, amount, status, ai_module
-		) VALUES ($1, NULLIF($2, 0), $3, 'ai_call', $4, 1, 'reserved', $5)
-	`, workspaceID, userID, reservationID, source, module); err != nil {
+			workspace_id, user_id, reservation_key, event_type, source, amount, status,
+			ai_module, metadata_json
+		) VALUES (
+			$1, NULLIF($2, 0), $3, 'ai_call', $4, $5, 'reserved', $6,
+			jsonb_build_object('reserved_base', $7, 'reserved_purchased', $8)
+		)
+	`, workspaceID, userID, reservationID, source, reservation.total, module, reservation.base, reservation.purchased); err != nil {
 		return Reservation{}, err
 	}
 	if err := s.syncWarning(ctx, tx, workspaceID, state, false); err != nil {
@@ -177,15 +183,31 @@ func (s *Service) Settle(ctx context.Context, reservationID string, success bool
 	}
 	defer tx.Rollback()
 
-	var workspaceID int
+	var workspaceID, reservedTokens, reservedBase, reservedPurchased int
 	var source, status string
 	var reservedAt time.Time
 	err = tx.QueryRowContext(ctx, `
-		SELECT workspace_id, source, status, created_at
+		SELECT workspace_id, source, status, created_at, amount,
+			COALESCE(
+				NULLIF(metadata_json->>'reserved_base', '')::INTEGER,
+				CASE WHEN source='base' THEN amount ELSE 0 END
+			),
+			COALESCE(
+				NULLIF(metadata_json->>'reserved_purchased', '')::INTEGER,
+				CASE WHEN source='purchased' THEN amount ELSE 0 END
+			)
 		FROM workspace_ai_quota_events
 		WHERE reservation_key=$1
 		FOR UPDATE
-	`, reservationID).Scan(&workspaceID, &source, &status, &reservedAt)
+	`, reservationID).Scan(
+		&workspaceID,
+		&source,
+		&status,
+		&reservedAt,
+		&reservedTokens,
+		&reservedBase,
+		&reservedPurchased,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -203,7 +225,7 @@ func (s *Service) Settle(ctx context.Context, reservationID string, success bool
 		actualTokens := max(0, tokenUsage)
 		charge := tokenCharge{actual: actualTokens}
 		if !reservedAt.Before(state.windowStartedAt) {
-			charge = settleReservedTokens(&state, source, actualTokens)
+			charge = settleReservedTokens(&state, reservedBase, reservedPurchased, actualTokens)
 			if _, updateErr := tx.ExecContext(ctx, `
 				UPDATE workspace_ai_quotas
 				SET base_used=$2, purchased_balance=$3, warning_level=$4, updated_at=NOW()
@@ -222,10 +244,14 @@ func (s *Service) Settle(ctx context.Context, reservationID string, success bool
 					'actual_tokens', $3,
 					'base_tokens', $4,
 					'purchased_tokens', $5,
-					'unbilled_tokens', GREATEST(0, $3 - $2)
+					'unbilled_tokens', GREATEST(0, $3 - $2),
+					'reserved_tokens', $6,
+					'reserved_base', $7,
+					'reserved_purchased', $8
 				)
 			WHERE reservation_key=$1
-		`, reservationID, charge.charged, actualTokens, charge.base, charge.purchased)
+		`, reservationID, charge.charged, actualTokens, charge.base, charge.purchased,
+			reservedTokens, reservedBase, reservedPurchased)
 		return commitOrRollback(tx, err)
 	}
 
@@ -234,7 +260,7 @@ func (s *Service) Settle(ctx context.Context, reservationID string, success bool
 		return err
 	}
 	if !reservedAt.Before(state.windowStartedAt) {
-		refundReservedToken(&state, source)
+		refundReservedTokens(&state, reservedBase, reservedPurchased)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE workspace_ai_quotas
@@ -456,23 +482,27 @@ type tokenCharge struct {
 	purchased int
 }
 
-func settleReservedTokens(state *quotaState, source string, actualTokens int) tokenCharge {
-	result := tokenCharge{actual: max(0, actualTokens)}
-	if result.actual == 0 {
-		refundReservedToken(state, source)
-		return result
-	}
+type tokenReservation struct {
+	total     int
+	base      int
+	purchased int
+}
 
-	result.charged = 1
-	if source == "purchased" {
-		result.purchased = 1
-	} else {
-		result.base = 1
-	}
-	remaining := result.actual - 1
-	if remaining <= 0 {
-		return result
-	}
+func reserveQuotaTokens(state *quotaState, requested int) tokenReservation {
+	baseAvailable := max(0, state.baseLimit-state.baseUsed)
+	totalAvailable := baseAvailable + max(0, state.purchasedBalance)
+	reserved := tokenReservation{total: min(max(0, requested), totalAvailable)}
+	reserved.base = min(reserved.total, baseAvailable)
+	reserved.purchased = reserved.total - reserved.base
+	state.baseUsed += reserved.base
+	state.purchasedBalance -= reserved.purchased
+	return reserved
+}
+
+func settleReservedTokens(state *quotaState, reservedBase, reservedPurchased, actualTokens int) tokenCharge {
+	result := tokenCharge{actual: max(0, actualTokens)}
+	refundReservedTokens(state, reservedBase, reservedPurchased)
+	remaining := result.actual
 
 	baseTokens := min(remaining, max(0, state.baseLimit-state.baseUsed))
 	state.baseUsed += baseTokens
@@ -487,12 +517,9 @@ func settleReservedTokens(state *quotaState, source string, actualTokens int) to
 	return result
 }
 
-func refundReservedToken(state *quotaState, source string) {
-	if source == "base" && state.baseUsed > 0 {
-		state.baseUsed--
-	} else if source == "purchased" {
-		state.purchasedBalance++
-	}
+func refundReservedTokens(state *quotaState, reservedBase, reservedPurchased int) {
+	state.baseUsed = max(0, state.baseUsed-max(0, reservedBase))
+	state.purchasedBalance += max(0, reservedPurchased)
 }
 
 func isLegacyMessageLimit(planCode string, limit int) bool {

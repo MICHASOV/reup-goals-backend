@@ -98,6 +98,43 @@ func (m *Manager) Enqueue(ctx context.Context, workspaceID int, jobType string, 
 	return id, err
 }
 
+// EnqueueDebounced coalesces bursts and waits for a short quiet period before
+// running. The 15-minute cap prevents a continuously active workspace from
+// postponing a required refresh forever.
+func (m *Manager) EnqueueDebounced(ctx context.Context, workspaceID int, jobType string, dedupeKey string, payload any, maxAttempts int, notBefore time.Time) (int64, error) {
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	if notBefore.IsZero() {
+		notBefore = time.Now().UTC()
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("job payload: %w", err)
+	}
+
+	var id int64
+	err = m.dbx.QueryRowContext(ctx, `
+		INSERT INTO v2_background_jobs (
+			workspace_id, job_type, dedupe_key, payload_json, status,
+			attempts, max_attempts, not_before, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, 0, $6, $7, NOW())
+		ON CONFLICT (job_type, workspace_id, dedupe_key)
+			WHERE dedupe_key <> '' AND status='queued'
+		DO UPDATE SET
+			payload_json=EXCLUDED.payload_json,
+			max_attempts=GREATEST(v2_background_jobs.max_attempts, EXCLUDED.max_attempts),
+			not_before=LEAST(
+				GREATEST(v2_background_jobs.not_before, EXCLUDED.not_before),
+				v2_background_jobs.created_at + INTERVAL '15 minutes'
+			),
+			updated_at=NOW()
+		RETURNING id
+	`, workspaceID, jobType, dedupeKey, raw, StatusQueued, maxAttempts, notBefore).Scan(&id)
+	return id, err
+}
+
 func (m *Manager) Start(parent context.Context, workers int) {
 	if workers <= 0 {
 		workers = 2

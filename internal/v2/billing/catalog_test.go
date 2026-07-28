@@ -62,25 +62,55 @@ func TestSettledTokenUsageConsumesBaseThenPurchasedCapacity(t *testing.T) {
 	state := quotaState{
 		baseLimit: 10_000, baseUsed: 9_500, purchasedBalance: 2_000,
 	}
-	charge := settleReservedTokens(&state, "base", 1_200)
-	if state.baseUsed != 10_000 || state.purchasedBalance != 1_301 {
+	charge := settleReservedTokens(&state, 500, 500, 1_200)
+	if state.baseUsed != 10_000 || state.purchasedBalance != 2_300 {
 		t.Fatalf("unexpected settled quota: %+v", state)
 	}
-	if charge.actual != 1_200 || charge.charged != 1_200 || charge.base != 501 || charge.purchased != 699 {
+	if charge.actual != 1_200 || charge.charged != 1_200 || charge.base != 1_000 || charge.purchased != 200 {
 		t.Fatalf("unexpected token charge: %+v", charge)
 	}
 }
 
 func TestSettledTokenUsageClampsAtAvailableCapacity(t *testing.T) {
 	state := quotaState{
-		baseLimit: 1_000, baseUsed: 901, purchasedBalance: 100,
+		baseLimit: 1_000, baseUsed: 1_000, purchasedBalance: 0,
 	}
-	charge := settleReservedTokens(&state, "base", 500)
+	charge := settleReservedTokens(&state, 100, 100, 500)
 	if state.baseUsed != 1_000 || state.purchasedBalance != 0 {
 		t.Fatalf("unexpected exhausted quota: %+v", state)
 	}
 	if charge.actual != 500 || charge.charged != 200 {
 		t.Fatalf("unexpected clamped charge: %+v", charge)
+	}
+}
+
+func TestSettledTokenUsageRefundsUnusedReservation(t *testing.T) {
+	state := quotaState{
+		baseLimit: 100_000, baseUsed: 75_000, purchasedBalance: 0,
+	}
+	charge := settleReservedTokens(&state, 75_000, 0, 2_400)
+	if state.baseUsed != 2_400 || state.purchasedBalance != 0 {
+		t.Fatalf("expected unused reservation to be refunded: %+v", state)
+	}
+	if charge.actual != 2_400 || charge.charged != 2_400 || charge.base != 2_400 {
+		t.Fatalf("unexpected token charge: %+v", charge)
+	}
+}
+
+func TestQuotaReservationPreventsParallelOvercommit(t *testing.T) {
+	state := quotaState{
+		baseLimit: 100_000, baseUsed: 92_000, purchasedBalance: 2_000,
+	}
+	first := reserveQuotaTokens(&state, maxChatReservationTokens)
+	second := reserveQuotaTokens(&state, maxChatReservationTokens)
+	if first.total != 10_000 || first.base != 8_000 || first.purchased != 2_000 {
+		t.Fatalf("unexpected first reservation: %+v", first)
+	}
+	if second.total != 0 {
+		t.Fatalf("expected parallel request to be blocked, got %+v", second)
+	}
+	if state.baseUsed != 100_000 || state.purchasedBalance != 0 {
+		t.Fatalf("unexpected reserved state: %+v", state)
 	}
 }
 

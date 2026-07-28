@@ -42,7 +42,8 @@ func (h *Handler) Transcriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	if err := security.ValidateAudio(header.Filename, header.Size, maxAudioFileBytes); err != nil {
+	content, _, err := security.InspectAudio(header.Filename, header.Size, maxAudioFileBytes, file)
+	if err != nil {
 		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
@@ -55,7 +56,7 @@ func (h *Handler) Transcriptions(w http.ResponseWriter, r *http.Request) {
 	userID, _ := auth.UserIDFromContext(r.Context())
 	workspaceID := h.workspaceID(r, userID)
 	aiCtx := ai.WithScenario(r.Context(), workspaceID, userID, "audio_transcription", "v1")
-	text, err := h.ai.TranscribeAudio(aiCtx, security.SafeFilename(header.Filename), language, file)
+	text, err := h.ai.TranscribeAudio(aiCtx, security.SafeFilename(header.Filename), language, content)
 	if err != nil {
 		api.WriteAIError(w, err, http.StatusBadGateway, "audio_transcription_failed")
 		return

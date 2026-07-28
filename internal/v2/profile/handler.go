@@ -911,7 +911,7 @@ func validOptionalHTTPURL(value string) bool {
 
 func validSettings(value Settings) bool {
 	return oneOf(value.InterfaceLanguage, "ru", "en") &&
-		oneOf(value.Theme, "dark", "system") &&
+		oneOf(value.Theme, "light", "dark", "system") &&
 		oneOf(value.DateFormat, "DD.MM.YYYY", "YYYY-MM-DD", "MM/DD/YYYY") &&
 		oneOf(value.AILanguage, "ru", "en")
 }

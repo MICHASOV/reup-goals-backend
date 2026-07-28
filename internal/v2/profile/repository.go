@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/lib/pq"
 
@@ -58,31 +59,52 @@ func (s *Store) Overview(ctx context.Context, userID int, checkoutAvailable bool
 		return Overview{}, err
 	}
 
+	type overviewPart struct {
+		kind         string
+		account      Account
+		memberCount  int
+		subscription SubscriptionSummary
+		err          error
+	}
+	parts := make(chan overviewPart, 3)
+	go func() {
+		var account Account
+		loadErr := s.dbx.QueryRowContext(ctx, `
+			SELECT id, email, name, avatar_url, company_role FROM users WHERE id=$1
+		`, userID).Scan(&account.ID, &account.Email, &account.Name, &account.AvatarURL, &account.CompanyRole)
+		parts <- overviewPart{kind: "account", account: account, err: loadErr}
+	}()
+	go func() {
+		var memberCount int
+		loadErr := s.dbx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM workspace_memberships
+			WHERE workspace_id=$1 AND status='active'
+		`, workspace.ID).Scan(&memberCount)
+		parts <- overviewPart{kind: "members", memberCount: memberCount, err: loadErr}
+	}()
+	go func() {
+		subscription, loadErr := s.Subscription(ctx, workspace.ID, workspace.OwnerUserID, checkoutAvailable)
+		parts <- overviewPart{kind: "subscription", subscription: subscription, err: loadErr}
+	}()
+
 	var account Account
-	if err := s.dbx.QueryRowContext(ctx, `
-		SELECT id, email, name, avatar_url, company_role FROM users WHERE id=$1
-	`, userID).Scan(&account.ID, &account.Email, &account.Name, &account.AvatarURL, &account.CompanyRole); err != nil {
-		return Overview{}, err
-	}
-
 	var memberCount int
-	if err := s.dbx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM workspace_memberships
-		WHERE workspace_id=$1 AND status='active'
-	`, workspace.ID).Scan(&memberCount); err != nil {
-		return Overview{}, err
+	var subscription SubscriptionSummary
+	for range 3 {
+		part := <-parts
+		if part.err != nil {
+			return Overview{}, part.err
+		}
+		switch part.kind {
+		case "account":
+			account = part.account
+		case "members":
+			memberCount = part.memberCount
+		case "subscription":
+			subscription = part.subscription
+		}
 	}
-
-	subscription, err := s.Subscription(ctx, workspace.ID, workspace.OwnerUserID, checkoutAvailable)
-	if err != nil {
-		return Overview{}, err
-	}
-	if err := s.dbx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM workspace_memberships
-		WHERE workspace_id=$1 AND status='active'
-	`, workspace.ID).Scan(&subscription.SeatsUsed); err != nil {
-		return Overview{}, err
-	}
+	subscription.SeatsUsed = memberCount
 
 	displayName := workspace.Name
 	if workspace.DisplayName != nil && strings.TrimSpace(*workspace.DisplayName) != "" {
@@ -364,8 +386,14 @@ func (s *Store) Invite(
 	if !pendingExists && memberLimit > 0 {
 		var seatsUsed int
 		if err := tx.QueryRowContext(ctx, `
-				SELECT COUNT(*) FROM workspace_memberships
-				WHERE workspace_id=$1 AND status='active'
+				SELECT
+					(SELECT COUNT(*) FROM workspace_memberships
+					 WHERE workspace_id=$1 AND status='active')
+					+
+					(SELECT COUNT(*) FROM workspace_invitations
+					 WHERE workspace_id=$1
+					   AND status='pending'
+					   AND expires_at>NOW())
 			`, workspaceID).Scan(&seatsUsed); err != nil {
 			return Member{}, "", err
 		}
@@ -803,34 +831,61 @@ func (s *Store) CreateInvoice(
 	} else if request.OrderKind != billing.OrderSubscription {
 		return Invoice{}, errors.New("billing_order_kind_invalid")
 	}
+	request.IdempotencyKey = normalizeInvoiceIdempotencyKey(
+		request.IdempotencyKey,
+		workspaceID,
+		userID,
+		plan.Code,
+		request.BillingPeriod,
+		request.OrderKind,
+	)
+	timezone, location, err := s.workspaceBillingLocation(ctx, workspaceID)
+	if err != nil {
+		return Invoice{}, err
+	}
 
 	tx, err := s.dbx.BeginTx(ctx, nil)
 	if err != nil {
 		return Invoice{}, err
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, workspaceID); err != nil {
+		return Invoice{}, err
+	}
+	existing, err := invoiceByIdempotencyKey(ctx, tx, workspaceID, request.IdempotencyKey)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return Invoice{}, err
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Invoice{}, err
+	}
 	var orderID int64
 	if err := tx.QueryRowContext(ctx, `
 		INSERT INTO workspace_billing_orders (
 			workspace_id, created_by, order_kind, plan_code, billing_period,
-			amount, currency, status, provider
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,'waiting','manual')
+			amount, currency, status, provider, idempotency_key
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,'waiting','manual',$8)
 		RETURNING id
-	`, workspaceID, userID, request.OrderKind, plan.Code, request.BillingPeriod, amount, plan.Currency).Scan(&orderID); err != nil {
+	`, workspaceID, userID, request.OrderKind, plan.Code, request.BillingPeriod, amount, plan.Currency, request.IdempotencyKey).Scan(&orderID); err != nil {
 		return Invoice{}, err
 	}
 	var id int64
 	if err := tx.QueryRowContext(ctx, `SELECT nextval('workspace_billing_invoices_id_seq')`).Scan(&id); err != nil {
 		return Invoice{}, err
 	}
-	now := time.Now().UTC()
-	dueAt := now.Add(5 * 24 * time.Hour)
+	now := time.Now().In(location)
+	dueAt := now.AddDate(0, 0, 5)
 	number := fmt.Sprintf("REUP-%d-%06d", now.Year(), id)
 	invoice := Invoice{
 		ID: id, OrderID: &orderID, Number: number, OrderKind: request.OrderKind,
 		PlanCode: plan.Code, BillingPeriod: request.BillingPeriod, Description: description,
 		TaxLabel: seller.TaxLabel, Amount: amount, Currency: plan.Currency, Status: "waiting",
 		RecipientEmail: organization.AccountingEmail, IssuedAt: now, DueAt: dueAt,
+		IssuedDate: now.Format("02.01.2006"), DueDate: dueAt.Format("02.01.2006"),
+		Timezone: timezone,
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO workspace_billing_invoices (
@@ -845,7 +900,10 @@ func (s *Store) CreateInvoice(
 		description, seller.TaxLabel, sellerSnapshot); err != nil {
 		return Invoice{}, err
 	}
-	pdf := BuildInvoicePDF(invoice, seller, *organization)
+	pdf, err := BuildInvoicePDF(invoice, seller, *organization)
+	if err != nil {
+		return Invoice{}, err
+	}
 	var documentID int64
 	if err := tx.QueryRowContext(ctx, `
 		INSERT INTO workspace_billing_documents (
@@ -869,8 +927,10 @@ func (s *Store) Invoices(ctx context.Context, workspaceID int) ([]Invoice, error
 			invoice.amount, invoice.currency,
 			CASE WHEN invoice.status='waiting' AND invoice.due_at <= NOW() THEN 'expired' ELSE invoice.status END,
 			invoice.recipient_email, invoice.issued_at, invoice.due_at, invoice.paid_at, invoice.emailed_at,
+			COALESCE(NULLIF(workspace.timezone, ''), 'Europe/Moscow'),
 			document.id
 		FROM workspace_billing_invoices invoice
+		JOIN workspaces workspace ON workspace.id=invoice.workspace_id
 		LEFT JOIN LATERAL (
 			SELECT id FROM workspace_billing_documents
 			WHERE invoice_id=invoice.id AND kind='invoice'
@@ -891,9 +951,11 @@ func (s *Store) Invoices(ctx context.Context, workspaceID int) ([]Invoice, error
 		if err := rows.Scan(&item.ID, &orderID, &item.Number, &item.OrderKind,
 			&item.PlanCode, &item.BillingPeriod, &item.Description, &item.TaxLabel,
 			&item.Amount, &item.Currency, &item.Status,
-			&item.RecipientEmail, &item.IssuedAt, &item.DueAt, &paidAt, &emailedAt, &documentID); err != nil {
+			&item.RecipientEmail, &item.IssuedAt, &item.DueAt, &paidAt, &emailedAt,
+			&item.Timezone, &documentID); err != nil {
 			return nil, err
 		}
+		setInvoiceCalendarDates(&item)
 		if orderID.Valid {
 			value := orderID.Int64
 			item.OrderID = &value
@@ -954,18 +1016,30 @@ func (s *Store) DocumentContent(ctx context.Context, workspaceID int, documentID
 func (s *Store) MarkInvoiceEmailed(ctx context.Context, workspaceID int, invoiceID int64) (Invoice, error) {
 	var item Invoice
 	var paidAt, emailedAt sql.NullTime
-	var orderID sql.NullInt64
+	var orderID, documentID sql.NullInt64
 	err := s.dbx.QueryRowContext(ctx, `
-		UPDATE workspace_billing_invoices SET emailed_at=NOW(), updated_at=NOW()
-		WHERE id=$1 AND workspace_id=$2
-		RETURNING id, order_id, number, order_kind, plan_code, billing_period,
-			description, tax_label, amount, currency, status, recipient_email,
-			issued_at, due_at, paid_at, emailed_at
+		WITH updated AS (
+			UPDATE workspace_billing_invoices SET emailed_at=NOW(), updated_at=NOW()
+			WHERE id=$1 AND workspace_id=$2
+			RETURNING *
+		)
+		SELECT invoice.id, invoice.order_id, invoice.number, invoice.order_kind,
+			invoice.plan_code, invoice.billing_period, invoice.description, invoice.tax_label,
+			invoice.amount, invoice.currency, invoice.status, invoice.recipient_email,
+			invoice.issued_at, invoice.due_at, invoice.paid_at, invoice.emailed_at,
+			COALESCE(NULLIF(workspace.timezone, ''), 'Europe/Moscow'), document.id
+		FROM updated invoice
+		JOIN workspaces workspace ON workspace.id=invoice.workspace_id
+		LEFT JOIN LATERAL (
+			SELECT id FROM workspace_billing_documents
+			WHERE invoice_id=invoice.id AND kind='invoice'
+			ORDER BY created_at DESC LIMIT 1
+		) document ON TRUE
 	`, invoiceID, workspaceID).Scan(
 		&item.ID, &orderID, &item.Number, &item.OrderKind, &item.PlanCode,
 		&item.BillingPeriod, &item.Description, &item.TaxLabel, &item.Amount,
 		&item.Currency, &item.Status, &item.RecipientEmail, &item.IssuedAt,
-		&item.DueAt, &paidAt, &emailedAt,
+		&item.DueAt, &paidAt, &emailedAt, &item.Timezone, &documentID,
 	)
 	if orderID.Valid {
 		value := orderID.Int64
@@ -973,7 +1047,108 @@ func (s *Store) MarkInvoiceEmailed(ctx context.Context, workspaceID int, invoice
 	}
 	item.PaidAt = nullableTime(paidAt)
 	item.EmailedAt = nullableTime(emailedAt)
+	if documentID.Valid {
+		value := documentID.Int64
+		item.DocumentID = &value
+	}
+	setInvoiceCalendarDates(&item)
 	return item, err
+}
+
+type invoiceRowScanner interface {
+	Scan(dest ...any) error
+}
+
+func invoiceByIdempotencyKey(ctx context.Context, tx *sql.Tx, workspaceID int, key string) (Invoice, error) {
+	row := tx.QueryRowContext(ctx, `
+		SELECT invoice.id, invoice.order_id, invoice.number, invoice.order_kind,
+			invoice.plan_code, invoice.billing_period, invoice.description, invoice.tax_label,
+			invoice.amount, invoice.currency,
+			CASE WHEN invoice.status='waiting' AND invoice.due_at <= NOW() THEN 'expired' ELSE invoice.status END,
+			invoice.recipient_email, invoice.issued_at, invoice.due_at, invoice.paid_at, invoice.emailed_at,
+			COALESCE(NULLIF(workspace.timezone, ''), 'Europe/Moscow'), document.id
+		FROM workspace_billing_orders billing_order
+		JOIN workspace_billing_invoices invoice ON invoice.order_id=billing_order.id
+		JOIN workspaces workspace ON workspace.id=billing_order.workspace_id
+		LEFT JOIN LATERAL (
+			SELECT id FROM workspace_billing_documents
+			WHERE invoice_id=invoice.id AND kind='invoice'
+			ORDER BY created_at DESC LIMIT 1
+		) document ON TRUE
+		WHERE billing_order.workspace_id=$1 AND billing_order.idempotency_key=$2
+		LIMIT 1
+	`, workspaceID, key)
+	return scanInvoice(row)
+}
+
+func scanInvoice(row invoiceRowScanner) (Invoice, error) {
+	var item Invoice
+	var orderID, documentID sql.NullInt64
+	var paidAt, emailedAt sql.NullTime
+	err := row.Scan(
+		&item.ID, &orderID, &item.Number, &item.OrderKind,
+		&item.PlanCode, &item.BillingPeriod, &item.Description, &item.TaxLabel,
+		&item.Amount, &item.Currency, &item.Status, &item.RecipientEmail,
+		&item.IssuedAt, &item.DueAt, &paidAt, &emailedAt, &item.Timezone, &documentID,
+	)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if orderID.Valid {
+		value := orderID.Int64
+		item.OrderID = &value
+	}
+	if documentID.Valid {
+		value := documentID.Int64
+		item.DocumentID = &value
+	}
+	item.PaidAt = nullableTime(paidAt)
+	item.EmailedAt = nullableTime(emailedAt)
+	setInvoiceCalendarDates(&item)
+	return item, nil
+}
+
+func (s *Store) workspaceBillingLocation(ctx context.Context, workspaceID int) (string, *time.Location, error) {
+	var timezone string
+	if err := s.dbx.QueryRowContext(ctx, `
+		SELECT COALESCE(NULLIF(timezone, ''), 'Europe/Moscow')
+		FROM workspaces WHERE id=$1
+	`, workspaceID).Scan(&timezone); err != nil {
+		return "", nil, err
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return "", nil, fmt.Errorf("workspace_timezone_invalid: %w", err)
+	}
+	return timezone, location, nil
+}
+
+func setInvoiceCalendarDates(invoice *Invoice) {
+	location, err := time.LoadLocation(invoice.Timezone)
+	if err != nil {
+		location = time.UTC
+	}
+	invoice.IssuedDate = invoice.IssuedAt.In(location).Format("02.01.2006")
+	invoice.DueDate = invoice.DueAt.In(location).Format("02.01.2006")
+}
+
+func normalizeInvoiceIdempotencyKey(value string, workspaceID, userID int, planCode, period, kind string) string {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		if len(value) > 128 {
+			value = value[:128]
+		}
+		return value
+	}
+	return fmt.Sprintf(
+		"legacy:%d:%d:%s:%s:%s:%d",
+		workspaceID,
+		userID,
+		planCode,
+		period,
+		kind,
+		time.Now().UTC().Unix()/120,
+	)
 }
 
 func (s *Store) Payments(ctx context.Context, workspaceID int) ([]Payment, error) {

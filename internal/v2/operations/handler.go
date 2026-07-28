@@ -48,20 +48,42 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queueStats, err := h.jobs.Stats(r.Context(), workspace.ID)
-	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "operations_queue_failed")
-		return
+	type overviewPart struct {
+		kind  string
+		value any
+		err   error
 	}
-	httpStats, err := h.httpStats(r, workspace.ID)
-	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "operations_http_failed")
-		return
-	}
-	aiStats, err := h.aiStats(r, workspace.ID)
-	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "operations_ai_failed")
-		return
+	parts := make(chan overviewPart, 3)
+	go func() {
+		value, loadErr := h.jobs.Stats(r.Context(), workspace.ID)
+		parts <- overviewPart{kind: "queue", value: value, err: loadErr}
+	}()
+	go func() {
+		value, loadErr := h.httpStats(r, workspace.ID)
+		parts <- overviewPart{kind: "http", value: value, err: loadErr}
+	}()
+	go func() {
+		value, loadErr := h.aiStats(r, workspace.ID)
+		parts <- overviewPart{kind: "ai", value: value, err: loadErr}
+	}()
+
+	var queueStats jobs.QueueStats
+	var httpStats map[string]any
+	var aiStats map[string]any
+	for range 3 {
+		part := <-parts
+		if part.err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "operations_"+part.kind+"_failed")
+			return
+		}
+		switch part.kind {
+		case "queue":
+			queueStats = part.value.(jobs.QueueStats)
+		case "http":
+			httpStats = part.value.(map[string]any)
+		case "ai":
+			aiStats = part.value.(map[string]any)
+		}
 	}
 	warnings, err := h.warnings(r, workspace.ID, queueStats)
 	if err != nil {
@@ -73,6 +95,41 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		"http":         httpStats,
 		"ai":           aiStats,
 		"queue":        queueStats,
+		"warnings":     warnings,
+		"generated_at": time.Now().UTC(),
+	})
+}
+
+func (h *Handler) Warnings(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/v2/operations/warnings" {
+		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if r.Method != http.MethodGet {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		api.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	workspace, _, err := h.workspaces.GetOrCreateDefault(r.Context(), userID)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "workspace_lookup_failed")
+		return
+	}
+	queueStats, err := h.jobs.Stats(r.Context(), workspace.ID)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "operations_queue_failed")
+		return
+	}
+	warnings, err := h.warnings(r, workspace.ID, queueStats)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "operations_warnings_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{
 		"warnings":     warnings,
 		"generated_at": time.Now().UTC(),
 	})

@@ -14,6 +14,7 @@ const (
 	attachmentWorkspaceDocument = "workspace_document"
 	attachmentWorkstream        = "workstream"
 	attachmentProject           = "project"
+	attachmentUploadedFile      = "uploaded_file"
 	maxContextAttachments       = 5
 	maxAttachmentRunes          = 12000
 )
@@ -50,6 +51,8 @@ func (s *FacilitatorService) resolveContextAttachments(
 			resolved, err = s.resolveWorkstreamAttachment(ctx, workspaceID, attachment)
 		case attachmentProject:
 			resolved, err = s.resolveProjectAttachment(ctx, workspaceID, attachment)
+		case attachmentUploadedFile:
+			resolved, err = s.resolveUploadedFile(ctx, workspaceID, attachment)
 		default:
 			return nil, ErrInvalidContextAttachment
 		}
@@ -59,6 +62,37 @@ func (s *FacilitatorService) resolveContextAttachments(
 		result = append(result, resolved)
 	}
 	return result, nil
+}
+
+func (s *FacilitatorService) resolveUploadedFile(
+	ctx context.Context,
+	workspaceID int,
+	attachment TacticsContextAttachment,
+) (TacticsResolvedAttachment, error) {
+	if attachment.ID <= 0 {
+		return TacticsResolvedAttachment{}, ErrInvalidContextAttachment
+	}
+	var filename, status string
+	err := s.store.dbx.QueryRowContext(ctx, `
+		SELECT filename, status
+		FROM strategic_openai_files
+		WHERE workspace_id=$1 AND id=$2
+	`, workspaceID, attachment.ID).Scan(&filename, &status)
+	if err != nil {
+		return TacticsResolvedAttachment{}, err
+	}
+	if status == "failed" {
+		return TacticsResolvedAttachment{}, ErrInvalidContextAttachment
+	}
+	return TacticsResolvedAttachment{
+		Type:  attachmentUploadedFile,
+		ID:    attachment.ID,
+		Label: firstNonEmpty(attachment.Label, filename),
+		Content: fmt.Sprintf(
+			"Attached file %q is available through file_search. Inspect it when it is relevant to the user's request.",
+			filename,
+		),
+	}, nil
 }
 
 func (s *FacilitatorService) resolveKnowledgeDocument(

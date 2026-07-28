@@ -421,12 +421,13 @@ func (h *Handler) facilitatorFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	if err := security.ValidateBusinessDocument(header.Filename, header.Size, maxTacticsFileBytes); err != nil {
+	content, contentType, err := security.InspectBusinessDocument(header.Filename, header.Size, maxTacticsFileBytes, file)
+	if err != nil {
 		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	filename := security.SafeFilename(header.Filename)
-	response, err := h.facilitator.UploadFile(r.Context(), workspace.ID, userID, filename, header.Header.Get("Content-Type"), header.Size, file)
+	response, err := h.facilitator.UploadFile(r.Context(), workspace.ID, userID, filename, contentType, header.Size, content)
 	if err != nil {
 		api.WriteError(w, http.StatusBadGateway, "tactics_file_upload_failed")
 		return

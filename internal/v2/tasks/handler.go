@@ -126,11 +126,12 @@ func (h *Handler) completionFile(w http.ResponseWriter, r *http.Request, workspa
 		return
 	}
 	defer file.Close()
-	if err := security.ValidateBusinessDocument(header.Filename, header.Size, maxTaskCompletionFileBytes); err != nil {
+	content, contentType, err := security.InspectBusinessDocument(header.Filename, header.Size, maxTaskCompletionFileBytes, file)
+	if err != nil {
 		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	response, err := h.completion.UploadFile(r.Context(), workspaceID, userID, security.SafeFilename(header.Filename), header.Header.Get("Content-Type"), header.Size, file)
+	response, err := h.completion.UploadFile(r.Context(), workspaceID, userID, security.SafeFilename(header.Filename), contentType, header.Size, content)
 	if err != nil {
 		api.WriteError(w, http.StatusBadGateway, "task_completion_file_upload_failed")
 		return
