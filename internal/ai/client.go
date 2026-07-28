@@ -216,6 +216,8 @@ type ResponseContextOptions struct {
 	RequestTimeout       time.Duration
 	Model                string
 	ReasoningEffort      string
+	JSONSchemaName       string
+	JSONSchema           map[string]any
 }
 
 type OpenAIFile struct {
@@ -283,11 +285,30 @@ func (c *OpenAIClient) GenerateTextNative(ctx context.Context, instructions stri
 }
 
 func (c *OpenAIClient) GenerateJSONNative(ctx context.Context, instructions string, input string, options ResponseContextOptions) (TextResult, error) {
-	return c.generateResponseTextWithOptions(ctx, instructions, "Return valid JSON only.\n\nInput JSON:\n"+input, map[string]interface{}{
-		"format": map[string]string{
-			"type": "json_object",
-		},
-	}, options)
+	return c.generateResponseTextWithOptions(
+		ctx,
+		instructions,
+		"Return valid JSON only.\n\nInput JSON:\n"+input,
+		jsonNativeTextFormat(options),
+		options,
+	)
+}
+
+func jsonNativeTextFormat(options ResponseContextOptions) map[string]interface{} {
+	format := map[string]any{"type": "json_object"}
+	if len(options.JSONSchema) > 0 {
+		name := strings.TrimSpace(options.JSONSchemaName)
+		if name == "" {
+			name = "structured_response"
+		}
+		format = map[string]any{
+			"type":   "json_schema",
+			"name":   name,
+			"strict": true,
+			"schema": options.JSONSchema,
+		}
+	}
+	return map[string]interface{}{"format": format}
 }
 
 func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, language string, audio io.Reader) (text string, resultErr error) {

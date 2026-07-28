@@ -71,11 +71,50 @@ func TestRequestedTacticsDraftTypeUsesHintAndMessageFallback(t *testing.T) {
 }
 
 func TestHasTacticsDraftTypeRequiresConfirmableCreate(t *testing.T) {
-	if hasTacticsDraftType([]TacticsDraftChange{{Apply: false, Operation: "create", EntityType: EntityProject}}, EntityProject) {
-		t.Fatal("non-applied draft must not satisfy the proposal contract")
-	}
 	if !hasTacticsDraftType([]TacticsDraftChange{{Apply: true, Operation: "create", EntityType: EntityProject}}, EntityProject) {
 		t.Fatal("confirmable project create must satisfy the proposal contract")
+	}
+}
+
+func TestParseRequiredDraftTreatsApplyAsProposalNotMutationPermission(t *testing.T) {
+	raw := `{
+		"message":"Подготовил черновик проекта для подтверждения.",
+		"session_status":"in_progress",
+		"status_reason":"Draft requested.",
+		"current_focus":{"entity_type":"project","entity_id":null,"title":"Эксперимент","research_goal":"Проверить канал"},
+		"decisions_detected":[],
+		"open_questions":[],
+		"needs_strategy_review":false,
+		"strategy_review_reason":"",
+		"draft_changes":[{
+			"apply":false,
+			"operation":"create",
+			"entity_type":"project",
+			"title":"Легальный paid acquisition эксперимент"
+		}]
+	}`
+	output, err := parseTacticsFacilitatorOutputForDraft(raw, EntityProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasTacticsDraftType(output.DraftChanges, EntityProject) {
+		t.Fatalf("explicit draft must remain confirmable: %#v", output.DraftChanges)
+	}
+}
+
+func TestTacticsProposalSchemaRequiresRequestedEntity(t *testing.T) {
+	schema := tacticsFacilitatorOutputSchema(EntityProject)
+	properties := schema["properties"].(map[string]any)
+	drafts := properties["draft_changes"].(map[string]any)
+	if drafts["minItems"] != 1 {
+		t.Fatalf("proposal schema must require a draft: %#v", drafts)
+	}
+	item := drafts["items"].(map[string]any)
+	itemProperties := item["properties"].(map[string]any)
+	entityType := itemProperties["entity_type"].(map[string]any)
+	values := entityType["enum"].([]string)
+	if len(values) != 1 || values[0] != EntityProject {
+		t.Fatalf("proposal schema entity type = %#v", values)
 	}
 }
 

@@ -259,6 +259,8 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		PromptCacheKey:       openAISession.PromptCacheKey,
 		MaxFileSearchResults: 8,
 		MaxOutputTokens:      2600,
+		JSONSchemaName:       tacticsResponseSchemaName(requiredDraftType),
+		JSONSchema:           tacticsFacilitatorOutputSchema(requiredDraftType),
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil && strings.TrimSpace(openAISession.ConversationID) != "" && ai.IsConversationStateError(err) {
@@ -271,6 +273,8 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			PromptCacheKey:       openAISession.PromptCacheKey,
 			MaxFileSearchResults: 8,
 			MaxOutputTokens:      2600,
+			JSONSchemaName:       tacticsResponseSchemaName(requiredDraftType),
+			JSONSchema:           tacticsFacilitatorOutputSchema(requiredDraftType),
 		})
 		duration = time.Since(started).Milliseconds()
 	}
@@ -285,7 +289,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		_ = s.store.UpdateOpenAITacticsScopeConversationID(ctx, workspaceID, conversationScope, result.ConversationID)
 	}
 
-	modelOutput, parseErr := parseTacticsFacilitatorOutput(result.Text)
+	modelOutput, parseErr := parseTacticsFacilitatorOutputForDraft(result.Text, requiredDraftType)
 	if parseErr != nil {
 		s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
 		started = time.Now()
@@ -297,10 +301,12 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			PromptCacheKey:       openAISession.PromptCacheKey,
 			MaxFileSearchResults: 8,
 			MaxOutputTokens:      2600,
+			JSONSchemaName:       tacticsResponseSchemaName(requiredDraftType),
+			JSONSchema:           tacticsFacilitatorOutputSchema(requiredDraftType),
 		})
 		duration = time.Since(started).Milliseconds()
 		if err == nil {
-			modelOutput, parseErr = parseTacticsFacilitatorOutput(result.Text)
+			modelOutput, parseErr = parseTacticsFacilitatorOutputForDraft(result.Text, requiredDraftType)
 		}
 		if err != nil || parseErr != nil {
 			errorText := "tactics facilitator retry failed"
@@ -333,10 +339,12 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			PromptCacheKey:       openAISession.PromptCacheKey,
 			MaxFileSearchResults: 8,
 			MaxOutputTokens:      2200,
+			JSONSchemaName:       tacticsResponseSchemaName(requiredDraftType),
+			JSONSchema:           tacticsFacilitatorOutputSchema(requiredDraftType),
 		})
 		duration = time.Since(started).Milliseconds()
 		if err == nil {
-			modelOutput, parseErr = parseTacticsFacilitatorOutput(result.Text)
+			modelOutput, parseErr = parseTacticsFacilitatorOutputForDraft(result.Text, requiredDraftType)
 		}
 		if err != nil || parseErr != nil || !hasTacticsDraftType(modelOutput.DraftChanges, requiredDraftType) {
 			errorText := "advisor_proposal_contract_failed"
@@ -629,6 +637,10 @@ func compactTacticsReadinessFeedback(run *TacticsReadinessRun) any {
 }
 
 func parseTacticsFacilitatorOutput(raw string) (tacticsFacilitatorModelOutput, error) {
+	return parseTacticsFacilitatorOutputForDraft(raw, "")
+}
+
+func parseTacticsFacilitatorOutputForDraft(raw string, requiredDraftType string) (tacticsFacilitatorModelOutput, error) {
 	var output tacticsFacilitatorModelOutput
 	clean := strings.TrimSpace(raw)
 	for depth := 0; depth < 2 && strings.HasPrefix(clean, `"`); depth++ {
@@ -671,6 +683,18 @@ func parseTacticsFacilitatorOutput(raw string) (tacticsFacilitatorModelOutput, e
 	output.DecisionsDetected = cleanTacticsStrings(output.DecisionsDetected, 12)
 	output.OpenQuestions = cleanTacticsStrings(output.OpenQuestions, 20)
 	output.StrategyReviewReason = strings.TrimSpace(output.StrategyReviewReason)
+	if requiredDraftType != "" {
+		for index := range output.DraftChanges {
+			change := &output.DraftChanges[index]
+			if strings.EqualFold(strings.TrimSpace(change.EntityType), requiredDraftType) &&
+				strings.EqualFold(strings.TrimSpace(change.Operation), "create") &&
+				strings.TrimSpace(change.Title) != "" {
+				// Every draft change still requires the dedicated confirmation
+				// endpoint, so this flag cannot authorize an automatic mutation.
+				change.Apply = true
+			}
+		}
+	}
 	output.DraftChanges = normalizeTacticsDraftChanges(output.DraftChanges)
 	return output, nil
 }

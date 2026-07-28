@@ -424,7 +424,13 @@ func (s *Store) OpenAITacticsScopeSession(ctx context.Context, workspaceID int, 
 		compactThreshold = 120000
 	}
 	scopeType, scopeID := tacticsScopeKey(scope)
-	promptCacheKey := fmt.Sprintf("reupgoals-tactics-%d-%s-%d-v1", workspaceID, scopeType, scopeID)
+	promptCacheKey := fmt.Sprintf(
+		"reupgoals-tactics-%d-%s-%d-%s",
+		workspaceID,
+		scopeType,
+		scopeID,
+		TacticsFacilitatorPromptVersion,
+	)
 	var item TacticsOpenAISession
 	err := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_tactics_scope_sessions (
@@ -433,6 +439,14 @@ func (s *Store) OpenAITacticsScopeSession(ctx context.Context, workspaceID int, 
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (workspace_id, scope_type, scope_id) DO UPDATE SET
 			compact_threshold=EXCLUDED.compact_threshold,
+			conversation_id=CASE
+				WHEN v2_tactics_scope_sessions.prompt_cache_key <> EXCLUDED.prompt_cache_key THEN ''
+				ELSE v2_tactics_scope_sessions.conversation_id
+			END,
+			previous_response_id=CASE
+				WHEN v2_tactics_scope_sessions.prompt_cache_key <> EXCLUDED.prompt_cache_key THEN ''
+				ELSE v2_tactics_scope_sessions.previous_response_id
+			END,
 			prompt_cache_key=EXCLUDED.prompt_cache_key,
 			context_fingerprint=EXCLUDED.context_fingerprint,
 			updated_at=NOW()

@@ -46,7 +46,7 @@ const (
 	SourceManual       = "manual"
 	SourceAISuggestion = "ai_suggestion"
 
-	TacticsFacilitatorPromptVersion = "tactics_advisor_openai_native_v0_2_2"
+	TacticsFacilitatorPromptVersion = "tactics_advisor_openai_native_v0_2_3"
 	TacticsReadinessPromptVersion   = "tactics_quality_readiness_auditor_v0_1_2"
 
 	FacilitatorStatusInProgress     = "in_progress"
