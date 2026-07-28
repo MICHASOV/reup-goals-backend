@@ -246,7 +246,7 @@ func writeBankDetails(document *fpdf.Fpdf, seller SellerProfile) {
 	const (
 		innLabelWidth = 14.0
 		innValueWidth = 40.0
-		kppLabelWidth = 12.0
+		kppLabelWidth = 14.0
 		kppValueWidth = leftWidth - innLabelWidth - innValueWidth - kppLabelWidth
 	)
 	drawInvoiceCell(document, x, bottomY, innLabelWidth, rowHeight, "ИНН", "L", true)
