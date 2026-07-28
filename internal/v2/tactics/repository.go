@@ -23,7 +23,7 @@ func NewStore(dbx *sql.DB) *Store {
 }
 
 func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (CurrentResponse, error) {
-	strategy, err := s.activeStrategy(ctx, workspaceID)
+	strategy, course, plan, err := s.currentHeader(ctx, workspaceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CurrentResponse{
 			TacticalPlan: nil,
@@ -37,20 +37,20 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	if err != nil {
 		return CurrentResponse{}, err
 	}
-	course, courseErr := s.activeCourse(ctx, workspaceID, strategy.ID)
-	if courseErr != nil && !errors.Is(courseErr, sql.ErrNoRows) {
-		return CurrentResponse{}, courseErr
+	if plan == nil {
+		createdPlan, createErr := s.getOrCreatePlan(ctx, workspaceID, userID, strategy.ID)
+		if createErr != nil {
+			return CurrentResponse{}, createErr
+		}
+		plan = &createdPlan
 	}
-
-	plan, err := s.getOrCreatePlan(ctx, workspaceID, userID, strategy.ID)
-	if err != nil {
-		return CurrentResponse{}, err
-	}
-	if courseErr == nil && (plan.CourseID == nil || *plan.CourseID != course.ID) {
-		plan, err = s.attachActiveCourse(ctx, workspaceID, plan)
+	if course != nil && (plan.CourseID == nil || *plan.CourseID != course.ID) {
+		attachedPlan, attachErr := s.attachActiveCourse(ctx, workspaceID, *plan)
+		err = attachErr
 		if err != nil {
 			return CurrentResponse{}, err
 		}
+		plan = &attachedPlan
 	}
 
 	type currentPart struct {
@@ -128,13 +128,13 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	coverage.Opportunities = uncoveredOpportunities(opportunities)
 
 	response := CurrentResponse{
-		TacticalPlan: &plan,
+		TacticalPlan: plan,
 		Strategy:     &strategy,
 		Workstreams:  workstreams,
 		Uncovered:    coverage,
 	}
-	if courseErr == nil {
-		response.Course = &course
+	if course != nil {
+		response.Course = course
 	} else {
 		response.Reason = "no_active_course"
 		response.Message = "Для создания тактики нужен активный курс."
@@ -807,6 +807,73 @@ func (s *Store) activeStrategy(ctx context.Context, workspaceID int) (StrategySu
 		LIMIT 1
 	`, workspaceID).Scan(&strategy.ID, &strategy.Status, &strategy.Title, &strategy.Summary, &strategy.Version, &strategy.UpdatedAt)
 	return strategy, err
+}
+
+func (s *Store) currentHeader(ctx context.Context, workspaceID int) (StrategySummary, *CourseSummary, *TacticalPlan, error) {
+	var strategyJSON string
+	var courseJSON sql.NullString
+	var planJSON sql.NullString
+	err := s.dbx.QueryRowContext(ctx, `
+		WITH active_strategy AS (
+			SELECT id, status, title, summary, version, updated_at::TEXT
+			FROM v2_strategies
+			WHERE workspace_id=$1 AND status='active' AND archived_at IS NULL
+			ORDER BY version DESC, created_at DESC
+			LIMIT 1
+		)
+		SELECT to_jsonb(active_strategy)::TEXT,
+			to_jsonb(active_course)::TEXT,
+			to_jsonb(active_plan)::TEXT
+		FROM active_strategy
+		LEFT JOIN LATERAL (
+			SELECT id, strategy_id, status, title, direction, strategic_goal, meaning,
+				horizon, horizon_unit, start_date::TEXT, end_date::TEXT, key_metric,
+				success_criterion, updated_at, activated_at
+			FROM v2_courses
+			WHERE workspace_id=$1
+				AND strategy_id=active_strategy.id
+				AND status='active'
+				AND archived_at IS NULL
+			ORDER BY updated_at DESC, id DESC
+			LIMIT 1
+		) active_course ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT id, workspace_id, strategy_id, course_id, status, revision,
+				activated_revision, activation_readiness_run_id, title, summary,
+				source, created_by, created_at, updated_at, activated_at
+			FROM v2_tactical_plans
+			WHERE workspace_id=$1
+				AND strategy_id=active_strategy.id
+				AND archived_at IS NULL
+			ORDER BY updated_at DESC, id DESC
+			LIMIT 1
+		) active_plan ON TRUE
+	`, workspaceID).Scan(&strategyJSON, &courseJSON, &planJSON)
+	if err != nil {
+		return StrategySummary{}, nil, nil, err
+	}
+
+	var strategy StrategySummary
+	if err := json.Unmarshal([]byte(strategyJSON), &strategy); err != nil {
+		return StrategySummary{}, nil, nil, fmt.Errorf("decode tactics strategy header: %w", err)
+	}
+	var course *CourseSummary
+	if courseJSON.Valid && courseJSON.String != "null" {
+		var value CourseSummary
+		if err := json.Unmarshal([]byte(courseJSON.String), &value); err != nil {
+			return StrategySummary{}, nil, nil, fmt.Errorf("decode tactics course header: %w", err)
+		}
+		course = &value
+	}
+	var plan *TacticalPlan
+	if planJSON.Valid && planJSON.String != "null" {
+		var value TacticalPlan
+		if err := json.Unmarshal([]byte(planJSON.String), &value); err != nil {
+			return StrategySummary{}, nil, nil, fmt.Errorf("decode tactics plan header: %w", err)
+		}
+		plan = &value
+	}
+	return strategy, course, plan, nil
 }
 
 func (s *Store) activeCourse(ctx context.Context, workspaceID int, strategyID int) (CourseSummary, error) {
