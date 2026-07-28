@@ -30,10 +30,7 @@ func TestConnStringEscapesCredentials(t *testing.T) {
 	if parsed.Query().Get("sslmode") != "verify-full" {
 		t.Fatalf("expected verify-full, got %q", parsed.Query().Get("sslmode"))
 	}
-	if parsed.Query().Get("connect_timeout") != "5" ||
-		parsed.Query().Get("keepalives_idle") != "30" ||
-		parsed.Query().Get("keepalives_interval") != "10" ||
-		parsed.Query().Get("keepalives_count") != "3" {
+	if parsed.Query().Get("connect_timeout") != "5" {
 		t.Fatalf("database liveness options are missing: %s", parsed.RawQuery)
 	}
 }

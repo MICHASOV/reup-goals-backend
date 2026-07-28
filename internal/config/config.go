@@ -440,10 +440,6 @@ func (c *Config) ConnString() string {
 	query := connection.Query()
 	query.Set("sslmode", c.DBSSLMode)
 	query.Set("connect_timeout", "5")
-	query.Set("keepalives", "1")
-	query.Set("keepalives_idle", "30")
-	query.Set("keepalives_interval", "10")
-	query.Set("keepalives_count", "3")
 	connection.RawQuery = query.Encode()
 	return connection.String()
 }
