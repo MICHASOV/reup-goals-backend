@@ -131,6 +131,24 @@ func TestBuildRequestedProjectDraftUsesAdvisorContentAndActiveWorkstream(t *test
 	}
 }
 
+func TestRecoverTacticsFacilitatorOutputAvoidsSerializedPayload(t *testing.T) {
+	state := TacticsFacilitatorState{
+		Session: TacticsSessionState{
+			OpenQuestions: []string{"Какой baseline используется?"},
+		},
+	}
+	output := recoverTacticsFacilitatorOutput(`{"message":`, state)
+	if output.Message == "" || strings.HasPrefix(output.Message, "{") {
+		t.Fatalf("expected safe user-facing message, got %q", output.Message)
+	}
+	if output.StatusReason != "The advisor response was recovered locally without an additional AI request." {
+		t.Fatalf("unexpected status reason: %q", output.StatusReason)
+	}
+	if len(output.OpenQuestions) != 1 || output.OpenQuestions[0] != "Какой baseline используется?" {
+		t.Fatalf("expected existing open questions to be preserved: %#v", output.OpenQuestions)
+	}
+}
+
 func TestParseTacticsFacilitatorOutput(t *testing.T) {
 	raw := `{
 		"message":"Проверим **механизм изменения**【 】, а не список задач.",

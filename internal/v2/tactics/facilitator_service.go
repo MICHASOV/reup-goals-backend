@@ -285,36 +285,11 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		_ = s.store.UpdateOpenAITacticsScopeConversationID(ctx, workspaceID, conversationScope, result.ConversationID)
 	}
 
+	aiRunNote := ""
 	modelOutput, parseErr := parseTacticsFacilitatorOutputForDraft(result.Text, requiredDraftType)
 	if parseErr != nil {
-		s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
-		started = time.Now()
-		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, "Repair your previous response. Return valid JSON matching the required output contract. The message field must contain natural user-facing prose, never JSON or a serialized object. Preserve the intended meaning and do not ask the user to repeat anything.", ai.ResponseContextOptions{
-			UseConversation:      true,
-			ConversationID:       result.ConversationID,
-			VectorStoreIDs:       vectorStoreIDs,
-			CompactThreshold:     openAISession.CompactThreshold,
-			PromptCacheKey:       openAISession.PromptCacheKey,
-			MaxFileSearchResults: 8,
-			MaxOutputTokens:      2600,
-		})
-		duration = time.Since(started).Milliseconds()
-		if err == nil {
-			modelOutput, parseErr = parseTacticsFacilitatorOutputForDraft(result.Text, requiredDraftType)
-		}
-		if err != nil || parseErr != nil {
-			errorText := "tactics facilitator retry failed"
-			if err != nil {
-				errorText = err.Error()
-			} else if parseErr != nil {
-				errorText = parseErr.Error()
-			}
-			s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
-			if ai.IsCallRejected(err) {
-				return TacticsFacilitatorMessageResponse{}, err
-			}
-			return s.fallbackResponse(ctx, workspaceID, userMessageID, state, conversationScope, personalThread), nil
-		}
+		aiRunNote = "recovered_output_contract: " + parseErr.Error()
+		modelOutput = recoverTacticsFacilitatorOutput(result.Text, state)
 	}
 	if requiredDraftType != "" && !hasTacticsDraftType(modelOutput.DraftChanges, requiredDraftType) {
 		modelOutput.DraftChanges = append(
@@ -322,7 +297,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			buildRequestedTacticsDraft(requiredDraftType, message, modelOutput, contextScope, state),
 		)
 	}
-	s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", aiRunNote)
 
 	assistantMessage := cleanTacticsAssistantMessage(modelOutput.Message)
 	assistantMessageID, err := s.store.CreateScopedChatMessage(ctx, workspaceID, nil, "assistant", assistantMessage, map[string]any{
@@ -765,6 +740,20 @@ func parseTacticsFacilitatorOutputForDraft(raw string, requiredDraftType string)
 	}
 	output.DraftChanges = normalizeTacticsDraftChanges(output.DraftChanges)
 	return output, nil
+}
+
+func recoverTacticsFacilitatorOutput(raw string, state TacticsFacilitatorState) tacticsFacilitatorModelOutput {
+	message := cleanTacticsAssistantMessage(raw)
+	structuredPrefix := strings.HasPrefix(message, "{") || strings.HasPrefix(message, "[")
+	if message == "" || structuredPrefix || ai.LooksLikeJSONObject(message) || !utf8.ValidString(message) || strings.ContainsRune(message, '\uFFFD') {
+		message = "Я подготовил основу решения по вашему запросу. Проверьте черновик ниже: изменения появятся в тактике только после вашего подтверждения."
+	}
+	return tacticsFacilitatorModelOutput{
+		Message:       message,
+		SessionStatus: FacilitatorStatusInProgress,
+		StatusReason:  "The advisor response was recovered locally without an additional AI request.",
+		OpenQuestions: state.Session.OpenQuestions,
+	}
 }
 
 func tacticsContextFingerprint(state TacticsFacilitatorState) string {
