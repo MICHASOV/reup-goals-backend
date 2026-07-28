@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -201,23 +202,157 @@ func (s *Store) RecoverStaleEntityEvaluations(ctx context.Context) error {
 }
 
 func (s *Store) hydrateEntityEvaluations(ctx context.Context, workspaceID int, workstreams []Workstream) error {
-	for index := range workstreams {
-		workstream := &workstreams[index]
-		evaluation, status, err := s.LatestEntityEvaluation(ctx, workspaceID, EntityWorkstream, workstream.ID)
-		if err != nil {
+	rows, err := s.dbx.QueryContext(ctx, `
+		WITH relevant AS (
+			SELECT $2::TEXT AS entity_type, id AS entity_id
+			FROM v2_tactical_workstreams
+			WHERE workspace_id=$1 AND archived_at IS NULL
+			UNION ALL
+			SELECT $3::TEXT AS entity_type, id AS entity_id
+			FROM v2_tactical_projects
+			WHERE workspace_id=$1 AND archived_at IS NULL
+		),
+		latest AS (
+			SELECT DISTINCT ON (entity_type, entity_id)
+				id, entity_type, entity_id, strategic_relevance, expected_impact,
+				clarity, feasibility, measurability, confidence, priority_score,
+				priority_tier, priority_reason, missing_information_json,
+				context_fingerprint, created_at
+			FROM v2_tactical_entity_evaluations
+			WHERE workspace_id=$1 AND entity_type IN ($2, $3)
+			ORDER BY entity_type, entity_id, created_at DESC, id DESC
+		)
+		SELECT relevant.entity_type,
+			relevant.entity_id,
+			COALESCE(
+				jobs.status,
+				CASE WHEN latest.id IS NULL THEN 'not_evaluated' ELSE $4 END
+			),
+			latest.id,
+			latest.strategic_relevance,
+			latest.expected_impact,
+			latest.clarity,
+			latest.feasibility,
+			latest.measurability,
+			latest.confidence,
+			latest.priority_score,
+			latest.priority_tier,
+			latest.priority_reason,
+			latest.missing_information_json,
+			latest.context_fingerprint,
+			latest.created_at
+		FROM relevant
+		LEFT JOIN v2_tactical_entity_evaluation_jobs jobs
+			ON jobs.workspace_id=$1
+			AND jobs.entity_type=relevant.entity_type
+			AND jobs.entity_id=relevant.entity_id
+		LEFT JOIN latest
+			ON latest.entity_type=relevant.entity_type
+			AND latest.entity_id=relevant.entity_id
+	`, workspaceID, EntityWorkstream, EntityProject, entityEvaluationReady)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	states := make(map[string]entityEvaluationState)
+	for rows.Next() {
+		var entityType string
+		var entityID int
+		var state entityEvaluationState
+		var evaluationID sql.NullInt64
+		var strategicRelevance sql.NullInt64
+		var expectedImpact sql.NullInt64
+		var clarity sql.NullInt64
+		var feasibility sql.NullInt64
+		var measurability sql.NullInt64
+		var confidence sql.NullInt64
+		var priorityScore sql.NullInt64
+		var priorityTier sql.NullString
+		var priorityReason sql.NullString
+		var missingInformationJSON sql.NullString
+		var contextFingerprint sql.NullString
+		var createdAt sql.NullTime
+		if err := rows.Scan(
+			&entityType,
+			&entityID,
+			&state.Status,
+			&evaluationID,
+			&strategicRelevance,
+			&expectedImpact,
+			&clarity,
+			&feasibility,
+			&measurability,
+			&confidence,
+			&priorityScore,
+			&priorityTier,
+			&priorityReason,
+			&missingInformationJSON,
+			&contextFingerprint,
+			&createdAt,
+		); err != nil {
 			return err
 		}
-		workstream.Evaluation = evaluation
-		workstream.EvaluationStatus = status
+		if evaluationID.Valid {
+			state.Evaluation = &TacticalEntityEvaluation{
+				ID:                 evaluationID.Int64,
+				EntityType:         entityType,
+				EntityID:           entityID,
+				StrategicRelevance: int(strategicRelevance.Int64),
+				ExpectedImpact:     int(expectedImpact.Int64),
+				Clarity:            int(clarity.Int64),
+				Feasibility:        int(feasibility.Int64),
+				Measurability:      int(measurability.Int64),
+				Confidence:         int(confidence.Int64),
+				PriorityScore:      int(priorityScore.Int64),
+				PriorityTier:       priorityTier.String,
+				PriorityReason:     priorityReason.String,
+				MissingInformation: []string{},
+				ContextFingerprint: contextFingerprint.String,
+				CreatedAt:          createdAt.Time,
+			}
+			if missingInformationJSON.Valid {
+				_ = json.Unmarshal([]byte(missingInformationJSON.String), &state.Evaluation.MissingInformation)
+			}
+			if state.Evaluation.MissingInformation == nil {
+				state.Evaluation.MissingInformation = []string{}
+			}
+		}
+		states[entityEvaluationKey(entityType, entityID)] = state
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	assignEntityEvaluations(workstreams, states)
+	return nil
+}
+
+type entityEvaluationState struct {
+	Status     string
+	Evaluation *TacticalEntityEvaluation
+}
+
+func assignEntityEvaluations(workstreams []Workstream, states map[string]entityEvaluationState) {
+	for index := range workstreams {
+		workstream := &workstreams[index]
+		state, found := states[entityEvaluationKey(EntityWorkstream, workstream.ID)]
+		if !found {
+			state.Status = "not_evaluated"
+		}
+		workstream.Evaluation = state.Evaluation
+		workstream.EvaluationStatus = state.Status
 		for projectIndex := range workstream.Projects {
 			project := &workstream.Projects[projectIndex]
-			evaluation, status, err := s.LatestEntityEvaluation(ctx, workspaceID, EntityProject, project.ID)
-			if err != nil {
-				return err
+			state, found := states[entityEvaluationKey(EntityProject, project.ID)]
+			if !found {
+				state.Status = "not_evaluated"
 			}
-			project.Evaluation = evaluation
-			project.EvaluationStatus = status
+			project.Evaluation = state.Evaluation
+			project.EvaluationStatus = state.Status
 		}
 	}
-	return nil
+}
+
+func entityEvaluationKey(entityType string, entityID int) string {
+	return entityType + ":" + strconv.Itoa(entityID)
 }

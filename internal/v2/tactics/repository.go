@@ -101,12 +101,28 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	}
 
 	hydrateWorkstreams(workstreams, risks, opportunities, hypotheses)
-	if err := s.hydrateEntityEvaluations(ctx, workspaceID, workstreams); err != nil {
-		return CurrentResponse{}, err
+	type enrichmentPart struct {
+		coverage *Uncovered
+		err      error
 	}
-	coverage, err := s.coverageGaps(ctx, workspaceID, plan.ID, workstreams)
-	if err != nil {
-		return CurrentResponse{}, err
+	enrichment := make(chan enrichmentPart, 2)
+	go func() {
+		enrichment <- enrichmentPart{err: s.hydrateEntityEvaluations(ctx, workspaceID, workstreams)}
+	}()
+	go func() {
+		coverage, loadErr := s.coverageGaps(ctx, workspaceID, plan.ID, copyWorkstreamsForCoverage(workstreams))
+		enrichment <- enrichmentPart{coverage: &coverage, err: loadErr}
+	}()
+
+	var coverage Uncovered
+	for range 2 {
+		part := <-enrichment
+		if part.err != nil {
+			return CurrentResponse{}, part.err
+		}
+		if part.coverage != nil {
+			coverage = *part.coverage
+		}
 	}
 	coverage.Risks = uncoveredRisks(risks)
 	coverage.Opportunities = uncoveredOpportunities(opportunities)
@@ -124,6 +140,28 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 		response.Message = "Для создания тактики нужен активный курс."
 	}
 	return response, nil
+}
+
+func copyWorkstreamsForCoverage(workstreams []Workstream) []Workstream {
+	copied := make([]Workstream, len(workstreams))
+	for index, workstream := range workstreams {
+		copied[index] = Workstream{
+			ID:       workstream.ID,
+			Title:    workstream.Title,
+			CKP:      workstream.CKP,
+			Metrics:  append([]TacticMetric(nil), workstream.Metrics...),
+			Projects: make([]Project, len(workstream.Projects)),
+		}
+		for projectIndex, project := range workstream.Projects {
+			copied[index].Projects[projectIndex] = Project{
+				ID:              project.ID,
+				Title:           project.Title,
+				SuccessCriteria: project.SuccessCriteria,
+				MetricName:      project.MetricName,
+			}
+		}
+	}
+	return copied
 }
 
 func (s *Store) WorkstreamDetail(ctx context.Context, workspaceID int, workstreamID int) (Workstream, error) {
@@ -1467,10 +1505,22 @@ func emptyUncovered() Uncovered {
 func (s *Store) coverageGaps(ctx context.Context, workspaceID int, planID int, workstreams []Workstream) (Uncovered, error) {
 	result := emptyUncovered()
 	rows, err := s.dbx.QueryContext(ctx, `
-		SELECT workstream_id, project_id, COUNT(*)
+		SELECT 'task', 'workstream', workstream_id, COUNT(*)
 		FROM v2_tasks
 		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL AND status <> 'archived'
-		GROUP BY workstream_id, project_id
+		GROUP BY workstream_id
+		UNION ALL
+		SELECT 'task', 'project', project_id, COUNT(*)
+		FROM v2_tasks
+		WHERE workspace_id=$1 AND tactical_plan_id=$2 AND archived_at IS NULL
+			AND status <> 'archived' AND project_id IS NOT NULL
+		GROUP BY project_id
+		UNION ALL
+		SELECT 'metric', scope_type, scope_id, COUNT(*)
+		FROM v2_metric_targets
+		WHERE workspace_id=$1 AND archived_at IS NULL
+			AND scope_type IN ('workstream', 'project')
+		GROUP BY scope_type, scope_id
 	`, workspaceID, planID)
 	if err != nil {
 		return Uncovered{}, err
@@ -1479,44 +1529,25 @@ func (s *Store) coverageGaps(ctx context.Context, workspaceID int, planID int, w
 
 	workstreamTasks := map[int]int{}
 	projectTasks := map[int]int{}
+	metricTargets := map[string]int{}
 	for rows.Next() {
-		var workstreamID int
-		var projectID sql.NullInt64
+		var category string
+		var entityType string
+		var entityID int
 		var count int
-		if err := rows.Scan(&workstreamID, &projectID, &count); err != nil {
+		if err := rows.Scan(&category, &entityType, &entityID, &count); err != nil {
 			return Uncovered{}, err
 		}
-		workstreamTasks[workstreamID] += count
-		if projectID.Valid {
-			projectTasks[int(projectID.Int64)] += count
+		switch category + ":" + entityType {
+		case "task:workstream":
+			workstreamTasks[entityID] = count
+		case "task:project":
+			projectTasks[entityID] = count
+		case "metric:workstream", "metric:project":
+			metricTargets[fmt.Sprintf("%s:%d", entityType, entityID)] = count
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return Uncovered{}, err
-	}
-
-	metricTargets := map[string]int{}
-	metricRows, err := s.dbx.QueryContext(ctx, `
-		SELECT scope_type, scope_id, COUNT(*)
-		FROM v2_metric_targets
-		WHERE workspace_id=$1 AND archived_at IS NULL
-			AND scope_type IN ('workstream', 'project')
-		GROUP BY scope_type, scope_id
-	`, workspaceID)
-	if err != nil {
-		return Uncovered{}, err
-	}
-	defer metricRows.Close()
-	for metricRows.Next() {
-		var scopeType string
-		var scopeID int
-		var count int
-		if err := metricRows.Scan(&scopeType, &scopeID, &count); err != nil {
-			return Uncovered{}, err
-		}
-		metricTargets[fmt.Sprintf("%s:%d", scopeType, scopeID)] = count
-	}
-	if err := metricRows.Err(); err != nil {
 		return Uncovered{}, err
 	}
 
