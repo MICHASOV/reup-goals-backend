@@ -317,6 +317,10 @@ jobs:
             "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}" 'bash -s' <<'REMOTE'
           set -euo pipefail
 
+          previous_binary=/opt/reup-goals-staging/backend/reup_goals_backend.previous
+          if [ -x /opt/reup-goals-staging/backend/reup_goals_backend ]; then
+            cp -p /opt/reup-goals-staging/backend/reup_goals_backend "$previous_binary"
+          fi
           install -o reupgoals -g reupgoals -m 755 /tmp/reup_goals_backend /opt/reup-goals-staging/backend/reup_goals_backend
 
           if ! grep -Eq '^DB_HOST=.+$' /etc/reup-goals-staging/backend.env; then
@@ -333,6 +337,21 @@ jobs:
             fi
             if [ "$attempt" -eq 30 ]; then
               journalctl -u reup-goals-staging.service -n 100 --no-pager
+              if [ -x "$previous_binary" ]; then
+                echo "New backend failed health check; restoring previous binary."
+                install -o reupgoals -g reupgoals -m 755 "$previous_binary" /opt/reup-goals-staging/backend/reup_goals_backend
+                systemctl restart reup-goals-staging.service
+                for rollback_attempt in $(seq 1 30); do
+                  if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
+                    echo "Previous backend restored successfully."
+                    break
+                  fi
+                  if [ "$rollback_attempt" -eq 30 ]; then
+                    echo "Previous backend also failed health check."
+                  fi
+                  sleep 1
+                done
+              fi
               exit 1
             fi
             sleep 1
