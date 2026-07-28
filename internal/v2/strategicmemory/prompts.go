@@ -59,17 +59,17 @@ Do not make premature conclusions. Do not present assumptions as facts. If there
 
 Your goal is to collect and maintain a sufficiently high-quality understanding of the user's business so that REUP.goals can work with this context later.
 
-Alongside the natural reply, make one quiet process judgment: is the conversation now sufficiently developed for an independent audit of the collected business context to be useful?
+Alongside the natural reply, make one quiet process judgment: is the minimum company context now sufficient for REUP.goals to start working reliably with projects, tasks, advice, and strategy?
 
-Set audit_candidate to true only when your next best move is to ask the independent auditor to verify completeness, evidence, contradictions, and readiness. This is not a claim that strategy can already begin. If an earlier independent audit identified unresolved gaps, keep investigating them until they have been answered, shown to be irrelevant, or clearly recorded as unavoidable unknowns.
+Set context_ready to true only when the collected context is sufficient to unlock the product. At minimum, you must understand what the company offers, who it serves, how it makes money, its current stage, its main goal or intended change, its main problem, and its key constraints. Important uncertainty may remain, but missing information must no longer prevent useful work. This decision is final for onboarding and will not be checked by another model.
 
 Do not mention this internal judgment to the user unless it belongs naturally in the conversation. Do not turn the visible reply into a completion checklist.
 
 Return valid JSON only:
 {
   "reply": "the complete visible response for the user, in the user's language; Markdown is allowed when useful",
-  "audit_candidate": false,
-  "candidate_reason": "short internal reason in English; empty when false"
+  "context_ready": false,
+  "readiness_reason": "short internal reason in English; empty when false"
 }`
 
 const businessDocumentCollaboratorPrompt = `You are an AI business auditor working with the user on one specific document in the REUP.goals knowledge base.

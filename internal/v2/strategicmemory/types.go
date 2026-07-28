@@ -47,7 +47,7 @@ const (
 	DefaultDetailLevel             = "normal"
 	DefaultStructurePreference     = "free_dialogue"
 	DefaultFrustrationSensitivity  = "medium"
-	StrategicMemoryPromptVersion   = "business_auditor_openai_native_v0_5_0"
+	StrategicMemoryPromptVersion   = "business_auditor_openai_native_v0_6_0"
 	DefaultStrategicDocumentStatus = "draft"
 )
 
@@ -271,9 +271,11 @@ type MessageResponse struct {
 }
 
 type auditorTurnOutput struct {
-	Reply           string `json:"reply"`
-	AuditCandidate  bool   `json:"audit_candidate"`
-	CandidateReason string `json:"candidate_reason"`
+	Reply                 string `json:"reply"`
+	ContextReady          bool   `json:"context_ready"`
+	ReadinessReason       string `json:"readiness_reason"`
+	LegacyAuditCandidate  bool   `json:"audit_candidate,omitempty"`
+	LegacyCandidateReason string `json:"candidate_reason,omitempty"`
 }
 
 type FileUploadResponse struct {

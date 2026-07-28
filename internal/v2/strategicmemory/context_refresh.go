@@ -9,6 +9,42 @@ import (
 
 const materialContextClaimLimit = 160
 
+func (s *Service) queueImmediateKnowledgeContextRefresh(ctx context.Context, workspaceID int, throughSourceID int) error {
+	if s.jobs != nil {
+		_, err := s.jobs.Enqueue(
+			ctx,
+			workspaceID,
+			jobTypeKnowledgeContextRefresh,
+			"pending",
+			map[string]any{"latest_source_id": throughSourceID},
+			5,
+			time.Now().UTC(),
+		)
+		return err
+	}
+
+	parentCtx := context.WithoutCancel(ctx)
+	go func() {
+		jobCtx, cancel := context.WithTimeout(parentCtx, knowledgeCandidateTimeout)
+		defer cancel()
+		if err := s.runKnowledgeContextRefresh(jobCtx, workspaceID); err != nil {
+			s.store.LogAIRunWithUsage(
+				jobCtx,
+				workspaceID,
+				"knowledge_base_context_refresh",
+				knowledgeExtractionModel,
+				StrategicMemoryPromptVersion,
+				0,
+				0,
+				0,
+				"failed",
+				err.Error(),
+			)
+		}
+	}()
+	return nil
+}
+
 func (s *Service) runKnowledgeContextRefresh(ctx context.Context, workspaceID int) error {
 	state, err := s.store.KnowledgePipelineState(ctx, workspaceID)
 	if err != nil {

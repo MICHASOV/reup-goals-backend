@@ -206,12 +206,22 @@ func TestPipelineConversationState(t *testing.T) {
 
 func TestAuditorTurnOutputContract(t *testing.T) {
 	var turn auditorTurnOutput
-	err := json.Unmarshal([]byte(`{"reply":"Продолжим【】.","audit_candidate":true,"candidate_reason":"baseline covered"}`), &turn)
-	if err != nil || turn.Reply == "" || !turn.AuditCandidate {
+	err := json.Unmarshal([]byte(`{"reply":"Продолжим【】.","context_ready":true,"readiness_reason":"baseline covered"}`), &turn)
+	ready, reason := turn.contextReadinessDecision()
+	if err != nil || turn.Reply == "" || !ready || reason != "baseline covered" {
 		t.Fatalf("structured turn contract failed: %+v, %v", turn, err)
 	}
 	if got := cleanAssistantMessage(turn.Reply); got != "Продолжим." {
 		t.Fatalf("citation marker was not removed: %q", got)
+	}
+}
+
+func TestAuditorTurnOutputAcceptsLegacyReadinessContract(t *testing.T) {
+	var turn auditorTurnOutput
+	err := json.Unmarshal([]byte(`{"reply":"Контекст собран.","audit_candidate":true,"candidate_reason":"legacy conversation"}`), &turn)
+	ready, reason := turn.contextReadinessDecision()
+	if err != nil || !ready || reason != "legacy conversation" {
+		t.Fatalf("legacy structured turn contract failed: %+v, %v", turn, err)
 	}
 }
 

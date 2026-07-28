@@ -174,9 +174,16 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		loadResults <- loadResult{"navigation_knowledge_failed", loadErr}
 	}()
 	go func() {
-		quality, qualityErr := strategicmemory.NewStore(h.dbx).LatestQualityReport(r.Context(), currentWorkspace.ID)
+		store := strategicmemory.NewStore(h.dbx)
+		pipeline, pipelineErr := store.KnowledgePipelineState(r.Context(), currentWorkspace.ID)
+		if pipelineErr != nil {
+			loadResults <- loadResult{"navigation_context_failed", pipelineErr}
+			return
+		}
+		quality, qualityErr := store.LatestQualityReport(r.Context(), currentWorkspace.ID)
 		if qualityErr == nil {
-			result.ContextReady = quality != nil && quality.StrategyGate.CanStartStrategy
+			result.ContextReady = pipeline.ReadyRevision > 0 ||
+				(quality != nil && quality.StrategyGate.CanStartStrategy)
 		}
 		loadResults <- loadResult{"navigation_quality_failed", qualityErr}
 	}()

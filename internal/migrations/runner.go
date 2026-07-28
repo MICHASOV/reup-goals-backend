@@ -3425,6 +3425,44 @@ var migrations = []Migration{
 			WHERE status='reserved';
 		`,
 	},
+	{
+		ID: "20260728_059_trust_knowledge_interviewer_readiness",
+		SQL: `
+			UPDATE strategic_knowledge_pipeline_state
+			SET
+				status='ready',
+				ready_revision=GREATEST(ready_revision, candidate_revision),
+				audit_feedback_json='[]'::jsonb,
+				updated_at=NOW()
+			WHERE candidate_revision > 0
+				AND ready_revision=0;
+
+			INSERT INTO v2_background_jobs (
+				workspace_id, job_type, dedupe_key, payload_json, status,
+				attempts, max_attempts, not_before, updated_at
+			)
+			SELECT
+				workspace_id,
+				'knowledge_base.context_refresh',
+				'pending',
+				jsonb_build_object('latest_source_id', last_user_source_id),
+				'queued',
+				0,
+				5,
+				NOW(),
+				NOW()
+			FROM strategic_knowledge_pipeline_state
+			WHERE ready_revision > 0
+				AND last_extracted_source_id < last_user_source_id
+			ON CONFLICT (job_type, workspace_id, dedupe_key)
+				WHERE dedupe_key <> '' AND status='queued'
+			DO UPDATE SET
+				payload_json=EXCLUDED.payload_json,
+				max_attempts=GREATEST(v2_background_jobs.max_attempts, EXCLUDED.max_attempts),
+				not_before=LEAST(v2_background_jobs.not_before, EXCLUDED.not_before),
+				updated_at=NOW();
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

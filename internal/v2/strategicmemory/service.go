@@ -311,11 +311,23 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	if feedbackIncluded {
 		_ = s.store.MarkKnowledgeFeedbackDelivered(ctx, workspaceID, pipeline.CandidateRevision)
 	}
-	if turn.AuditCandidate && pipeline.ReadyRevision == 0 {
-		if queuedState, queueErr := s.queueKnowledgeCandidate(ctx, workspaceID, pipeline, sourceID, turn.CandidateReason); queueErr == nil {
-			pipeline = queuedState
-		} else {
-			s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_audit_candidate", s.ai.ModelName(), StrategicMemoryPromptVersion, 0, 0, 0, "failed", queueErr.Error())
+	contextReady, readinessReason := turn.contextReadinessDecision()
+	if contextReady && pipeline.ReadyRevision == 0 {
+		readyState, accepted, acceptErr := s.store.AcceptKnowledgeInterviewerDecision(
+			ctx,
+			workspaceID,
+			pipeline.ConversationRevision,
+			sourceID,
+			readinessReason,
+		)
+		if acceptErr != nil {
+			return MessageResponse{}, acceptErr
+		}
+		if accepted {
+			pipeline = readyState
+			if refreshErr := s.queueImmediateKnowledgeContextRefresh(ctx, workspaceID, sourceID); refreshErr != nil {
+				s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_context_refresh", knowledgeExtractionModel, StrategicMemoryPromptVersion, 0, 0, 0, "failed", refreshErr.Error())
+			}
 		}
 	}
 
@@ -365,6 +377,16 @@ func parseAuditorTurn(raw string) (auditorTurnOutput, error) {
 		return auditorTurnOutput{}, fmt.Errorf("business auditor serialized a structured payload into reply")
 	}
 	return turn, nil
+}
+
+func (turn auditorTurnOutput) contextReadinessDecision() (bool, string) {
+	if turn.ContextReady {
+		return true, strings.TrimSpace(turn.ReadinessReason)
+	}
+	if turn.LegacyAuditCandidate {
+		return true, strings.TrimSpace(turn.LegacyCandidateReason)
+	}
+	return false, ""
 }
 
 func hasStructuredKnowledgeContext(state StateResponse) bool {

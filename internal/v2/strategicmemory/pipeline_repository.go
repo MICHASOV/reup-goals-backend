@@ -63,6 +63,53 @@ func pipelineCanStartCandidate(state KnowledgePipelineState, revision int, throu
 	return throughSourceID > state.LastAuditedSourceID
 }
 
+func (s *Store) AcceptKnowledgeInterviewerDecision(
+	ctx context.Context,
+	workspaceID int,
+	revision int,
+	throughSourceID int,
+	reason string,
+) (KnowledgePipelineState, bool, error) {
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return KnowledgePipelineState{}, false, err
+	}
+	defer tx.Rollback()
+
+	state, err := pipelineStateForUpdate(ctx, tx, workspaceID)
+	if err != nil {
+		return KnowledgePipelineState{}, false, err
+	}
+	if state.ReadyRevision >= revision && state.ReadyRevision > 0 {
+		return state, true, tx.Commit()
+	}
+	if revision <= 0 || throughSourceID <= 0 ||
+		revision != state.ConversationRevision || throughSourceID != state.LastUserSourceID {
+		return state, false, tx.Commit()
+	}
+
+	err = tx.QueryRowContext(ctx, `
+		UPDATE strategic_knowledge_pipeline_state
+		SET status='ready',
+			candidate_revision=$2,
+			candidate_source_id=$3,
+			ready_revision=GREATEST(ready_revision, $2),
+			candidate_reason=$4,
+			audit_feedback_json='[]'::jsonb,
+			candidate_report_json='{}'::jsonb,
+			updated_at=NOW()
+		WHERE workspace_id=$1
+		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
+			last_extracted_source_id, last_audited_source_id, candidate_revision,
+			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision, updated_at
+	`, workspaceID, revision, throughSourceID, strings.TrimSpace(reason)).Scan(pipelineStateDestinations(&state)...)
+	if err != nil {
+		return KnowledgePipelineState{}, false, err
+	}
+	return state, true, tx.Commit()
+}
+
 func (s *Store) UpdateKnowledgePipelineStatus(ctx context.Context, workspaceID int, revision int, status string) error {
 	result, err := s.dbx.ExecContext(ctx, `
 		UPDATE strategic_knowledge_pipeline_state
