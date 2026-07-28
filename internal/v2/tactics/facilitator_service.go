@@ -364,13 +364,17 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
+	proposalMessageID := 0
+	if len(modelOutput.DraftChanges) > 0 {
+		proposalMessageID = assistantMessageID
+	}
 	return TacticsFacilitatorMessageResponse{
 		WorkspaceID:       workspaceID,
 		AssistantMessage:  assistantMessage,
 		RecentMessages:    messages,
 		OpenAIResponseID:  result.ResponseID,
 		Session:           sessionState,
-		ProposalMessageID: assistantMessageID,
+		ProposalMessageID: proposalMessageID,
 		ProposedChanges:   modelOutput.DraftChanges,
 		AppliedChanges:    []AppliedTacticsChange{},
 	}, nil

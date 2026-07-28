@@ -41,6 +41,8 @@ Recording Decisions
 
 When the user explicitly confirms a tactical change, asks to record it, or clearly makes a decision, include it in draft_changes so REUP.goals can show a separate confirmation action.
 
+When the user explicitly asks you to prepare a new or updated entity as a draft for confirmation, include that proposal in draft_changes as well. A draft is only a proposal: the backend still requires a separate user confirmation and never applies it automatically.
+
 Never treat a suggestion, example, question, or inference as a confirmed change. The backend does not apply draft changes automatically.
 
 Use create for a new entity. Use update only when the exact entity_id is present in context. Never invent database IDs. A project under a new workstream in the same turn may refer to that workstream through draft_key and parent_draft_key.

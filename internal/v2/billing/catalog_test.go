@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -94,6 +95,14 @@ func TestSettledTokenUsageRefundsUnusedReservation(t *testing.T) {
 	}
 	if charge.actual != 2_400 || charge.charged != 2_400 || charge.base != 2_400 {
 		t.Fatalf("unexpected token charge: %+v", charge)
+	}
+}
+
+func TestSettlementMetadataParametersHaveExplicitPostgresTypes(t *testing.T) {
+	for _, parameter := range []string{"$3::INTEGER", "$4::INTEGER", "$5::INTEGER", "$6::INTEGER", "$7::INTEGER", "$8::INTEGER"} {
+		if !strings.Contains(settleReservationSQL, parameter) {
+			t.Fatalf("settlement query must type %s explicitly", parameter)
+		}
 	}
 }
 

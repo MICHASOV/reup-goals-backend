@@ -18,6 +18,21 @@ var ErrPaymentRequired = errors.New("payment_required")
 
 const maxChatReservationTokens = 75_000
 
+const settleReservationSQL = `
+	UPDATE workspace_ai_quota_events
+	SET status='consumed', amount=$2, settled_at=NOW(),
+		metadata_json=jsonb_build_object(
+			'actual_tokens', $3::INTEGER,
+			'base_tokens', $4::INTEGER,
+			'purchased_tokens', $5::INTEGER,
+			'unbilled_tokens', GREATEST(0, $3::INTEGER - $2::INTEGER),
+			'reserved_tokens', $6::INTEGER,
+			'reserved_base', $7::INTEGER,
+			'reserved_purchased', $8::INTEGER
+		)
+	WHERE reservation_key=$1
+`
+
 type QuotaSummary struct {
 	UsedPercent           int       `json:"used_percent"`
 	RemainingPercent      int       `json:"remaining_percent"`
@@ -99,12 +114,10 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 
 	reservation := reserveQuotaTokens(&state, maxChatReservationTokens)
 	if reservation.total <= 0 {
-		if err := s.syncWarning(ctx, tx, workspaceID, state, true); err != nil {
-			return Reservation{}, err
-		}
 		if err := tx.Commit(); err != nil {
 			return Reservation{}, err
 		}
+		s.syncWarningBestEffort(ctx, workspaceID, state, true)
 		return Reservation{}, ErrQuotaExceeded
 	}
 	source := "base"
@@ -138,12 +151,10 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 	`, workspaceID, userID, reservationID, source, reservation.total, module, reservationMetadata); err != nil {
 		return Reservation{}, errors.New("ai_quota_reservation_event_failed")
 	}
-	if err := s.syncWarning(ctx, tx, workspaceID, state, false); err != nil {
-		log.Printf("[WARN] ai quota warning sync failed workspace_id=%d: %v", workspaceID, err)
-	}
 	if err := tx.Commit(); err != nil {
 		return Reservation{}, errors.New("ai_quota_reservation_commit_failed")
 	}
+	s.syncWarningBestEffort(ctx, workspaceID, state, false)
 	return Reservation{ID: reservationID}, nil
 }
 
@@ -240,26 +251,15 @@ func (s *Service) Settle(ctx context.Context, reservationID string, success bool
 			`, workspaceID, state.baseUsed, state.purchasedBalance, state.warningLevel()); updateErr != nil {
 				return updateErr
 			}
-			if warningErr := s.syncWarning(ctx, tx, workspaceID, state, !state.available()); warningErr != nil {
-				return warningErr
-			}
 		}
-		_, err = tx.ExecContext(ctx, `
-			UPDATE workspace_ai_quota_events
-			SET status='consumed', amount=$2, settled_at=NOW(),
-				metadata_json=jsonb_build_object(
-					'actual_tokens', $3,
-					'base_tokens', $4,
-					'purchased_tokens', $5,
-					'unbilled_tokens', GREATEST(0, $3 - $2),
-					'reserved_tokens', $6,
-					'reserved_base', $7,
-					'reserved_purchased', $8
-				)
-			WHERE reservation_key=$1
-		`, reservationID, charge.charged, actualTokens, charge.base, charge.purchased,
+		_, err = tx.ExecContext(ctx, settleReservationSQL,
+			reservationID, charge.charged, actualTokens, charge.base, charge.purchased,
 			reservedTokens, reservedBase, reservedPurchased)
-		return commitOrRollback(tx, err)
+		if err := commitOrRollback(tx, err); err != nil {
+			return err
+		}
+		s.syncWarningBestEffort(ctx, workspaceID, state, !state.available())
+		return nil
 	}
 
 	state, err := s.ensureQuota(ctx, tx, workspaceID, time.Now().UTC())
@@ -282,10 +282,11 @@ func (s *Service) Settle(ctx context.Context, reservationID string, success bool
 	`, reservationID); err != nil {
 		return err
 	}
-	if err := s.syncWarning(ctx, tx, workspaceID, state, false); err != nil {
+	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return tx.Commit()
+	s.syncWarningBestEffort(ctx, workspaceID, state, false)
+	return nil
 }
 
 type quotaState struct {
@@ -432,6 +433,24 @@ func (s *Service) syncWarning(ctx context.Context, tx *sql.Tx, workspaceID int, 
 			message=EXCLUDED.message, details_json=EXCLUDED.details_json, updated_at=NOW()
 	`, workspaceID, severity, title, message, level)
 	return err
+}
+
+func (s *Service) syncWarningBestEffort(ctx context.Context, workspaceID int, state quotaState, exhausted bool) {
+	warningCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	tx, err := s.dbx.BeginTx(warningCtx, nil)
+	if err != nil {
+		log.Printf("[WARN] ai quota warning transaction failed workspace_id=%d: %v", workspaceID, err)
+		return
+	}
+	defer tx.Rollback()
+	if err := s.syncWarning(warningCtx, tx, workspaceID, state, exhausted); err != nil {
+		log.Printf("[WARN] ai quota warning sync failed workspace_id=%d: %v", workspaceID, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("[WARN] ai quota warning commit failed workspace_id=%d: %v", workspaceID, err)
+	}
 }
 
 func (state quotaState) warningLevel() int {

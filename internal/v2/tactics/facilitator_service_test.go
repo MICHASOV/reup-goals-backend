@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+func TestTacticsPromptTurnsExplicitDraftRequestsIntoProposals(t *testing.T) {
+	if !strings.Contains(tacticsFacilitatorPrompt, "explicitly asks you to prepare a new or updated entity as a draft for confirmation") {
+		t.Fatal("advisor prompt must return draft_changes for an explicit proposal request")
+	}
+	if !strings.Contains(tacticsFacilitatorPrompt, "never applies it automatically") {
+		t.Fatal("advisor prompt must preserve user confirmation before applying a proposal")
+	}
+}
+
 func TestTacticsConversationTurnContainsOnlyMessageAndScope(t *testing.T) {
 	workstreamID := 42
 	input := buildTacticsTurnInput("Разберем риск", TacticsFacilitatorMessageRequest{

@@ -3388,6 +3388,43 @@ var migrations = []Migration{
 				ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ NULL;
 		`,
 	},
+	{
+		ID: "20260728_058_release_stuck_ai_quota_reservations",
+		SQL: `
+			WITH stuck AS (
+				SELECT
+					workspace_id,
+					SUM(COALESCE(
+						NULLIF(metadata_json->>'reserved_base', '')::INTEGER,
+						CASE WHEN source='base' THEN amount ELSE 0 END
+					))::INTEGER AS reserved_base,
+					SUM(COALESCE(
+						NULLIF(metadata_json->>'reserved_purchased', '')::INTEGER,
+						CASE WHEN source='purchased' THEN amount ELSE 0 END
+					))::INTEGER AS reserved_purchased
+				FROM workspace_ai_quota_events
+				WHERE status='reserved'
+				GROUP BY workspace_id
+			)
+			UPDATE workspace_ai_quotas quota
+			SET
+				base_used=GREATEST(0, quota.base_used-stuck.reserved_base),
+				purchased_balance=quota.purchased_balance+stuck.reserved_purchased,
+				warning_level=0,
+				updated_at=NOW()
+			FROM stuck
+			WHERE quota.workspace_id=stuck.workspace_id;
+
+			UPDATE workspace_ai_quota_events
+			SET
+				status='refunded',
+				settled_at=NOW(),
+				metadata_json=metadata_json || jsonb_build_object(
+					'recovery_reason', 'settlement_parameter_type_fix'
+				)
+			WHERE status='reserved';
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

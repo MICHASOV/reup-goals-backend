@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/v2/billing"
@@ -101,8 +102,13 @@ func consumesWorkspaceQuota(module string) bool {
 }
 
 func (g *Governance) AfterCall(ctx context.Context, call ai.ResolvedCall, result ai.CallResult) {
+	settlementError := ""
 	if g.quotas != nil && call.ReservationID != "" {
-		if err := g.quotas.Settle(ctx, call.ReservationID, result.Err == nil, totalTokenUsage(result.Usage)); err != nil {
+		settlementCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+		err := g.quotas.Settle(settlementCtx, call.ReservationID, result.Err == nil, totalTokenUsage(result.Usage))
+		cancel()
+		if err != nil {
+			settlementError = "ai_quota_settlement_failed"
 			log.Printf(
 				"[ERROR] ai quota settlement failed workspace_id=%d module=%s: %v",
 				call.Metadata.WorkspaceID, call.Metadata.Module, err,
@@ -114,6 +120,8 @@ func (g *Governance) AfterCall(ctx context.Context, call ai.ResolvedCall, result
 	if result.Err != nil {
 		status = "failed"
 		errorText = result.Err.Error()
+	} else if settlementError != "" {
+		errorText = settlementError
 	}
 	cost := estimateCost(call.Model, result.Usage)
 	_, err := g.dbx.ExecContext(ctx, `
