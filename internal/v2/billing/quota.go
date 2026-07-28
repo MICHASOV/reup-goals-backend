@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -106,14 +107,19 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 		}
 		return Reservation{}, ErrQuotaExceeded
 	}
-	source := "mixed"
-	if reservation.purchased == 0 {
-		source = "base"
-	} else if reservation.base == 0 {
+	source := "base"
+	if reservation.base == 0 {
 		source = "purchased"
 	}
 
 	reservationID := randomID()
+	reservationMetadata, err := json.Marshal(map[string]int{
+		"reserved_base":      reservation.base,
+		"reserved_purchased": reservation.purchased,
+	})
+	if err != nil {
+		return Reservation{}, errors.New("ai_quota_reservation_metadata_failed")
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE workspace_ai_quotas
 		SET base_used=$2, purchased_balance=$3, warning_level=$4, updated_at=NOW()
@@ -127,9 +133,9 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 			ai_module, metadata_json
 		) VALUES (
 			$1, NULLIF($2, 0), $3, 'ai_call', $4, $5, 'reserved', $6,
-			jsonb_build_object('reserved_base', $7, 'reserved_purchased', $8)
+			$7::jsonb
 		)
-	`, workspaceID, userID, reservationID, source, reservation.total, module, reservation.base, reservation.purchased); err != nil {
+	`, workspaceID, userID, reservationID, source, reservation.total, module, reservationMetadata); err != nil {
 		return Reservation{}, errors.New("ai_quota_reservation_event_failed")
 	}
 	if err := s.syncWarning(ctx, tx, workspaceID, state, false); err != nil {

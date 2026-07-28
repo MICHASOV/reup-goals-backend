@@ -178,6 +178,7 @@ func (h *Handler) aiStats(r *http.Request, workspaceID int) (map[string]any, err
 					'ai_governance_usage_unavailable',
 					'ai_quota_transaction_unavailable',
 					'ai_quota_state_unavailable',
+					'ai_quota_reservation_metadata_failed',
 					'ai_quota_reservation_update_failed',
 					'ai_quota_reservation_event_failed',
 					'ai_quota_reservation_commit_failed'

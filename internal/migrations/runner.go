@@ -3380,6 +3380,14 @@ var migrations = []Migration{
 			UPDATE user_profile_settings SET theme='light' WHERE theme='dark';
 		`,
 	},
+	{
+		ID: "20260728_057_ai_quota_reservation_metadata",
+		SQL: `
+			ALTER TABLE workspace_ai_quota_events
+				ADD COLUMN IF NOT EXISTS metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ NULL;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
