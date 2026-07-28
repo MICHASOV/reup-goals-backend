@@ -2,9 +2,49 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 )
+
+var (
+	ErrRateLimitExceeded     = errors.New("ai_rate_limit_exceeded")
+	ErrDailyBudgetExceeded   = errors.New("ai_daily_budget_exceeded")
+	ErrMonthlyBudgetExceeded = errors.New("ai_monthly_budget_exceeded")
+)
+
+// CallRejectedError marks failures that happen before a provider request is sent.
+// Conversational services must return these errors to the HTTP layer instead of
+// persisting a synthetic assistant reply.
+type CallRejectedError struct {
+	Cause error
+}
+
+func (e *CallRejectedError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "ai_call_rejected"
+	}
+	return e.Cause.Error()
+}
+
+func (e *CallRejectedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func RejectCall(err error) error {
+	if err == nil || IsCallRejected(err) {
+		return err
+	}
+	return &CallRejectedError{Cause: err}
+}
+
+func IsCallRejected(err error) bool {
+	var rejected *CallRejectedError
+	return errors.As(err, &rejected)
+}
 
 type CallMetadata struct {
 	WorkspaceID   int

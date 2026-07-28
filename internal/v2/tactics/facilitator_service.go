@@ -275,6 +275,9 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	}
 	if err != nil {
 		s.logAIRun(ctx, workspaceID, duration, 0, 0, "failed", err.Error())
+		if ai.IsCallRejected(err) {
+			return TacticsFacilitatorMessageResponse{}, err
+		}
 		return s.fallbackResponse(ctx, workspaceID, userMessageID, state, conversationScope, personalThread), nil
 	}
 	if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != openAISession.ConversationID {
@@ -306,6 +309,9 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 				errorText = parseErr.Error()
 			}
 			s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
+			if ai.IsCallRejected(err) {
+				return TacticsFacilitatorMessageResponse{}, err
+			}
 			return s.fallbackResponse(ctx, workspaceID, userMessageID, state, conversationScope, personalThread), nil
 		}
 	}

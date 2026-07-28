@@ -260,7 +260,9 @@ jobs:
           WantedBy=multi-user.target
           SERVICE
 
-          cat >/etc/nginx/sites-available/api-staging.reupgoals.pro <<'NGINX'
+          api_site=/etc/nginx/sites-available/api-staging.reupgoals.pro
+          if [ ! -f "$api_site" ]; then
+            cat >"$api_site" <<'NGINX'
           server {
               listen 80;
               listen [::]:80;
@@ -288,8 +290,9 @@ jobs:
               }
           }
           NGINX
+          fi
 
-          ln -sf /etc/nginx/sites-available/api-staging.reupgoals.pro /etc/nginx/sites-enabled/api-staging.reupgoals.pro
+          ln -sf "$api_site" /etc/nginx/sites-enabled/api-staging.reupgoals.pro
           nginx -t
           systemctl reload nginx
           systemctl daemon-reload
@@ -329,8 +332,11 @@ jobs:
             sleep 1
           done
 
-          certbot --nginx --non-interactive --agree-tos --register-unsafely-without-email \
-            -d api-staging.reupgoals.pro --redirect || true
+          api_site=/etc/nginx/sites-available/api-staging.reupgoals.pro
+          if ! grep -Eq 'listen[[:space:]]+443[[:space:]]+ssl' "$api_site"; then
+            certbot --nginx --non-interactive --agree-tos --register-unsafely-without-email \
+              -d api-staging.reupgoals.pro --redirect || true
+          fi
           sed -i -E 's/listen 443 ssl;/listen 443 ssl http2;/' /etc/nginx/sites-available/api-staging.reupgoals.pro
           sed -i -E 's/listen \[::\]:443 ssl;/listen [::]:443 ssl http2;/' /etc/nginx/sites-available/api-staging.reupgoals.pro
           nginx -t

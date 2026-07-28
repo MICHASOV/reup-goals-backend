@@ -256,6 +256,9 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		}
 		if err != nil {
 			s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, 0, 0, "failed", err.Error())
+			if ai.IsCallRejected(err) {
+				return MessageResponse{}, err
+			}
 			return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
 		}
 	}
@@ -284,6 +287,9 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 				errorText = parseErr.Error()
 			}
 			s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
+			if ai.IsCallRejected(err) {
+				return MessageResponse{}, err
+			}
 			return s.fallbackMessageResponse(ctx, workspaceID, state, unavailableAssistantReply(state)), nil
 		}
 	}

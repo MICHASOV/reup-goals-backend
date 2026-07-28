@@ -203,6 +203,9 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		}
 		if err != nil {
 			s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_openai_native", s.ai.ModelName(), StrategyFacilitatorPromptVersion, duration, 0, 0, "failed", err.Error())
+			if ai.IsCallRejected(err) {
+				return StrategyFacilitatorMessageResponse{}, err
+			}
 			return s.fallbackResponse(ctx, workspaceID, userSourceID, state), nil
 		}
 	}
@@ -235,6 +238,9 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 				errorText = parseErr.Error()
 			}
 			s.memoryStore.LogAIRunWithUsage(ctx, workspaceID, "strategy_facilitator_output_retry", s.ai.ModelName(), StrategyFacilitatorPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
+			if ai.IsCallRejected(err) {
+				return StrategyFacilitatorMessageResponse{}, err
+			}
 			return s.fallbackResponse(ctx, workspaceID, userSourceID, state), nil
 		}
 	}

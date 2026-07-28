@@ -165,7 +165,17 @@ func (h *Handler) aiStats(r *http.Request, workspaceID int) (map[string]any, err
 	rows, err := h.dbx.QueryContext(r.Context(), `
 		SELECT ai_module, model, status,
 			COALESCE(token_usage_input, 0), COALESCE(cached_input_tokens, 0),
-			COALESCE(token_usage_output, 0), COALESCE(estimated_cost, 0), created_at
+			COALESCE(token_usage_output, 0), COALESCE(estimated_cost, 0), created_at,
+			CASE
+				WHEN error IN (
+					'ai_rate_limit_exceeded',
+					'ai_daily_budget_exceeded',
+					'ai_monthly_budget_exceeded',
+					'ai_weekly_limit_reached',
+					'payment_required'
+				) THEN error
+				ELSE ''
+			END
 		FROM v2_ai_call_logs
 		WHERE workspace_id=$1 AND created_at > NOW() - INTERVAL '24 hours'
 		ORDER BY created_at DESC, id DESC
@@ -181,13 +191,14 @@ func (h *Handler) aiStats(r *http.Request, workspaceID int) (map[string]any, err
 		var input, cached, output int
 		var estimatedCost float64
 		var createdAt time.Time
-		if err := rows.Scan(&module, &model, &status, &input, &cached, &output, &estimatedCost, &createdAt); err != nil {
+		var failureCode string
+		if err := rows.Scan(&module, &model, &status, &input, &cached, &output, &estimatedCost, &createdAt, &failureCode); err != nil {
 			return nil, err
 		}
 		recent = append(recent, map[string]any{
 			"module": module, "model": model, "status": status,
 			"input_tokens": input, "cached_input_tokens": cached, "output_tokens": output,
-			"estimated_cost_usd": estimatedCost, "created_at": createdAt,
+			"estimated_cost_usd": estimatedCost, "created_at": createdAt, "failure_code": failureCode,
 		})
 	}
 	if err := rows.Err(); err != nil {

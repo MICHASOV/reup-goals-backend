@@ -68,11 +68,11 @@ func (g *Governance) BeforeCall(ctx context.Context, metadata ai.CallMetadata, f
 		}
 	}
 	if resolved.Provider != "openai" {
-		return ai.ResolvedCall{}, fmt.Errorf("ai_provider_not_configured:%s", resolved.Provider)
+		return ai.ResolvedCall{}, ai.RejectCall(fmt.Errorf("ai_provider_not_configured:%s", resolved.Provider))
 	}
 	if err := g.checkLimits(ctx, metadata.WorkspaceID); err != nil {
 		g.logRejected(ctx, resolved, err)
-		return ai.ResolvedCall{}, err
+		return ai.ResolvedCall{}, ai.RejectCall(err)
 	}
 	if g.quotas != nil && consumesWorkspaceQuota(resolved.Metadata.Module) {
 		reservation, err := g.quotas.Reserve(
@@ -80,7 +80,7 @@ func (g *Governance) BeforeCall(ctx context.Context, metadata ai.CallMetadata, f
 		)
 		if err != nil {
 			g.logRejected(ctx, resolved, err)
-			return ai.ResolvedCall{}, err
+			return ai.ResolvedCall{}, ai.RejectCall(err)
 		}
 		resolved.ReservationID = reservation.ID
 	}
@@ -183,13 +183,13 @@ func (g *Governance) checkLimits(ctx context.Context, workspaceID int) error {
 		return err
 	}
 	if limits.RequestsPerMinute > 0 && calls >= limits.RequestsPerMinute {
-		return fmt.Errorf("ai_rate_limit_exceeded")
+		return ai.ErrRateLimitExceeded
 	}
 	if limits.DailyBudgetUSD > 0 && dailyCost >= limits.DailyBudgetUSD {
-		return fmt.Errorf("ai_daily_budget_exceeded")
+		return ai.ErrDailyBudgetExceeded
 	}
 	if limits.MonthlyBudgetUSD > 0 && monthlyCost >= limits.MonthlyBudgetUSD {
-		return fmt.Errorf("ai_monthly_budget_exceeded")
+		return ai.ErrMonthlyBudgetExceeded
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/auth"
 	"reup-goals-backend/internal/v2/billing"
 )
@@ -85,6 +86,18 @@ func WriteAIError(w http.ResponseWriter, err error, fallbackStatus int, fallback
 	}
 	if errors.Is(err, billing.ErrPaymentRequired) {
 		WriteError(w, http.StatusPaymentRequired, billing.ErrPaymentRequired.Error())
+		return
+	}
+	if errors.Is(err, ai.ErrRateLimitExceeded) {
+		WriteError(w, http.StatusTooManyRequests, ai.ErrRateLimitExceeded.Error())
+		return
+	}
+	if errors.Is(err, ai.ErrDailyBudgetExceeded) {
+		WriteError(w, http.StatusTooManyRequests, ai.ErrDailyBudgetExceeded.Error())
+		return
+	}
+	if errors.Is(err, ai.ErrMonthlyBudgetExceeded) {
+		WriteError(w, http.StatusTooManyRequests, ai.ErrMonthlyBudgetExceeded.Error())
 		return
 	}
 	WriteError(w, fallbackStatus, fallbackCode)
