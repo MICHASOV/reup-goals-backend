@@ -64,7 +64,7 @@ func (g *Governance) BeforeCall(ctx context.Context, metadata ai.CallMetadata, f
 			}
 			resolved.Metadata.PromptVersion = version
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return ai.ResolvedCall{}, err
+			return ai.ResolvedCall{}, ai.RejectCall(errors.New("ai_prompt_registry_unavailable"))
 		}
 	}
 	if resolved.Provider != "openai" {
@@ -166,21 +166,24 @@ func (g *Governance) checkLimits(ctx context.Context, workspaceID int) error {
 	if err == nil {
 		limits = Limits{RequestsPerMinute: rpm, DailyBudgetUSD: daily, MonthlyBudgetUSD: monthly}
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return errors.New("ai_governance_policy_unavailable")
 	}
 
 	var calls int
 	var dailyCost, monthlyCost float64
 	err = g.dbx.QueryRowContext(ctx, `
 		SELECT
-			COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 minute'),
+			COUNT(*) FILTER (
+				WHERE created_at > NOW() - INTERVAL '1 minute'
+					AND status <> 'rejected'
+			),
 			COALESCE(SUM(estimated_cost) FILTER (WHERE created_at >= date_trunc('day', NOW())), 0),
 			COALESCE(SUM(estimated_cost) FILTER (WHERE created_at >= date_trunc('month', NOW())), 0)
 		FROM v2_ai_call_logs
 		WHERE workspace_id=$1
 	`, workspaceID).Scan(&calls, &dailyCost, &monthlyCost)
 	if err != nil {
-		return err
+		return errors.New("ai_governance_usage_unavailable")
 	}
 	if limits.RequestsPerMinute > 0 && calls >= limits.RequestsPerMinute {
 		return ai.ErrRateLimitExceeded

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"time"
 )
@@ -87,12 +88,12 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 	}
 	tx, err := s.dbx.BeginTx(ctx, nil)
 	if err != nil {
-		return Reservation{}, err
+		return Reservation{}, errors.New("ai_quota_transaction_unavailable")
 	}
 	defer tx.Rollback()
 	state, err := s.ensureQuota(ctx, tx, workspaceID, time.Now().UTC())
 	if err != nil {
-		return Reservation{}, err
+		return Reservation{}, errors.New("ai_quota_state_unavailable")
 	}
 
 	reservation := reserveQuotaTokens(&state, maxChatReservationTokens)
@@ -118,7 +119,7 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 		SET base_used=$2, purchased_balance=$3, warning_level=$4, updated_at=NOW()
 		WHERE workspace_id=$1
 	`, workspaceID, state.baseUsed, state.purchasedBalance, state.warningLevel()); err != nil {
-		return Reservation{}, err
+		return Reservation{}, errors.New("ai_quota_reservation_update_failed")
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO workspace_ai_quota_events (
@@ -129,13 +130,13 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 			jsonb_build_object('reserved_base', $7, 'reserved_purchased', $8)
 		)
 	`, workspaceID, userID, reservationID, source, reservation.total, module, reservation.base, reservation.purchased); err != nil {
-		return Reservation{}, err
+		return Reservation{}, errors.New("ai_quota_reservation_event_failed")
 	}
 	if err := s.syncWarning(ctx, tx, workspaceID, state, false); err != nil {
-		return Reservation{}, err
+		log.Printf("[WARN] ai quota warning sync failed workspace_id=%d: %v", workspaceID, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return Reservation{}, err
+		return Reservation{}, errors.New("ai_quota_reservation_commit_failed")
 	}
 	return Reservation{ID: reservationID}, nil
 }

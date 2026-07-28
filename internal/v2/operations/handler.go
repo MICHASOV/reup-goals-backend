@@ -172,7 +172,15 @@ func (h *Handler) aiStats(r *http.Request, workspaceID int) (map[string]any, err
 					'ai_daily_budget_exceeded',
 					'ai_monthly_budget_exceeded',
 					'ai_weekly_limit_reached',
-					'payment_required'
+					'payment_required',
+					'ai_prompt_registry_unavailable',
+					'ai_governance_policy_unavailable',
+					'ai_governance_usage_unavailable',
+					'ai_quota_transaction_unavailable',
+					'ai_quota_state_unavailable',
+					'ai_quota_reservation_update_failed',
+					'ai_quota_reservation_event_failed',
+					'ai_quota_reservation_commit_failed'
 				) THEN error
 				ELSE ''
 			END
