@@ -14,12 +14,19 @@ import (
 	"reup-goals-backend/internal/v2/billing"
 )
 
-const authValidationTTL = 5 * time.Second
+const (
+	authValidationTTL        = 15 * time.Second
+	authValidationStaleGrace = time.Minute
+	authValidationTimeout    = 3 * time.Second
+)
 
 type authValidationEntry struct {
 	mu          sync.Mutex
 	authVersion int
+	valid       bool
+	refreshing  bool
 	expiresAt   time.Time
+	staleUntil  time.Time
 }
 
 var authValidationEntries sync.Map
@@ -50,23 +57,76 @@ func validAuthenticatedUser(ctx context.Context, dbx *sql.DB, userID int, authVe
 	value, _ := authValidationEntries.LoadOrStore(userID, &authValidationEntry{})
 	entry := value.(*authValidationEntry)
 	entry.mu.Lock()
-	defer entry.mu.Unlock()
 
 	now := time.Now()
-	if entry.authVersion == authVersion && now.Before(entry.expiresAt) {
+	if entry.valid && entry.authVersion == authVersion && now.Before(entry.expiresAt) {
+		entry.mu.Unlock()
 		return true
+	}
+	if entry.valid && entry.authVersion == authVersion && now.Before(entry.staleUntil) {
+		if !entry.refreshing {
+			entry.refreshing = true
+			go refreshAuthenticatedUser(dbx, userID, authVersion, entry)
+		}
+		entry.mu.Unlock()
+		return true
+	}
+	entry.mu.Unlock()
+	if dbx == nil {
+		return false
 	}
 
 	var storedVersion int
 	var emailVerified bool
-	if err := dbx.QueryRowContext(ctx, `SELECT auth_version, email_verified FROM users WHERE id=$1`, userID).
+	queryCtx, cancel := context.WithTimeout(ctx, authValidationTimeout)
+	defer cancel()
+	if err := dbx.QueryRowContext(queryCtx, `SELECT auth_version, email_verified FROM users WHERE id=$1`, userID).
 		Scan(&storedVersion, &emailVerified); err != nil || storedVersion != authVersion || !emailVerified {
+		entry.mu.Lock()
+		entry.valid = false
 		entry.expiresAt = time.Time{}
+		entry.staleUntil = time.Time{}
+		entry.mu.Unlock()
 		return false
 	}
+	entry.mu.Lock()
 	entry.authVersion = storedVersion
+	entry.valid = true
 	entry.expiresAt = now.Add(authValidationTTL)
+	entry.staleUntil = now.Add(authValidationStaleGrace)
+	entry.mu.Unlock()
 	return true
+}
+
+func refreshAuthenticatedUser(dbx *sql.DB, userID int, authVersion int, entry *authValidationEntry) {
+	ctx, cancel := context.WithTimeout(context.Background(), authValidationTimeout)
+	defer cancel()
+
+	var storedVersion int
+	var emailVerified bool
+	err := dbx.QueryRowContext(ctx, `SELECT auth_version, email_verified FROM users WHERE id=$1`, userID).
+		Scan(&storedVersion, &emailVerified)
+	now := time.Now()
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	entry.refreshing = false
+	if err != nil {
+		// Keep the short stale window during a transient database slowdown,
+		// then try again without blocking the user's current page load.
+		entry.expiresAt = now.Add(time.Second)
+		return
+	}
+	if storedVersion != authVersion || !emailVerified {
+		entry.valid = false
+		entry.expiresAt = time.Time{}
+		entry.staleUntil = time.Time{}
+		return
+	}
+	entry.authVersion = storedVersion
+	entry.valid = true
+	entry.expiresAt = now.Add(authValidationTTL)
+	entry.staleUntil = now.Add(authValidationStaleGrace)
 }
 
 func WriteJSON(w http.ResponseWriter, status int, data any) {

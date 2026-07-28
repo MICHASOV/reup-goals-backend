@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/auth"
@@ -44,6 +46,25 @@ func TestRequireAuthRejectsMissingToken(t *testing.T) {
 	handler(response, httptest.NewRequest(http.MethodGet, "/api/v2/bootstrap", nil))
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("unexpected status: %d", response.Code)
+	}
+}
+
+func TestValidAuthenticatedUserUsesFreshCachedValidationWithoutDatabase(t *testing.T) {
+	userID := 987654
+	entry := &authValidationEntry{
+		authVersion: 4,
+		valid:       true,
+		expiresAt:   time.Now().Add(time.Minute),
+		staleUntil:  time.Now().Add(2 * time.Minute),
+	}
+	authValidationEntries.Store(userID, entry)
+	defer authValidationEntries.Delete(userID)
+
+	if !validAuthenticatedUser(context.Background(), nil, userID, 4) {
+		t.Fatal("fresh cached validation must not require a database query")
+	}
+	if validAuthenticatedUser(context.Background(), nil, userID, 5) {
+		t.Fatal("cache must never authorize a different auth version")
 	}
 }
 
