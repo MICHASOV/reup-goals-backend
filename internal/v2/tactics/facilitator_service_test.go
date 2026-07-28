@@ -102,19 +102,32 @@ func TestParseRequiredDraftTreatsApplyAsProposalNotMutationPermission(t *testing
 	}
 }
 
-func TestTacticsProposalSchemaRequiresRequestedEntity(t *testing.T) {
-	schema := tacticsFacilitatorOutputSchema(EntityProject)
-	properties := schema["properties"].(map[string]any)
-	drafts := properties["draft_changes"].(map[string]any)
-	if drafts["minItems"] != 1 {
-		t.Fatalf("proposal schema must require a draft: %#v", drafts)
+func TestBuildRequestedProjectDraftUsesAdvisorContentAndActiveWorkstream(t *testing.T) {
+	scope := &TacticsMessageScope{EntityType: EntityWorkstream, EntityID: 42, Label: "Продажи"}
+	output := tacticsFacilitatorModelOutput{
+		Message:      "Проверим легальный платный канал без автоматического применения.",
+		StatusReason: "Проект нужен для проверки CAC.",
+		CurrentFocus: TacticsFocus{
+			EntityType:   EntityProject,
+			Title:        "Легальный paid acquisition эксперимент",
+			ResearchGoal: "Получить измеримый CAC и contribution signal.",
+		},
 	}
-	item := drafts["items"].(map[string]any)
-	itemProperties := item["properties"].(map[string]any)
-	entityType := itemProperties["entity_type"].(map[string]any)
-	values := entityType["enum"].([]string)
-	if len(values) != 1 || values[0] != EntityProject {
-		t.Fatalf("proposal schema entity type = %#v", values)
+	change := buildRequestedTacticsDraft(
+		EntityProject,
+		"Создай проект",
+		output,
+		scope,
+		TacticsFacilitatorState{},
+	)
+	if !change.Apply || change.Operation != "create" || change.EntityType != EntityProject {
+		t.Fatalf("unexpected proposal: %#v", change)
+	}
+	if change.ParentEntityType != EntityWorkstream || change.ParentEntityID == nil || *change.ParentEntityID != 42 {
+		t.Fatalf("project parent = %#v", change)
+	}
+	if change.Title != output.CurrentFocus.Title || change.Description != output.Message {
+		t.Fatalf("advisor content was not preserved: %#v", change)
 	}
 }
 

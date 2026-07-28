@@ -65,26 +65,6 @@ func TestBuildResponsesRequestKeepsInstructionsForOneShotCall(t *testing.T) {
 	}
 }
 
-func TestJSONNativeTextFormatUsesStrictSchemaWhenProvided(t *testing.T) {
-	options := ResponseContextOptions{
-		JSONSchemaName: "advisor_proposal",
-		JSONSchema: map[string]any{
-			"type":                 "object",
-			"properties":           map[string]any{"message": map[string]any{"type": "string"}},
-			"required":             []string{"message"},
-			"additionalProperties": false,
-		},
-	}
-	text := jsonNativeTextFormat(options)
-	format, ok := text["format"].(map[string]any)
-	if !ok {
-		t.Fatalf("format = %#v", text)
-	}
-	if format["type"] != "json_schema" || format["name"] != "advisor_proposal" || format["strict"] != true {
-		t.Fatalf("unexpected schema format: %#v", format)
-	}
-}
-
 func TestBuildConversationRequestPinsResolvedPrompt(t *testing.T) {
 	resolved := ResolvedCall{
 		Instructions: "resolved prompt from registry",

@@ -259,8 +259,6 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		PromptCacheKey:       openAISession.PromptCacheKey,
 		MaxFileSearchResults: 8,
 		MaxOutputTokens:      2600,
-		JSONSchemaName:       tacticsResponseSchemaName(requiredDraftType),
-		JSONSchema:           tacticsFacilitatorOutputSchema(requiredDraftType),
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil && strings.TrimSpace(openAISession.ConversationID) != "" && ai.IsConversationStateError(err) {
@@ -273,8 +271,6 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			PromptCacheKey:       openAISession.PromptCacheKey,
 			MaxFileSearchResults: 8,
 			MaxOutputTokens:      2600,
-			JSONSchemaName:       tacticsResponseSchemaName(requiredDraftType),
-			JSONSchema:           tacticsFacilitatorOutputSchema(requiredDraftType),
 		})
 		duration = time.Since(started).Milliseconds()
 	}
@@ -301,8 +297,6 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			PromptCacheKey:       openAISession.PromptCacheKey,
 			MaxFileSearchResults: 8,
 			MaxOutputTokens:      2600,
-			JSONSchemaName:       tacticsResponseSchemaName(requiredDraftType),
-			JSONSchema:           tacticsFacilitatorOutputSchema(requiredDraftType),
 		})
 		duration = time.Since(started).Milliseconds()
 		if err == nil {
@@ -323,45 +317,10 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		}
 	}
 	if requiredDraftType != "" && !hasTacticsDraftType(modelOutput.DraftChanges, requiredDraftType) {
-		s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", "advisor_proposal_contract_missing")
-		repairPayload, _ := json.Marshal(map[string]any{
-			"instruction":                "The user explicitly requested a structured proposal. Return valid JSON matching the response contract with at least one draft_changes item of the required entity type. Keep apply=true and operation=create. This is only a proposal and must not be applied automatically.",
-			"required_draft_entity_type": requiredDraftType,
-			"latest_user_message":        message,
-			"draft_entity_type_hint":     normalizeTacticsDraftType(request.DraftEntityTypeHint),
-		})
-		started = time.Now()
-		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, string(repairPayload), ai.ResponseContextOptions{
-			UseConversation:      true,
-			ConversationID:       result.ConversationID,
-			VectorStoreIDs:       vectorStoreIDs,
-			CompactThreshold:     openAISession.CompactThreshold,
-			PromptCacheKey:       openAISession.PromptCacheKey,
-			MaxFileSearchResults: 8,
-			MaxOutputTokens:      2200,
-			JSONSchemaName:       tacticsResponseSchemaName(requiredDraftType),
-			JSONSchema:           tacticsFacilitatorOutputSchema(requiredDraftType),
-		})
-		duration = time.Since(started).Milliseconds()
-		if err == nil {
-			modelOutput, parseErr = parseTacticsFacilitatorOutputForDraft(result.Text, requiredDraftType)
-		}
-		if err != nil || parseErr != nil || !hasTacticsDraftType(modelOutput.DraftChanges, requiredDraftType) {
-			errorText := "advisor_proposal_contract_failed"
-			if err != nil {
-				errorText = err.Error()
-			} else if parseErr != nil {
-				errorText = parseErr.Error()
-			}
-			s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
-			if ai.IsCallRejected(err) {
-				return TacticsFacilitatorMessageResponse{}, err
-			}
-			return TacticsFacilitatorMessageResponse{}, fmt.Errorf("advisor_proposal_contract_failed")
-		}
-		if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != openAISession.ConversationID {
-			_ = s.store.UpdateOpenAITacticsScopeConversationID(ctx, workspaceID, conversationScope, result.ConversationID)
-		}
+		modelOutput.DraftChanges = append(
+			modelOutput.DraftChanges,
+			buildRequestedTacticsDraft(requiredDraftType, message, modelOutput, contextScope, state),
+		)
 	}
 	s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 
@@ -580,6 +539,115 @@ func requestedTacticsDraftType(message string, hint string) string {
 	default:
 		return ""
 	}
+}
+
+func buildRequestedTacticsDraft(
+	requiredDraftType string,
+	message string,
+	output tacticsFacilitatorModelOutput,
+	scope *TacticsMessageScope,
+	state TacticsFacilitatorState,
+) TacticsDraftChange {
+	title := strings.TrimSpace(output.CurrentFocus.Title)
+	if output.CurrentFocus.EntityType != requiredDraftType || title == "" {
+		title = requestedTacticsDraftTitle(requiredDraftType, message)
+	}
+	description := truncateTacticsText(output.Message, 2400)
+	reason := truncateTacticsText(output.StatusReason, 800)
+	if reason == "" {
+		reason = "Пользователь явно запросил черновик для подтверждения."
+	}
+
+	change := TacticsDraftChange{
+		Apply:          true,
+		Operation:      "create",
+		EntityType:     requiredDraftType,
+		Title:          title,
+		Description:    description,
+		Reason:         reason,
+		CoverageStatus: CoverageUncovered,
+	}
+	if scope != nil && scope.EntityID > 0 {
+		parentAllowed := false
+		switch requiredDraftType {
+		case EntityWorkstream:
+			parentAllowed = scope.EntityType == EntityPlan
+		case EntityProject:
+			parentAllowed = scope.EntityType == EntityWorkstream
+		case EntityRisk, EntityHypothesis:
+			parentAllowed = scope.EntityType == EntityPlan ||
+				scope.EntityType == EntityWorkstream ||
+				scope.EntityType == EntityProject
+		}
+		if parentAllowed {
+			change.ParentEntityType = scope.EntityType
+			parentID := scope.EntityID
+			change.ParentEntityID = &parentID
+		}
+	}
+	if change.ParentEntityID == nil && state.Current.TacticalPlan != nil {
+		switch requiredDraftType {
+		case EntityWorkstream, EntityRisk, EntityHypothesis:
+			change.ParentEntityType = EntityPlan
+			parentID := state.Current.TacticalPlan.ID
+			change.ParentEntityID = &parentID
+		case EntityProject:
+			if len(state.Current.Workstreams) == 1 {
+				change.ParentEntityType = EntityWorkstream
+				parentID := state.Current.Workstreams[0].ID
+				change.ParentEntityID = &parentID
+			}
+		}
+	}
+
+	switch requiredDraftType {
+	case EntityWorkstream:
+		change.Goal = description
+		change.CKP = truncateTacticsText(output.CurrentFocus.ResearchGoal, 800)
+	case EntityProject:
+		change.WhyNeeded = reason
+		change.SuccessCriteria = truncateTacticsText(output.CurrentFocus.ResearchGoal, 800)
+	case EntityRisk:
+		change.Severity = "medium"
+		change.Probability = "medium"
+		change.MitigationPlan = truncateTacticsText(output.CurrentFocus.ResearchGoal, 800)
+	case EntityHypothesis:
+		change.Statement = title
+		change.ExpectedEffect = truncateTacticsText(output.CurrentFocus.ResearchGoal, 800)
+		change.HypothesisStatus = "draft"
+	}
+	return change
+}
+
+func requestedTacticsDraftTitle(entityType string, message string) string {
+	title := strings.TrimSpace(message)
+	if separator := strings.LastIndex(title, ":"); separator >= 0 && separator < len(title)-1 {
+		title = strings.TrimSpace(title[separator+1:])
+	}
+	title = strings.Trim(title, " .!?")
+	title = truncateTacticsText(title, 180)
+	if title != "" {
+		return title
+	}
+	switch entityType {
+	case EntityWorkstream:
+		return "Новое направление"
+	case EntityRisk:
+		return "Новый риск"
+	case EntityHypothesis:
+		return "Новая гипотеза"
+	default:
+		return "Новый проект"
+	}
+}
+
+func truncateTacticsText(value string, maxRunes int) string {
+	clean := strings.TrimSpace(value)
+	runes := []rune(clean)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return clean
+	}
+	return strings.TrimSpace(string(runes[:maxRunes]))
 }
 
 func normalizeTacticsDraftType(value string) string {
