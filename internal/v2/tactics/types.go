@@ -46,7 +46,7 @@ const (
 	SourceManual       = "manual"
 	SourceAISuggestion = "ai_suggestion"
 
-	TacticsFacilitatorPromptVersion = "tactics_advisor_openai_native_v0_2_1"
+	TacticsFacilitatorPromptVersion = "tactics_advisor_openai_native_v0_2_2"
 	TacticsReadinessPromptVersion   = "tactics_quality_readiness_auditor_v0_1_2"
 
 	FacilitatorStatusInProgress     = "in_progress"
@@ -345,6 +345,7 @@ type TacticsFacilitatorMessageRequest struct {
 	ParticipantRole     string                      `json:"participant_role,omitempty"`
 	Scope               *TacticsMessageScope        `json:"scope,omitempty"`
 	ThreadID            int                         `json:"thread_id,omitempty"`
+	DraftEntityTypeHint string                      `json:"draft_entity_type_hint,omitempty"`
 	Attachments         []TacticsContextAttachment  `json:"attachments,omitempty"`
 	ResolvedAttachments []TacticsResolvedAttachment `json:"-"`
 }

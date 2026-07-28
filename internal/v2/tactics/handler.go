@@ -222,6 +222,10 @@ func (h *Handler) advisorMessage(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusBadRequest, "advisor_thread_required")
 		return
 	}
+	if body.DraftEntityTypeHint != "" && normalizeTacticsDraftType(body.DraftEntityTypeHint) == "" {
+		api.WriteError(w, http.StatusUnprocessableEntity, "invalid_draft_entity_type_hint")
+		return
+	}
 	response, err := h.facilitator.HandleMessage(r.Context(), workspace.ID, userID, body)
 	if err != nil {
 		switch {
@@ -235,6 +239,8 @@ func (h *Handler) advisorMessage(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, http.StatusBadRequest, err.Error())
 		case err.Error() == "invalid_tactics_scope":
 			api.WriteError(w, http.StatusBadRequest, err.Error())
+		case err.Error() == "advisor_proposal_contract_failed":
+			api.WriteError(w, http.StatusBadGateway, err.Error())
 		default:
 			api.WriteAIError(w, err, http.StatusInternalServerError, "advisor_message_failed")
 		}

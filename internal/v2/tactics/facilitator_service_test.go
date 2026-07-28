@@ -33,6 +33,52 @@ func TestTacticsConversationTurnContainsOnlyMessageAndScope(t *testing.T) {
 	}
 }
 
+func TestTacticsConversationTurnRequiresProposalOnlyForExplicitCreationIntent(t *testing.T) {
+	input := buildTacticsTurnInput("Давайте сначала обсудим механику", TacticsFacilitatorMessageRequest{
+		DraftEntityTypeHint: EntityProject,
+	})
+	var discussion map[string]any
+	if err := json.Unmarshal([]byte(input), &discussion); err != nil {
+		t.Fatal(err)
+	}
+	if discussion["draft_entity_type_hint"] != EntityProject || discussion["required_output"] != nil {
+		t.Fatalf("discussion must carry a hint without forcing an early proposal: %#v", discussion)
+	}
+
+	input = buildTacticsTurnInput("Подготовь проект как proposal для подтверждения", TacticsFacilitatorMessageRequest{
+		DraftEntityTypeHint: EntityProject,
+	})
+	var creation map[string]any
+	if err := json.Unmarshal([]byte(input), &creation); err != nil {
+		t.Fatal(err)
+	}
+	required, ok := creation["required_output"].(map[string]any)
+	if !ok || required["draft_entity_type"] != EntityProject || required["confirmation"] != "proposal_only" {
+		t.Fatalf("explicit creation must require a project proposal: %#v", creation)
+	}
+}
+
+func TestRequestedTacticsDraftTypeUsesHintAndMessageFallback(t *testing.T) {
+	if got := requestedTacticsDraftType("Создай черновик для подтверждения", EntityRisk); got != EntityRisk {
+		t.Fatalf("expected risk hint, got %q", got)
+	}
+	if got := requestedTacticsDraftType("Сформируй новую гипотезу", ""); got != EntityHypothesis {
+		t.Fatalf("expected hypothesis from message, got %q", got)
+	}
+	if got := requestedTacticsDraftType("Давайте обсудим проект", EntityProject); got != "" {
+		t.Fatalf("discussion must not require a proposal, got %q", got)
+	}
+}
+
+func TestHasTacticsDraftTypeRequiresConfirmableCreate(t *testing.T) {
+	if hasTacticsDraftType([]TacticsDraftChange{{Apply: false, Operation: "create", EntityType: EntityProject}}, EntityProject) {
+		t.Fatal("non-applied draft must not satisfy the proposal contract")
+	}
+	if !hasTacticsDraftType([]TacticsDraftChange{{Apply: true, Operation: "create", EntityType: EntityProject}}, EntityProject) {
+		t.Fatal("confirmable project create must satisfy the proposal contract")
+	}
+}
+
 func TestParseTacticsFacilitatorOutput(t *testing.T) {
 	raw := `{
 		"message":"Проверим **механизм изменения**【 】, а не список задач.",

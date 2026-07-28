@@ -163,6 +163,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if len([]rune(message)) > 50000 {
 		return TacticsFacilitatorMessageResponse{}, fmt.Errorf("message_too_long")
 	}
+	requiredDraftType := requestedTacticsDraftType(message, request.DraftEntityTypeHint)
 
 	personalThread := request.ThreadID > 0
 	contextScope := request.Scope
@@ -315,6 +316,45 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			return s.fallbackResponse(ctx, workspaceID, userMessageID, state, conversationScope, personalThread), nil
 		}
 	}
+	if requiredDraftType != "" && !hasTacticsDraftType(modelOutput.DraftChanges, requiredDraftType) {
+		s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", "advisor_proposal_contract_missing")
+		repairPayload, _ := json.Marshal(map[string]any{
+			"instruction":                "The user explicitly requested a structured proposal. Return valid JSON matching the response contract with at least one draft_changes item of the required entity type. Keep apply=true and operation=create. This is only a proposal and must not be applied automatically.",
+			"required_draft_entity_type": requiredDraftType,
+			"latest_user_message":        message,
+			"draft_entity_type_hint":     normalizeTacticsDraftType(request.DraftEntityTypeHint),
+		})
+		started = time.Now()
+		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, string(repairPayload), ai.ResponseContextOptions{
+			UseConversation:      true,
+			ConversationID:       result.ConversationID,
+			VectorStoreIDs:       vectorStoreIDs,
+			CompactThreshold:     openAISession.CompactThreshold,
+			PromptCacheKey:       openAISession.PromptCacheKey,
+			MaxFileSearchResults: 8,
+			MaxOutputTokens:      2200,
+		})
+		duration = time.Since(started).Milliseconds()
+		if err == nil {
+			modelOutput, parseErr = parseTacticsFacilitatorOutput(result.Text)
+		}
+		if err != nil || parseErr != nil || !hasTacticsDraftType(modelOutput.DraftChanges, requiredDraftType) {
+			errorText := "advisor_proposal_contract_failed"
+			if err != nil {
+				errorText = err.Error()
+			} else if parseErr != nil {
+				errorText = parseErr.Error()
+			}
+			s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", errorText)
+			if ai.IsCallRejected(err) {
+				return TacticsFacilitatorMessageResponse{}, err
+			}
+			return TacticsFacilitatorMessageResponse{}, fmt.Errorf("advisor_proposal_contract_failed")
+		}
+		if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != openAISession.ConversationID {
+			_ = s.store.UpdateOpenAITacticsScopeConversationID(ctx, workspaceID, conversationScope, result.ConversationID)
+		}
+	}
 	s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 
 	assistantMessage := cleanTacticsAssistantMessage(modelOutput.Message)
@@ -429,6 +469,7 @@ func buildTacticsFreshInput(message string, request TacticsFacilitatorMessageReq
 	if len(request.ResolvedAttachments) > 0 {
 		contextPack["attached_context"] = request.ResolvedAttachments
 	}
+	addTacticsDraftContract(contextPack, message, request.DraftEntityTypeHint)
 	raw, _ := json.Marshal(contextPack)
 	return "Context for the tactical session in JSON:\n" + string(raw)
 }
@@ -489,8 +530,81 @@ func buildTacticsTurnInput(message string, request TacticsFacilitatorMessageRequ
 	if len(request.ResolvedAttachments) > 0 {
 		turn["attached_context"] = request.ResolvedAttachments
 	}
+	addTacticsDraftContract(turn, message, request.DraftEntityTypeHint)
 	raw, _ := json.Marshal(turn)
 	return string(raw)
+}
+
+func addTacticsDraftContract(input map[string]any, message string, hint string) {
+	normalizedHint := normalizeTacticsDraftType(hint)
+	if normalizedHint != "" {
+		input["draft_entity_type_hint"] = normalizedHint
+	}
+	if requiredType := requestedTacticsDraftType(message, normalizedHint); requiredType != "" {
+		input["required_output"] = map[string]any{
+			"draft_entity_type": requiredType,
+			"operation":         "create",
+			"confirmation":      "proposal_only",
+		}
+	}
+}
+
+func requestedTacticsDraftType(message string, hint string) string {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	if normalized == "" || !containsAny(normalized,
+		"созда", "сформир", "подготов", "добав", "завед", "оформ", "зафикс",
+		"черновик", "proposal", "create", "prepare", "draft", "record",
+	) {
+		return ""
+	}
+	if normalizedHint := normalizeTacticsDraftType(hint); normalizedHint != "" {
+		return normalizedHint
+	}
+	switch {
+	case containsAny(normalized, "проект", "project"):
+		return EntityProject
+	case containsAny(normalized, "направлен", "workstream"):
+		return EntityWorkstream
+	case containsAny(normalized, "гипотез", "hypothesis"):
+		return EntityHypothesis
+	case containsAny(normalized, "риск", "risk"):
+		return EntityRisk
+	default:
+		return ""
+	}
+}
+
+func normalizeTacticsDraftType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case EntityProject:
+		return EntityProject
+	case EntityWorkstream:
+		return EntityWorkstream
+	case EntityRisk:
+		return EntityRisk
+	case EntityHypothesis:
+		return EntityHypothesis
+	default:
+		return ""
+	}
+}
+
+func hasTacticsDraftType(changes []TacticsDraftChange, entityType string) bool {
+	for _, change := range changes {
+		if change.Apply && change.Operation == "create" && change.EntityType == entityType {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAny(value string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(value, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func compactTacticsReadinessFeedback(run *TacticsReadinessRun) any {
