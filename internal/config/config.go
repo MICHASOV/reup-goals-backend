@@ -20,6 +20,7 @@ type Config struct {
 	DBMaxOpenConns    int
 	DBMaxIdleConns    int
 	DBConnMaxLifetime time.Duration
+	DBConnMaxIdleTime time.Duration
 
 	OpenAIKey                     string
 	OpenAIModel                   string
@@ -196,6 +197,7 @@ func Load() *Config {
 		DBMaxOpenConns:    parseIntEnv("DB_MAX_OPEN_CONNS", 25),
 		DBMaxIdleConns:    parseIntEnv("DB_MAX_IDLE_CONNS", 10),
 		DBConnMaxLifetime: parseDurationEnv("DB_CONN_MAX_LIFETIME", 30*time.Minute),
+		DBConnMaxIdleTime: parseDurationEnv("DB_CONN_MAX_IDLE_TIME", time.Minute),
 
 		OpenAIKey:                     os.Getenv("OPENAI_API_KEY"),
 		OpenAIModel:                   model,
@@ -437,6 +439,11 @@ func (c *Config) ConnString() string {
 	}
 	query := connection.Query()
 	query.Set("sslmode", c.DBSSLMode)
+	query.Set("connect_timeout", "5")
+	query.Set("keepalives", "1")
+	query.Set("keepalives_idle", "30")
+	query.Set("keepalives_interval", "10")
+	query.Set("keepalives_count", "3")
 	connection.RawQuery = query.Encode()
 	return connection.String()
 }

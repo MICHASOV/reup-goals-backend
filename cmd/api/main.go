@@ -51,7 +51,8 @@ func main() {
 	secureCookie := cfg.SecureCookies || cfg.Environment == "production" || cfg.Environment == "staging"
 
 	database, err := db.Connect(cfg.ConnString(), db.PoolOptions{
-		MaxOpenConns: cfg.DBMaxOpenConns, MaxIdleConns: cfg.DBMaxIdleConns, ConnMaxLifetime: cfg.DBConnMaxLifetime,
+		MaxOpenConns: cfg.DBMaxOpenConns, MaxIdleConns: cfg.DBMaxIdleConns,
+		ConnMaxLifetime: cfg.DBConnMaxLifetime, ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
 	})
 	if err != nil {
 		log.Fatal("DB error:", err)

@@ -80,6 +80,7 @@ jobs:
           DB_PASSWORD=
           DB_NAME=
           DB_SSLMODE=require
+          DB_CONN_MAX_IDLE_TIME=1m
           APP_ENV=staging
           JWT_SECRET=
           CORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro
@@ -183,6 +184,11 @@ jobs:
             sed -i 's/^DB_SSLMODE=.*/DB_SSLMODE=require/' /etc/reup-goals-staging/backend.env
           else
             printf '\nDB_SSLMODE=require\n' >> /etc/reup-goals-staging/backend.env
+          fi
+          if grep -q '^DB_CONN_MAX_IDLE_TIME=' /etc/reup-goals-staging/backend.env; then
+            sed -i 's/^DB_CONN_MAX_IDLE_TIME=.*/DB_CONN_MAX_IDLE_TIME=1m/' /etc/reup-goals-staging/backend.env
+          else
+            printf '\nDB_CONN_MAX_IDLE_TIME=1m\n' >> /etc/reup-goals-staging/backend.env
           fi
           for setting in \
             'BROWSER_AUTH_ONLY=true' \

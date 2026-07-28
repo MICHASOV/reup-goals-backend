@@ -12,6 +12,7 @@ type PoolOptions struct {
 	MaxOpenConns    int
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
 }
 
 func Connect(connString string, options ...PoolOptions) (*sql.DB, error) {
@@ -29,6 +30,9 @@ func Connect(connString string, options ...PoolOptions) (*sql.DB, error) {
 		}
 		if pool.ConnMaxLifetime > 0 {
 			database.SetConnMaxLifetime(pool.ConnMaxLifetime)
+		}
+		if pool.ConnMaxIdleTime > 0 {
+			database.SetConnMaxIdleTime(pool.ConnMaxIdleTime)
 		}
 	}
 

@@ -95,9 +95,25 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		"http":         httpStats,
 		"ai":           aiStats,
 		"queue":        queueStats,
+		"database":     databaseStats(h.dbx),
 		"warnings":     warnings,
 		"generated_at": time.Now().UTC(),
 	})
+}
+
+func databaseStats(database *sql.DB) map[string]any {
+	stats := database.Stats()
+	return map[string]any{
+		"max_open_connections": stats.MaxOpenConnections,
+		"open_connections":     stats.OpenConnections,
+		"in_use":               stats.InUse,
+		"idle":                 stats.Idle,
+		"wait_count":           stats.WaitCount,
+		"wait_duration_ms":     stats.WaitDuration.Milliseconds(),
+		"max_idle_closed":      stats.MaxIdleClosed,
+		"max_idle_time_closed": stats.MaxIdleTimeClosed,
+		"max_lifetime_closed":  stats.MaxLifetimeClosed,
+	}
 }
 
 func (h *Handler) Warnings(w http.ResponseWriter, r *http.Request) {
