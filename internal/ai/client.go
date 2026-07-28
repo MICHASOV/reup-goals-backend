@@ -3,6 +3,7 @@ package ai
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -507,7 +508,7 @@ func buildResponsesRequest(
 		Input:           input,
 		MaxOutputTokens: defaultMaxOutputTokens,
 		Text:            textFormat,
-		PromptCacheKey:  strings.TrimSpace(options.PromptCacheKey),
+		PromptCacheKey:  normalizePromptCacheKey(options.PromptCacheKey),
 	}
 	if strings.TrimSpace(conversationID) != "" {
 		reqBody.Conversation = strings.TrimSpace(conversationID)
@@ -538,6 +539,15 @@ func buildResponsesRequest(
 		reqBody.Tools = []map[string]interface{}{fileSearchTool}
 	}
 	return reqBody
+}
+
+func normalizePromptCacheKey(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 64 {
+		return value
+	}
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", sum)
 }
 
 func (c *OpenAIClient) createConversation(ctx context.Context, resolved ResolvedCall) (string, error) {

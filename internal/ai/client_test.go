@@ -65,6 +65,26 @@ func TestBuildResponsesRequestKeepsInstructionsForOneShotCall(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesRequestCapsPromptCacheKey(t *testing.T) {
+	longKey := "reupgoals-" + strings.Repeat("длинный-ключ-", 8)
+	first := buildResponsesRequest(ResolvedCall{Model: "gpt-test"}, "input", nil, ResponseContextOptions{
+		PromptCacheKey: longKey,
+	}, 4000, "")
+	second := buildResponsesRequest(ResolvedCall{Model: "gpt-test"}, "input", nil, ResponseContextOptions{
+		PromptCacheKey: longKey,
+	}, 4000, "")
+
+	if len(first.PromptCacheKey) != 64 {
+		t.Fatalf("prompt cache key length = %d, want 64", len(first.PromptCacheKey))
+	}
+	if first.PromptCacheKey != second.PromptCacheKey {
+		t.Fatalf("prompt cache key must be deterministic: %q != %q", first.PromptCacheKey, second.PromptCacheKey)
+	}
+	if first.PromptCacheKey == strings.TrimSpace(longKey) {
+		t.Fatal("overlong prompt cache key must be normalized")
+	}
+}
+
 func TestBuildConversationRequestPinsResolvedPrompt(t *testing.T) {
 	resolved := ResolvedCall{
 		Instructions: "resolved prompt from registry",
