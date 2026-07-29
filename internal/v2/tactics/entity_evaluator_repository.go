@@ -26,11 +26,6 @@ func (s *Store) QueueEntityEvaluation(ctx context.Context, workspaceID, userID i
 		return "", err
 	}
 	status := entityEvaluationQueued
-	if _, err := s.activeStrategy(ctx, workspaceID); errors.Is(err, sql.ErrNoRows) {
-		status = entityEvaluationAwaitingStrategy
-	} else if err != nil {
-		return "", err
-	}
 	_, err := s.dbx.ExecContext(ctx, `
 		INSERT INTO v2_tactical_entity_evaluation_jobs (
 			workspace_id, entity_type, entity_id, requested_by, status, attempts, not_before

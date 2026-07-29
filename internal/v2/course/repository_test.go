@@ -45,6 +45,37 @@ func TestBuildDraftUsesCurrentSynthesisArtifacts(t *testing.T) {
 	}
 }
 
+func TestInferCourseHorizonDaysUsesSelectedHorizon(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want int
+	}{
+		{name: "weeks", text: "Проверить гипотезу за 6 недель", want: 42},
+		{name: "months", text: "Горизонт курса — 4 месяца", want: 120},
+		{name: "years", text: "Переход рассчитан на 2 года", want: 730},
+		{name: "default", text: "Горизонт пока не назван", want: 90},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := inferCourseHorizonDays(test.text); got != test.want {
+				t.Fatalf("inferCourseHorizonDays(%q)=%d, want %d", test.text, got, test.want)
+			}
+		})
+	}
+}
+
+func TestInferCourseHorizonDaysPrioritizesCurrentCourseFields(t *testing.T) {
+	got := inferCourseHorizonDays(
+		"Подтвердить платящий сегмент за 6 недель",
+		"Трёхлетняя стратегия роста",
+		"Через 3 года выйти на федеральный рынок",
+	)
+	if got != 42 {
+		t.Fatalf("inferCourseHorizonDays()=%d, want 42", got)
+	}
+}
+
 func TestBuildCourseSyncRequiresCurrentStrategyRevision(t *testing.T) {
 	runID := 17
 	course := Course{

@@ -143,11 +143,11 @@ func TestStrategyReadinessWeightsTotalOneHundred(t *testing.T) {
 	}
 }
 
-func TestStrategyPromptsStayLongTermAndContainEveryReadinessCriterion(t *testing.T) {
+func TestStrategyPromptsSupportAdaptiveHorizonAndContainEveryReadinessCriterion(t *testing.T) {
 	combinedPrompt := strings.ToLower(strategyFacilitatorPrompt + "\n" + strategyReadinessPrompt)
-	for _, forbidden := range []string{"90-day", "90 days", "near-term course", "30 days", "60 days"} {
-		if strings.Contains(combinedPrompt, forbidden) {
-			t.Fatalf("strategy prompts must not contain short-term planning instruction %q", forbidden)
+	for _, required := range []string{"selected horizon", "short course", "long-term strategy", "horizon fit"} {
+		if !strings.Contains(combinedPrompt, required) {
+			t.Fatalf("strategy prompts must support adaptive planning horizon %q", required)
 		}
 	}
 	for _, code := range strategyReadinessCriterionOrder {

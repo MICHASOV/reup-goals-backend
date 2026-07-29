@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +28,8 @@ type strategySnapshot struct {
 	CurrentSessionRevision int
 	Artifacts              map[string]strategyArtifactValue
 }
+
+var courseHorizonPattern = regexp.MustCompile(`(?i)(\d{1,3})\s*(дн(?:я|ей|ь)?|нед(?:еля|ели|ель)?|мес(?:яц|яца|яцев)?|год(?:а)?|лет|days?|weeks?|months?|years?)`)
 
 func (s strategySnapshot) isCurrent() bool {
 	return s.RunID > 0 && s.SessionRevision == s.CurrentSessionRevision
@@ -665,6 +669,7 @@ func (s *Store) knowledgeBaseSummary(ctx context.Context, workspaceID int) (Know
 }
 
 func buildDraft(strategy StrategySummary, artifacts map[string]strategyArtifactValue) CourseInput {
+	currentCourse := artifacts["ninety_day_course"]
 	direction := firstNonEmpty(
 		artifactValue(artifacts["chosen_direction_and_refusals"]),
 		artifactValue(artifacts["strategic_direction"]),
@@ -682,18 +687,23 @@ func buildDraft(strategy StrategySummary, artifacts map[string]strategyArtifactV
 		artifactValue(artifacts["current_challenge"]),
 	)
 	keyMetric := firstNonEmpty(artifacts["goals_and_metrics"].PrimarySignal, artifacts["goals_and_metrics"].FrameTitle, artifactValue(artifacts["key_metric"]))
-	successCriterion := firstNonEmpty(artifacts["ninety_day_course"].FrameSubtitle, artifacts["goals_and_metrics"].FrameSubtitle, artifactValue(artifacts["validation_plan"]))
+	successCriterion := firstNonEmpty(currentCourse.FrameSubtitle, artifacts["goals_and_metrics"].FrameSubtitle, artifactValue(artifacts["validation_plan"]))
 
 	title := "Курс компании"
-	if courseTitle := strings.TrimSpace(artifacts["ninety_day_course"].PrimarySignal); courseTitle != "" {
+	if courseTitle := strings.TrimSpace(currentCourse.PrimarySignal); courseTitle != "" {
 		title = courseTitle
-	} else if courseTitle := strings.TrimSpace(artifacts["ninety_day_course"].FrameTitle); courseTitle != "" {
+	} else if courseTitle := strings.TrimSpace(currentCourse.FrameTitle); courseTitle != "" {
 		title = courseTitle
 	} else if direction != "" {
 		title = direction
 	}
 
-	horizon := 90
+	horizon := inferCourseHorizonDays(
+		currentCourse.PrimarySignal,
+		currentCourse.FrameTitle,
+		currentCourse.FrameSubtitle,
+		currentCourse.Content,
+	)
 	return CourseInput{
 		Title:            title,
 		Direction:        direction,
@@ -705,6 +715,35 @@ func buildDraft(strategy StrategySummary, artifacts map[string]strategyArtifactV
 		SuccessCriterion: successCriterion,
 		Status:           StatusDraft,
 	}
+}
+
+func inferCourseHorizonDays(values ...string) int {
+	for _, source := range values {
+		maxDays := 0
+		for _, match := range courseHorizonPattern.FindAllStringSubmatch(source, -1) {
+			value, err := strconv.Atoi(match[1])
+			if err != nil || value <= 0 {
+				continue
+			}
+			unit := strings.ToLower(match[2])
+			days := value
+			switch {
+			case strings.HasPrefix(unit, "нед"), strings.HasPrefix(unit, "week"):
+				days = value * 7
+			case strings.HasPrefix(unit, "мес"), strings.HasPrefix(unit, "month"):
+				days = value * 30
+			case strings.HasPrefix(unit, "год"), unit == "лет", strings.HasPrefix(unit, "year"):
+				days = value * 365
+			}
+			if days > maxDays && days <= 3650 {
+				maxDays = days
+			}
+		}
+		if maxDays > 0 {
+			return maxDays
+		}
+	}
+	return 90
 }
 
 func artifactValue(value strategyArtifactValue) string {

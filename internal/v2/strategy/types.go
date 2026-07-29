@@ -21,8 +21,8 @@ const (
 
 	SourceManual = "manual"
 
-	StrategyFacilitatorPromptVersion       = "strategy_facilitator_openai_native_v0_3_0"
-	StrategySynthesizerPromptVersion       = "strategy_synthesizer_v0_1_0"
+	StrategyFacilitatorPromptVersion       = "strategy_facilitator_openai_native_v0_4_0"
+	StrategySynthesizerPromptVersion       = "strategy_synthesizer_v0_2_0"
 	StrategyArtifactFormatterPromptVersion = "strategy_artifact_formatter_v0_1_0"
 
 	ResearchStatusProposed   = "proposed"
@@ -428,7 +428,7 @@ var strategySynthesisDocumentDefinitions = []strategySynthesisDocumentDefinition
 	{Type: "strategy_economics", Title: "Экономика стратегии", Description: "Финансовая и экономическая логика выбранного направления.", SortOrder: 6},
 	{Type: "hypotheses_risks_confidence", Title: "Гипотезы, риски и степень уверенности", Description: "Предположения, риски, подтверждения и уровень неопределённости.", SortOrder: 7},
 	{Type: "research_plan", Title: "План необходимых исследований", Description: "Данные и проверки, необходимые для продолжения стратегической работы.", SortOrder: 8},
-	{Type: "ninety_day_course", Title: "Курс на ближайшие 90 дней", Description: "Согласованный ближайший курс, приоритеты и ожидаемые результаты периода.", SortOrder: 9},
+	{Type: "ninety_day_course", Title: "Текущий курс компании", Description: "Согласованный фокус, горизонт, ожидаемый результат, метрика и критерии периода.", SortOrder: 9},
 	{Type: "decision_history", Title: "История принятых решений", Description: "Решения, альтернативы, причины выбора и изменения позиции.", SortOrder: 10},
 }
 

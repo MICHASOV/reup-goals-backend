@@ -35,7 +35,7 @@ The assumptions on which the strategy depends, the associated risks, existing ev
 The data, calculations, interviews, experiments, analyses, or other research that still needs to be completed to validate assumptions, resolve contradictions, or support decisions for which the available information is insufficient.
 
 9. ninety_day_course
-The nearest agreed course: priorities, expected results for the period, sequence or dependencies of actions, constraints, and the criteria by which the company will know it is moving correctly.
+The current agreed course. Preserve the horizon actually selected in the session; it may be shorter or longer than 90 days. Include the reason this horizon fits the company's situation, the expected outcome, priorities, metric with baseline and target when available, sequence or dependencies, constraints, assumptions, conscious refusals, first actions, and success or failure criteria.
 
 10. decision_history
 Important strategic decisions, alternatives considered, reasons for the choices, conscious refusals, and meaningful changes of position during the session. Preserve chronology where it affects meaning.

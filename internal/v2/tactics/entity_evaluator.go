@@ -155,8 +155,9 @@ func (s *TacticalEntityEvaluatorService) buildEvaluationInput(ctx context.Contex
 	err := s.store.dbx.QueryRowContext(ctx, `
 		SELECT id, title, summary, version, status, updated_at
 		FROM v2_strategies
-		WHERE workspace_id=$1 AND status='active' AND archived_at IS NULL
-		ORDER BY version DESC, id DESC
+		WHERE workspace_id=$1 AND status IN ('active', 'draft', 'ready_for_review') AND archived_at IS NULL
+		ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'ready_for_review' THEN 1 ELSE 2 END,
+			version DESC, id DESC
 		LIMIT 1
 	`, job.WorkspaceID).Scan(&strategy.ID, &strategy.Title, &strategy.Summary, &strategy.Version, &strategy.Status, &strategy.UpdatedAt)
 	if err != nil {

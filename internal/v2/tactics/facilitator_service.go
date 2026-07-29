@@ -182,12 +182,6 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err
 	}
-	if !personalThread && state.Current.Strategy == nil {
-		return TacticsFacilitatorMessageResponse{}, fmt.Errorf("tactics_strategy_required")
-	}
-	if !personalThread && state.Current.Course == nil {
-		return TacticsFacilitatorMessageResponse{}, fmt.Errorf("tactics_course_required")
-	}
 	state.RecentMessages, err = s.store.ScopedChatMessages(ctx, workspaceID, conversationScope, 100)
 	if err != nil {
 		return TacticsFacilitatorMessageResponse{}, err

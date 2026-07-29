@@ -25,14 +25,10 @@ func NewStore(dbx *sql.DB) *Store {
 func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (CurrentResponse, error) {
 	strategy, course, plan, err := s.currentHeader(ctx, workspaceID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return CurrentResponse{
-			TacticalPlan: nil,
-			Strategy:     nil,
-			Workstreams:  []Workstream{},
-			Uncovered:    emptyUncovered(),
-			Reason:       "no_active_strategy",
-			Message:      "Для создания тактики нужна активная стратегия.",
-		}, nil
+		if _, createErr := s.getOrCreatePlanningStrategy(ctx, workspaceID, userID); createErr != nil {
+			return CurrentResponse{}, createErr
+		}
+		strategy, course, plan, err = s.currentHeader(ctx, workspaceID)
 	}
 	if err != nil {
 		return CurrentResponse{}, err
@@ -136,8 +132,8 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	if course != nil {
 		response.Course = course
 	} else {
-		response.Reason = "no_active_course"
-		response.Message = "Для создания тактики нужен активный курс."
+		response.Reason = "business_context_only"
+		response.Message = "Активный курс ещё не зафиксирован. Решения оцениваются по текущему контексту компании."
 	}
 	return response, nil
 }
@@ -802,8 +798,9 @@ func (s *Store) activeStrategy(ctx context.Context, workspaceID int) (StrategySu
 	err := s.dbx.QueryRowContext(ctx, `
 		SELECT id, status, title, summary, version, updated_at::TEXT
 		FROM v2_strategies
-		WHERE workspace_id=$1 AND status='active' AND archived_at IS NULL
-		ORDER BY version DESC, created_at DESC
+		WHERE workspace_id=$1 AND status IN ('active', 'draft', 'ready_for_review') AND archived_at IS NULL
+		ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'ready_for_review' THEN 1 ELSE 2 END,
+			version DESC, created_at DESC
 		LIMIT 1
 	`, workspaceID).Scan(&strategy.ID, &strategy.Status, &strategy.Title, &strategy.Summary, &strategy.Version, &strategy.UpdatedAt)
 	return strategy, err
@@ -814,24 +811,25 @@ func (s *Store) currentHeader(ctx context.Context, workspaceID int) (StrategySum
 	var courseJSON sql.NullString
 	var planJSON sql.NullString
 	err := s.dbx.QueryRowContext(ctx, `
-		WITH active_strategy AS (
+		WITH planning_strategy AS (
 			SELECT id, status, title, summary, version, updated_at::TEXT
 			FROM v2_strategies
-			WHERE workspace_id=$1 AND status='active' AND archived_at IS NULL
-			ORDER BY version DESC, created_at DESC
+			WHERE workspace_id=$1 AND status IN ('active', 'draft', 'ready_for_review') AND archived_at IS NULL
+			ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'ready_for_review' THEN 1 ELSE 2 END,
+				version DESC, created_at DESC
 			LIMIT 1
 		)
-		SELECT to_jsonb(active_strategy)::TEXT,
+		SELECT to_jsonb(planning_strategy)::TEXT,
 			to_jsonb(active_course)::TEXT,
 			to_jsonb(active_plan)::TEXT
-		FROM active_strategy
+		FROM planning_strategy
 		LEFT JOIN LATERAL (
 			SELECT id, strategy_id, status, title, direction, strategic_goal, meaning,
 				horizon, horizon_unit, start_date::TEXT, end_date::TEXT, key_metric,
 				success_criterion, updated_at, activated_at
 			FROM v2_courses
 			WHERE workspace_id=$1
-				AND strategy_id=active_strategy.id
+				AND strategy_id=planning_strategy.id
 				AND status='active'
 				AND archived_at IS NULL
 			ORDER BY updated_at DESC, id DESC
@@ -843,7 +841,7 @@ func (s *Store) currentHeader(ctx context.Context, workspaceID int) (StrategySum
 				source, created_by, created_at, updated_at, activated_at
 			FROM v2_tactical_plans
 			WHERE workspace_id=$1
-				AND strategy_id=active_strategy.id
+				AND strategy_id=planning_strategy.id
 				AND archived_at IS NULL
 			ORDER BY updated_at DESC, id DESC
 			LIMIT 1
@@ -874,6 +872,58 @@ func (s *Store) currentHeader(ctx context.Context, workspaceID int) (StrategySum
 		plan = &value
 	}
 	return strategy, course, plan, nil
+}
+
+func (s *Store) getOrCreatePlanningStrategy(ctx context.Context, workspaceID int, userID int) (StrategySummary, error) {
+	if strategy, err := s.activeStrategy(ctx, workspaceID); err == nil {
+		return strategy, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return StrategySummary{}, err
+	}
+
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return StrategySummary{}, err
+	}
+	defer tx.Rollback()
+	// Share the strategy creation lock so the strategy and planning endpoints
+	// cannot create two working drafts during the first concurrent page load.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, workspaceID+2000000); err != nil {
+		return StrategySummary{}, err
+	}
+
+	var strategy StrategySummary
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, status, title, summary, version, updated_at::TEXT
+		FROM v2_strategies
+		WHERE workspace_id=$1 AND status IN ('active', 'draft', 'ready_for_review') AND archived_at IS NULL
+		ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'ready_for_review' THEN 1 ELSE 2 END,
+			version DESC, created_at DESC
+		LIMIT 1
+	`, workspaceID).Scan(&strategy.ID, &strategy.Status, &strategy.Title, &strategy.Summary, &strategy.Version, &strategy.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = tx.QueryRowContext(ctx, `
+			INSERT INTO v2_strategies (
+				workspace_id, status, version, title, summary, source_type, created_by
+			)
+			VALUES (
+				$1, 'draft',
+				COALESCE((SELECT MAX(version) + 1 FROM v2_strategies WHERE workspace_id=$1), 1),
+				'Рабочая стратегия', '', 'planning_context', $2
+			)
+			RETURNING id, status, title, summary, version, updated_at::TEXT
+		`, workspaceID, userID).Scan(
+			&strategy.ID, &strategy.Status, &strategy.Title, &strategy.Summary,
+			&strategy.Version, &strategy.UpdatedAt,
+		)
+	}
+	if err != nil {
+		return StrategySummary{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return StrategySummary{}, err
+	}
+	return strategy, nil
 }
 
 func (s *Store) activeCourse(ctx context.Context, workspaceID int, strategyID int) (CourseSummary, error) {
@@ -946,7 +996,7 @@ func (s *Store) getOrCreatePlan(ctx context.Context, workspaceID int, userID int
 		VALUES ($1, $2, $3, $4, $5, '', $6, $7)
 		ON CONFLICT (workspace_id, strategy_id) DO UPDATE SET updated_at=v2_tactical_plans.updated_at
 		RETURNING id, workspace_id, strategy_id, course_id, status, revision, activated_revision, activation_readiness_run_id, title, summary, source, created_by, created_at, updated_at, activated_at
-	`, workspaceID, strategyID, nullableInt(courseID), PlanStatusDraft, "Тактический план", SourceManual, userID)
+	`, workspaceID, strategyID, nullableInt(courseID), PlanStatusDraft, "План реализации", SourceManual, userID)
 
 	plan, err = scanPlan(row)
 	if err != nil {

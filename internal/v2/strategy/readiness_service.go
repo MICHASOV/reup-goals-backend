@@ -30,7 +30,7 @@ var strategyReadinessWeights = map[string]int{
 	"business_stage":                 3,
 	"owner_intent":                   3,
 	"target_state":                   8,
-	"long_term_transition":           8,
+	"horizon_fit":                    8,
 	"strategic_challenge":            8,
 	"strategic_choice":               9,
 	"customer_and_market":            6,
@@ -39,7 +39,7 @@ var strategyReadinessWeights = map[string]int{
 	"causal_logic":                   10,
 	"resources_and_capabilities":     6,
 	"governance_and_owner_role":      4,
-	"long_term_goals_and_metrics":    4,
+	"goals_and_metrics":              4,
 	"risks_assumptions_and_evidence": 4,
 	"alternatives_and_scenarios":     3,
 }
@@ -49,7 +49,7 @@ var strategyReadinessCriterionOrder = []string{
 	"business_stage",
 	"owner_intent",
 	"target_state",
-	"long_term_transition",
+	"horizon_fit",
 	"strategic_challenge",
 	"strategic_choice",
 	"customer_and_market",
@@ -58,7 +58,7 @@ var strategyReadinessCriterionOrder = []string{
 	"causal_logic",
 	"resources_and_capabilities",
 	"governance_and_owner_role",
-	"long_term_goals_and_metrics",
+	"goals_and_metrics",
 	"risks_assumptions_and_evidence",
 	"alternatives_and_scenarios",
 }
@@ -67,8 +67,8 @@ var strategyReadinessCriterionLabels = map[string]string{
 	"current_reality":                "Current business reality",
 	"business_stage":                 "Company stage and condition",
 	"owner_intent":                   "Owner intent",
-	"target_state":                   "Long-term target state",
-	"long_term_transition":           "Long-term transition",
+	"target_state":                   "Target outcome or state",
+	"horizon_fit":                    "Horizon fit",
 	"strategic_challenge":            "Central strategic challenge",
 	"strategic_choice":               "Strategic choice and conscious refusals",
 	"customer_and_market":            "Customer and market",
@@ -77,17 +77,17 @@ var strategyReadinessCriterionLabels = map[string]string{
 	"causal_logic":                   "Causal logic",
 	"resources_and_capabilities":     "Resources and capabilities",
 	"governance_and_owner_role":      "Governance and owner role",
-	"long_term_goals_and_metrics":    "Long-term goals and metrics",
+	"goals_and_metrics":              "Goals and metrics",
 	"risks_assumptions_and_evidence": "Risks, assumptions, and evidence",
 	"alternatives_and_scenarios":     "Alternatives and scenarios",
 }
 
 var strategyReadinessCoreCriteria = map[string]bool{
-	"target_state":         true,
-	"long_term_transition": true,
-	"strategic_choice":     true,
-	"economic_engine":      true,
-	"causal_logic":         true,
+	"target_state":     true,
+	"horizon_fit":      true,
+	"strategic_choice": true,
+	"economic_engine":  true,
+	"causal_logic":     true,
 }
 
 type ReadinessService struct {
