@@ -63,3 +63,34 @@ func TestWorkstreamInputUsesFirstMetricForLegacyFields(t *testing.T) {
 		t.Fatalf("legacy metric fields do not mirror the first metric: %#v", input)
 	}
 }
+
+func TestOrderedTacticsActionIndicesPlacesSelectedParentFirst(t *testing.T) {
+	changes := []TacticsDraftChange{
+		{Apply: true, EntityType: "project", ParentDraftKey: "direction"},
+		{Apply: true, EntityType: "workstream", DraftKey: "direction"},
+	}
+	ordered, err := orderedTacticsActionIndices(changes, []int{0, 1})
+	if err != nil {
+		t.Fatalf("order changes: %v", err)
+	}
+	if len(ordered) != 2 || ordered[0] != 1 || ordered[1] != 0 {
+		t.Fatalf("parent must be applied first, got %v", ordered)
+	}
+}
+
+func TestOrderedTacticsActionIndicesRequiresSelectedParent(t *testing.T) {
+	changes := []TacticsDraftChange{
+		{Apply: true, EntityType: "workstream", DraftKey: "direction"},
+		{Apply: true, EntityType: "project", ParentDraftKey: "direction"},
+	}
+	if _, err := orderedTacticsActionIndices(changes, []int{1}); err == nil {
+		t.Fatal("expected missing parent selection to fail")
+	}
+}
+
+func TestOrderedTacticsActionIndicesRejectsNonApplicableChange(t *testing.T) {
+	changes := []TacticsDraftChange{{Apply: false, EntityType: "project"}}
+	if _, err := orderedTacticsActionIndices(changes, []int{0}); err == nil {
+		t.Fatal("expected non-applicable change to fail")
+	}
+}

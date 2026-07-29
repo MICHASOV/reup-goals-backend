@@ -103,9 +103,10 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 		return ApplyTacticsChangesResponse{}, err
 	}
 
-	indices := append([]int{}, request.ActionIndices...)
-	sort.Ints(indices)
-	seen := map[int]bool{}
+	indices, err := orderedTacticsActionIndices(changes, request.ActionIndices)
+	if err != nil {
+		return ApplyTacticsChangesResponse{}, err
+	}
 	createdByKey := map[string]int{}
 	response := ApplyTacticsChangesResponse{
 		WorkspaceID:    workspaceID,
@@ -113,13 +114,6 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 		AppliedChanges: []AppliedTacticsChange{},
 	}
 	for _, index := range indices {
-		if seen[index] {
-			continue
-		}
-		seen[index] = true
-		if index < 0 || index >= len(changes) {
-			return ApplyTacticsChangesResponse{}, fmt.Errorf("invalid_tactics_action_index")
-		}
 		change := changes[index]
 		action, confirmed, err := s.store.aiActions.Confirm(
 			ctx,
@@ -192,6 +186,63 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 		s.contextIndex.RefreshAsync(workspaceID)
 	}
 	return response, nil
+}
+
+func orderedTacticsActionIndices(changes []TacticsDraftChange, requested []int) ([]int, error) {
+	indices := append([]int(nil), requested...)
+	sort.Ints(indices)
+	selected := make(map[int]bool, len(indices))
+	byDraftKey := make(map[string]int, len(changes))
+	for index, change := range changes {
+		if change.DraftKey == "" {
+			continue
+		}
+		if _, exists := byDraftKey[change.DraftKey]; exists {
+			return nil, fmt.Errorf("duplicate_tactics_draft_key")
+		}
+		byDraftKey[change.DraftKey] = index
+	}
+	for _, index := range indices {
+		if index < 0 || index >= len(changes) {
+			return nil, fmt.Errorf("invalid_tactics_action_index")
+		}
+		if !changes[index].Apply {
+			return nil, fmt.Errorf("tactics_action_not_confirmable")
+		}
+		selected[index] = true
+	}
+
+	ordered := make([]int, 0, len(selected))
+	state := make(map[int]uint8, len(selected))
+	var visit func(int) error
+	visit = func(index int) error {
+		switch state[index] {
+		case 1:
+			return fmt.Errorf("cyclic_tactics_draft_dependency")
+		case 2:
+			return nil
+		}
+		state[index] = 1
+		change := changes[index]
+		if pointerValue(change.ParentEntityID) <= 0 && change.ParentDraftKey != "" {
+			parentIndex, exists := byDraftKey[change.ParentDraftKey]
+			if !exists || !selected[parentIndex] {
+				return fmt.Errorf("tactics_parent_action_required")
+			}
+			if err := visit(parentIndex); err != nil {
+				return err
+			}
+		}
+		state[index] = 2
+		ordered = append(ordered, index)
+		return nil
+	}
+	for _, index := range indices {
+		if err := visit(index); err != nil {
+			return nil, err
+		}
+	}
+	return ordered, nil
 }
 
 func (s *FacilitatorService) captureAppliedTacticsEntity(

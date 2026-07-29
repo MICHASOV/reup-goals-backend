@@ -24,23 +24,25 @@ func NewHandler(dbx *sql.DB) *Handler {
 }
 
 type response struct {
-	Account            account             `json:"account"`
-	Workspace          workspace           `json:"workspace"`
-	ContextReady       bool                `json:"context_ready"`
-	Strategy           *strategy           `json:"strategy,omitempty"`
-	Workstreams        []workstream        `json:"workstreams"`
-	Departments        []department        `json:"departments"`
-	WorkspaceDocuments []workspaceDocument `json:"workspace_documents"`
-	KnowledgeDocuments []knowledgeDocument `json:"knowledge_documents"`
+	Account               account             `json:"account"`
+	Workspace             workspace           `json:"workspace"`
+	ContextReady          bool                `json:"context_ready"`
+	Strategy              *strategy           `json:"strategy,omitempty"`
+	StrategySessionActive bool                `json:"strategy_session_active"`
+	Workstreams           []workstream        `json:"workstreams"`
+	Departments           []department        `json:"departments"`
+	WorkspaceDocuments    []workspaceDocument `json:"workspace_documents"`
+	KnowledgeDocuments    []knowledgeDocument `json:"knowledge_documents"`
 }
 
 type account struct {
-	ID                int    `json:"id"`
-	Email             string `json:"email"`
-	Name              string `json:"name"`
-	AvatarURL         string `json:"avatar_url"`
-	ProductTourStatus string `json:"product_tour_status"`
-	ProductTourStep   int    `json:"product_tour_step"`
+	ID                int             `json:"id"`
+	Email             string          `json:"email"`
+	Name              string          `json:"name"`
+	AvatarURL         string          `json:"avatar_url"`
+	ProductTourStatus string          `json:"product_tour_status"`
+	ProductTourStep   int             `json:"product_tour_step"`
+	FeatureOnboarding map[string]bool `json:"feature_onboarding"`
 }
 
 type workspace struct {
@@ -149,8 +151,9 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		loadResults <- loadResult{"navigation_account_failed", h.loadAccount(r, userID, &result.Account)}
 	}()
 	go func() {
-		strategy, loadErr := h.loadStrategy(r, currentWorkspace.ID)
+		strategy, sessionActive, loadErr := h.loadStrategy(r, currentWorkspace.ID)
 		result.Strategy = strategy
+		result.StrategySessionActive = sessionActive
 		loadResults <- loadResult{"navigation_strategy_failed", loadErr}
 	}()
 	go func() {
@@ -202,14 +205,20 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) loadAccount(r *http.Request, userID int, target *account) error {
-	return h.dbx.QueryRowContext(r.Context(), `
+	var featureOnboarding []byte
+	err := h.dbx.QueryRowContext(r.Context(), `
 		SELECT id, email, COALESCE(name, ''), COALESCE(avatar_url, ''),
-			product_tour_status, product_tour_step
+			product_tour_status, product_tour_step, feature_onboarding_json
 		FROM users WHERE id=$1
 	`, userID).Scan(
 		&target.ID, &target.Email, &target.Name, &target.AvatarURL,
-		&target.ProductTourStatus, &target.ProductTourStep,
+		&target.ProductTourStatus, &target.ProductTourStep, &featureOnboarding,
 	)
+	if err != nil {
+		return err
+	}
+	target.FeatureOnboarding = map[string]bool{}
+	return json.Unmarshal(featureOnboarding, &target.FeatureOnboarding)
 }
 
 type productTourRequest struct {
@@ -220,6 +229,17 @@ type productTourRequest struct {
 type productTourResponse struct {
 	Status string `json:"status"`
 	Step   int    `json:"step"`
+}
+
+var featureOnboardingKeys = map[string]struct{}{
+	"advisor_package":  {},
+	"first_task":       {},
+	"task_evaluation":  {},
+	"task_completion":  {},
+	"course_review":    {},
+	"first_metric":     {},
+	"first_risk":       {},
+	"first_hypothesis": {},
 }
 
 func (h *Handler) UpdateProductTour(w http.ResponseWriter, r *http.Request) {
@@ -277,7 +297,59 @@ func (h *Handler) UpdateProductTour(w http.ResponseWriter, r *http.Request) {
 	api.WriteJSON(w, http.StatusOK, result)
 }
 
-func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, error) {
+type featureOnboardingRequest struct {
+	Key string `json:"key"`
+}
+
+func (h *Handler) UpdateFeatureOnboarding(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/v2/navigation/feature-onboarding" {
+		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		api.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var request featureOnboardingRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	request.Key = strings.TrimSpace(request.Key)
+	if _, exists := featureOnboardingKeys[request.Key]; !exists {
+		api.WriteError(w, http.StatusUnprocessableEntity, "feature_onboarding_key_invalid")
+		return
+	}
+	var raw []byte
+	err := h.dbx.QueryRowContext(r.Context(), `
+		UPDATE users
+		SET feature_onboarding_json=jsonb_set(
+			COALESCE(feature_onboarding_json, '{}'::jsonb),
+			ARRAY[$2]::TEXT[],
+			'true'::jsonb,
+			TRUE
+		)
+		WHERE id=$1
+		RETURNING feature_onboarding_json
+	`, userID, request.Key).Scan(&raw)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "feature_onboarding_update_failed")
+		return
+	}
+	result := map[string]bool{}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "feature_onboarding_decode_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{"feature_onboarding": result})
+}
+
+func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, bool, error) {
 	var item strategy
 	err := h.dbx.QueryRowContext(r.Context(), `
 		SELECT strategy.id, strategy.status, strategy.version, strategy.summary,
@@ -294,10 +366,22 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, err
 		LIMIT 1
 	`, workspaceID).Scan(&item.ID, &item.Status, &item.Version, &item.Summary, &item.CurrentStage)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	var sessionActive bool
+	if err := h.dbx.QueryRowContext(r.Context(), `
+		SELECT EXISTS(
+			SELECT 1
+			FROM v2_strategies
+			WHERE workspace_id=$1
+				AND archived_at IS NULL
+				AND status IN ('draft', 'ready_for_review')
+		)
+	`, workspaceID).Scan(&sessionActive); err != nil {
+		return nil, false, err
 	}
 	rows, err := h.dbx.QueryContext(r.Context(), `
 		SELECT document.document_type, document.primary_signal, document.frame_title,
@@ -313,13 +397,13 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, err
 			)
 	`, workspaceID, item.ID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var documentType, primarySignal, frameTitle, frameSubtitle string
 		if err := rows.Scan(&documentType, &primarySignal, &frameTitle, &frameSubtitle); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		signal := strings.TrimSpace(primarySignal)
 		if signal == "" {
@@ -346,7 +430,7 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, err
 	if item.TargetMetric == "" {
 		item.TargetMetric = item.TargetSignal
 	}
-	return &item, rows.Err()
+	return &item, sessionActive, rows.Err()
 }
 
 func (h *Handler) loadWorkstreams(r *http.Request, workspaceID int) ([]workstream, error) {

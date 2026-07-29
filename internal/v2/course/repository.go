@@ -20,6 +20,7 @@ var (
 	ErrCourseStrategyStale    = errors.New("course_strategy_stale")
 	ErrCourseStrategyMismatch = errors.New("course_strategy_mismatch")
 	ErrCourseArtifactsMissing = errors.New("course_strategy_artifacts_missing")
+	ErrCourseReviewStatus     = errors.New("course_review_status_invalid")
 )
 
 type strategySnapshot struct {
@@ -94,10 +95,19 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 		}
 		course = updated
 	}
+	latestReview, reviewErr := s.latestReview(ctx, workspaceID, course.ID)
+	if reviewErr != nil && !errors.Is(reviewErr, sql.ErrNoRows) {
+		return CurrentResponse{}, fmt.Errorf("load latest course review: %w", reviewErr)
+	}
+	var review *CourseReview
+	if reviewErr == nil {
+		review = &latestReview
+	}
 	return CurrentResponse{
 		Course:        &course,
 		Strategy:      &strategy,
 		Sync:          &syncState,
+		LatestReview:  review,
 		Sources:       buildCourseSources(snapshot.Artifacts),
 		KnowledgeBase: knowledgeBase,
 	}, nil
@@ -402,6 +412,67 @@ func (s *Store) Activate(ctx context.Context, workspaceID int, courseID int) (Co
 	return activated, nil
 }
 
+func (s *Store) Review(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	courseID int,
+	input CourseReviewInput,
+) (CourseReview, Course, error) {
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return CourseReview{}, Course{}, err
+	}
+	defer tx.Rollback()
+
+	current, err := courseByIDTx(ctx, tx, workspaceID, courseID)
+	if err != nil {
+		return CourseReview{}, Course{}, err
+	}
+	if current.Status != StatusActive && current.Status != StatusNeedsReview {
+		return CourseReview{}, Course{}, ErrCourseReviewStatus
+	}
+
+	row := tx.QueryRowContext(ctx, `
+		INSERT INTO v2_course_reviews (
+			workspace_id, course_id, result, metric_result, outcome, decision, created_by
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, workspace_id, course_id, result, metric_result, outcome,
+			decision, created_by, created_at
+	`, workspaceID, courseID, strings.TrimSpace(input.Result), strings.TrimSpace(input.MetricResult),
+		input.Outcome, input.Decision, userID)
+	review, err := scanCourseReview(row)
+	if err != nil {
+		return CourseReview{}, Course{}, err
+	}
+
+	nextStatus := StatusActive
+	if input.Decision == "revise" {
+		nextStatus = StatusNeedsReview
+	} else if input.Decision == "complete" {
+		nextStatus = StatusCompleted
+	}
+	courseRow := tx.QueryRowContext(ctx, `
+		UPDATE v2_courses
+		SET status=$1, updated_at=NOW()
+		WHERE id=$2 AND workspace_id=$3 AND archived_at IS NULL
+		RETURNING
+			id, workspace_id, strategy_id, source_synthesis_run_id, source_session_revision,
+			title, direction, strategic_goal, meaning,
+			horizon, horizon_unit, start_date::TEXT, end_date::TEXT, key_metric,
+			success_criterion, status, source, created_by, created_at, updated_at, activated_at
+	`, nextStatus, courseID, workspaceID)
+	updated, err := scanCourse(courseRow)
+	if err != nil {
+		return CourseReview{}, Course{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CourseReview{}, Course{}, err
+	}
+	return review, updated, nil
+}
+
 func (s *Store) courseByStrategy(ctx context.Context, workspaceID int, strategyID int) (Course, error) {
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT
@@ -410,11 +481,23 @@ func (s *Store) courseByStrategy(ctx context.Context, workspaceID int, strategyI
 			horizon, horizon_unit, start_date::TEXT, end_date::TEXT, key_metric,
 			success_criterion, status, source, created_by, created_at, updated_at, activated_at
 		FROM v2_courses
-	WHERE workspace_id=$1 AND strategy_id=$2 AND archived_at IS NULL AND status IN ($3, $4, $5)
-	ORDER BY CASE status WHEN $4 THEN 1 WHEN $5 THEN 2 ELSE 3 END, created_at DESC
+	WHERE workspace_id=$1 AND strategy_id=$2 AND archived_at IS NULL AND status IN ($3, $4, $5, $6)
+	ORDER BY CASE status WHEN $4 THEN 1 WHEN $5 THEN 2 WHEN $6 THEN 3 ELSE 4 END, created_at DESC
 		LIMIT 1
-	`, workspaceID, strategyID, StatusDraft, StatusActive, StatusNeedsReview)
+	`, workspaceID, strategyID, StatusDraft, StatusActive, StatusNeedsReview, StatusCompleted)
 	return scanCourse(row)
+}
+
+func (s *Store) latestReview(ctx context.Context, workspaceID int, courseID int) (CourseReview, error) {
+	row := s.dbx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, course_id, result, metric_result, outcome,
+			decision, created_by, created_at
+		FROM v2_course_reviews
+		WHERE workspace_id=$1 AND course_id=$2
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, workspaceID, courseID)
+	return scanCourseReview(row)
 }
 
 func (s *Store) markNeedsReview(ctx context.Context, workspaceID int, courseID int) (Course, error) {
@@ -567,6 +650,11 @@ func buildCourseSync(course Course, snapshot strategySnapshot, snapshotErr error
 		runID := snapshot.RunID
 		syncState.CurrentSynthesisRunID = &runID
 		syncState.CurrentSynthesisIsCurrent = snapshot.isCurrent()
+	}
+	if course.Status == StatusCompleted {
+		syncState.State = SyncCurrent
+		syncState.Message = "Курс завершён. Результат зафиксирован и готов для следующего управленческого решения."
+		return syncState
 	}
 
 	if errors.Is(snapshotErr, sql.ErrNoRows) || snapshot.RunID == 0 {
@@ -852,6 +940,30 @@ func scanCourse(scanner scanner) (Course, error) {
 	}
 
 	return course, nil
+}
+
+func scanCourseReview(scanner scanner) (CourseReview, error) {
+	var review CourseReview
+	var createdBy sql.NullInt64
+	err := scanner.Scan(
+		&review.ID,
+		&review.WorkspaceID,
+		&review.CourseID,
+		&review.Result,
+		&review.MetricResult,
+		&review.Outcome,
+		&review.Decision,
+		&createdBy,
+		&review.CreatedAt,
+	)
+	if err != nil {
+		return CourseReview{}, err
+	}
+	if createdBy.Valid {
+		value := int(createdBy.Int64)
+		review.CreatedBy = &value
+	}
+	return review, nil
 }
 
 func TodayString() string {

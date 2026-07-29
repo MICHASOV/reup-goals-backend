@@ -59,7 +59,7 @@ func (h *Handler) Course(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workspace, _, ok := h.currentWorkspace(w, r)
+	workspace, userID, ok := h.currentWorkspace(w, r)
 	if !ok {
 		return
 	}
@@ -71,9 +71,41 @@ func (h *Handler) Course(w http.ResponseWriter, r *http.Request) {
 		h.activateCourse(w, r, workspace.ID, courseID)
 	case action == "refresh" && r.Method == http.MethodPost:
 		h.refreshCourse(w, r, workspace.ID, courseID)
+	case action == "review" && r.Method == http.MethodPost:
+		h.reviewCourse(w, r, workspace.ID, userID, courseID)
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
+}
+
+func (h *Handler) reviewCourse(w http.ResponseWriter, r *http.Request, workspaceID int, userID int, courseID int) {
+	var input CourseReviewInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	input.Result = strings.TrimSpace(input.Result)
+	input.MetricResult = strings.TrimSpace(input.MetricResult)
+	input.Outcome = strings.TrimSpace(input.Outcome)
+	input.Decision = strings.TrimSpace(input.Decision)
+	if input.Result == "" || !ValidReviewOutcome(input.Outcome) || !ValidReviewDecision(input.Decision) {
+		api.WriteError(w, http.StatusUnprocessableEntity, "course_review_invalid")
+		return
+	}
+	review, updated, err := h.store.Review(r.Context(), workspaceID, userID, courseID, input)
+	if errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if errors.Is(err, ErrCourseReviewStatus) {
+		api.WriteError(w, http.StatusConflict, "course_review_status_invalid")
+		return
+	}
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "course_review_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{"review": review, "course": updated})
 }
 
 func (h *Handler) updateCourse(w http.ResponseWriter, r *http.Request, workspaceID int, courseID int) {
@@ -136,6 +168,8 @@ func (h *Handler) writeCourseActionError(w http.ResponseWriter, err error) bool 
 		api.WriteError(w, http.StatusConflict, "course_strategy_mismatch")
 	case errors.Is(err, ErrCourseArtifactsMissing):
 		api.WriteError(w, http.StatusConflict, "course_strategy_artifacts_missing")
+	case errors.Is(err, ErrCourseReviewStatus):
+		api.WriteError(w, http.StatusConflict, "course_review_status_invalid")
 	default:
 		log.Printf("[ERROR] course action failed: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "course_action_failed")

@@ -179,6 +179,7 @@ func main() {
 	mux.Handle("/api/v2/bootstrap", v2api.RequireAuth(database, jwtSecret, bootstrapHandler.Bootstrap))
 	mux.Handle("/api/v2/navigation", v2api.RequireAuth(database, jwtSecret, navigationHandler.Navigation))
 	mux.Handle("/api/v2/navigation/product-tour", v2api.RequireAuth(database, jwtSecret, navigationHandler.UpdateProductTour))
+	mux.Handle("/api/v2/navigation/feature-onboarding", v2api.RequireAuth(database, jwtSecret, navigationHandler.UpdateFeatureOnboarding))
 	mux.Handle("/api/v2/departments", v2api.RequireAuth(database, jwtSecret, departmentHandler.Departments))
 	mux.Handle("/api/v2/departments/", v2api.RequireAuth(database, jwtSecret, departmentHandler.Departments))
 	mux.Handle("/api/v2/workspace-documents", v2api.RequireAuth(database, jwtSecret, workspaceDocumentsHandler.Documents))

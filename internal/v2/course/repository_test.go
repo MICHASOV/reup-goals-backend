@@ -108,6 +108,29 @@ func TestBuildCourseSyncRequiresCurrentStrategyRevision(t *testing.T) {
 	}
 }
 
+func TestBuildCourseSyncTreatsCompletedCourseAsFinal(t *testing.T) {
+	sync := buildCourseSync(Course{Status: StatusCompleted}, strategySnapshot{}, sql.ErrNoRows)
+	if sync.State != SyncCurrent || sync.NeedsReview {
+		t.Fatalf("completed course must stay final, got %+v", sync)
+	}
+}
+
+func TestCourseReviewEnums(t *testing.T) {
+	for _, value := range []string{"achieved", "partially_achieved", "not_achieved", "changed"} {
+		if !ValidReviewOutcome(value) {
+			t.Fatalf("expected valid outcome %q", value)
+		}
+	}
+	for _, value := range []string{"continue", "revise", "complete"} {
+		if !ValidReviewDecision(value) {
+			t.Fatalf("expected valid decision %q", value)
+		}
+	}
+	if ValidReviewOutcome("unknown") || ValidReviewDecision("unknown") {
+		t.Fatal("unknown review enums must be rejected")
+	}
+}
+
 func TestMissingCourseFieldsChecksActivationContract(t *testing.T) {
 	complete := Course{
 		Title:            "Проверить экономику B2B",

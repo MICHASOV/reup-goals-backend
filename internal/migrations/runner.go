@@ -3463,6 +3463,34 @@ var migrations = []Migration{
 				updated_at=NOW();
 		`,
 	},
+	{
+		ID: "20260729_060_feature_onboarding",
+		SQL: `
+			ALTER TABLE users
+				ADD COLUMN IF NOT EXISTS feature_onboarding_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+		`,
+	},
+	{
+		ID: "20260729_061_course_reviews",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_course_reviews (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				course_id INTEGER NOT NULL REFERENCES v2_courses(id) ON DELETE CASCADE,
+				result TEXT NOT NULL,
+				metric_result TEXT NOT NULL DEFAULT '',
+				outcome TEXT NOT NULL,
+				decision TEXT NOT NULL,
+				created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				CHECK (outcome IN ('achieved', 'partially_achieved', 'not_achieved', 'changed')),
+				CHECK (decision IN ('continue', 'revise', 'complete'))
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_course_reviews_course
+				ON v2_course_reviews (workspace_id, course_id, created_at DESC);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

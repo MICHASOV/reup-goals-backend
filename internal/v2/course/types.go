@@ -3,10 +3,11 @@ package course
 import "time"
 
 const (
-	StatusDraft    = "draft"
+	StatusDraft       = "draft"
 	StatusNeedsReview = "needs_review"
-	StatusActive   = "active"
-	StatusArchived = "archived"
+	StatusActive      = "active"
+	StatusCompleted   = "completed"
+	StatusArchived    = "archived"
 
 	SourceFromStrategy = "from_strategy"
 	SourceManual       = "manual"
@@ -82,10 +83,30 @@ type CurrentResponse struct {
 	Course        *Course              `json:"course"`
 	Strategy      *StrategySummary     `json:"strategy,omitempty"`
 	Sync          *CourseSync          `json:"sync,omitempty"`
+	LatestReview  *CourseReview        `json:"latest_review,omitempty"`
 	Sources       []CourseSource       `json:"sources"`
 	KnowledgeBase KnowledgeBaseSummary `json:"knowledge_base"`
 	Reason        string               `json:"reason,omitempty"`
 	Message       string               `json:"message,omitempty"`
+}
+
+type CourseReview struct {
+	ID           int64     `json:"id"`
+	WorkspaceID  int       `json:"workspace_id"`
+	CourseID     int       `json:"course_id"`
+	Result       string    `json:"result"`
+	MetricResult string    `json:"metric_result"`
+	Outcome      string    `json:"outcome"`
+	Decision     string    `json:"decision"`
+	CreatedBy    *int      `json:"created_by,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type CourseReviewInput struct {
+	Result       string `json:"result"`
+	MetricResult string `json:"metric_result"`
+	Outcome      string `json:"outcome"`
+	Decision     string `json:"decision"`
 }
 
 type CourseInput struct {
@@ -104,7 +125,25 @@ type CourseInput struct {
 
 func ValidStatus(status string) bool {
 	switch status {
-	case StatusDraft, StatusNeedsReview, StatusActive, StatusArchived:
+	case StatusDraft, StatusNeedsReview, StatusActive, StatusCompleted, StatusArchived:
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidReviewOutcome(outcome string) bool {
+	switch outcome {
+	case "achieved", "partially_achieved", "not_achieved", "changed":
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidReviewDecision(decision string) bool {
+	switch decision {
+	case "continue", "revise", "complete":
 		return true
 	default:
 		return false
