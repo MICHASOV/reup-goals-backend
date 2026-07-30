@@ -3702,6 +3702,16 @@ var migrations = []Migration{
 			ON CONFLICT DO NOTHING;
 		`,
 	},
+	{
+		ID: "20260731_069_allow_strategy_advisor_threads",
+		SQL: `
+			ALTER TABLE v2_tactics_advisor_threads
+				DROP CONSTRAINT IF EXISTS v2_tactics_advisor_threads_scope_type_check;
+			ALTER TABLE v2_tactics_advisor_threads
+				ADD CONSTRAINT v2_tactics_advisor_threads_scope_type_check
+				CHECK (scope_type IN ('workspace', 'strategy', 'workstream', 'project', 'department'));
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
