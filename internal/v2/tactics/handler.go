@@ -122,7 +122,7 @@ func (h *Handler) advisorThreads(w http.ResponseWriter, r *http.Request) {
 		}
 		scopeType, scopeID := normalizeAdvisorScope(body.ScopeType, body.ScopeID)
 		body.ScopeType, body.ScopeID = scopeType, scopeID
-		if scopeType != EntityWorkspace {
+		if scopeType != EntityWorkspace && scopeType != EntityStrategy {
 			if _, err := h.store.ScopeContext(r.Context(), workspace.ID, &TacticsMessageScope{EntityType: scopeType, EntityID: scopeID}); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					api.WriteError(w, http.StatusNotFound, "advisor_scope_not_found")
