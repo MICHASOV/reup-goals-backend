@@ -295,11 +295,7 @@ func (s *Service) RefreshAsync(workspaceID int) {
 	}
 	go func() {
 		defer s.pending.Delete(workspaceID)
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-		if _, err := s.Ensure(ctx, workspaceID); err != nil {
-			s.logRefreshFailure(workspaceID, err)
-		}
+		s.refreshWorkspace(workspaceID)
 	}()
 }
 
@@ -320,19 +316,51 @@ func (s *Service) RefreshAllAsync() {
 			log.Printf("[WARN] list workspace contexts for refresh: %v", err)
 			return
 		}
-		defer rows.Close()
+		workspaceIDs := make([]int, 0)
 		for rows.Next() {
 			var workspaceID int
 			if err := rows.Scan(&workspaceID); err != nil {
 				log.Printf("[WARN] scan workspace context refresh: %v", err)
 				continue
 			}
-			s.RefreshAsync(workspaceID)
+			workspaceIDs = append(workspaceIDs, workspaceID)
 		}
-		if err := rows.Err(); err != nil {
-			log.Printf("[WARN] iterate workspace contexts for refresh: %v", err)
+		rowsErr := rows.Err()
+		_ = rows.Close()
+		if rowsErr != nil {
+			log.Printf("[WARN] iterate workspace contexts for refresh: %v", rowsErr)
+			return
 		}
+
+		workspaceQueue := make(chan int)
+		var workers sync.WaitGroup
+		for worker := 0; worker < 2; worker++ {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				for workspaceID := range workspaceQueue {
+					if _, loaded := s.pending.LoadOrStore(workspaceID, struct{}{}); loaded {
+						continue
+					}
+					s.refreshWorkspace(workspaceID)
+					s.pending.Delete(workspaceID)
+				}
+			}()
+		}
+		for _, workspaceID := range workspaceIDs {
+			workspaceQueue <- workspaceID
+		}
+		close(workspaceQueue)
+		workers.Wait()
 	}()
+}
+
+func (s *Service) refreshWorkspace(workspaceID int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if _, err := s.Ensure(ctx, workspaceID); err != nil {
+		s.logRefreshFailure(workspaceID, err)
+	}
 }
 
 func (s *Service) logRefreshFailure(workspaceID int, refreshErr error) {
