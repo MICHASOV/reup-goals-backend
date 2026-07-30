@@ -401,7 +401,7 @@ func (s *Service) Decide(ctx context.Context, userID int, publicID string, reque
 	}
 	if _, err := s.jobs.EnqueuePriority(
 		ctx, workspace.ID, JobTypeResume, run.PublicID, agentJobPayload{RunID: run.PublicID}, 3, time.Time{},
-		100,
+		InteractiveJobPriority,
 	); err != nil {
 		_ = s.store.SetFailed(ctx, run.ID, "agent_resume_enqueue_failed", true)
 		return Run{}, err
@@ -445,12 +445,15 @@ func (s *Service) handleExecuteJob(ctx context.Context, job jobs.Job) error {
 		Title: "Изучаю контекст и выбираю следующий шаг",
 	})
 	reservationID, stop, err := s.startBillableRun(ctx, run)
-	if err != nil || stop {
-		return err
+	if err != nil {
+		return s.failBeforeReservation(ctx, run, job, err)
+	}
+	if stop {
+		return nil
 	}
 	if err := s.store.SetRunning(ctx, run.ID, reservationID); err != nil {
 		_ = s.billing.Settle(context.WithoutCancel(ctx), reservationID, false, 0)
-		return err
+		return s.failBeforeReservation(ctx, run, job, err)
 	}
 	run.ReservationID = reservationID
 
@@ -546,8 +549,11 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 		return nil
 	}
 	reservationID, stop, err := s.startBillableRun(ctx, run)
-	if err != nil || stop {
-		return err
+	if err != nil {
+		return s.failBeforeReservation(ctx, run, job, err)
+	}
+	if stop {
+		return nil
 	}
 	if err := s.store.SetRunning(ctx, run.ID, reservationID); err != nil {
 		_ = s.billing.Settle(context.WithoutCancel(ctx), reservationID, false, 0)
@@ -608,6 +614,24 @@ func (s *Service) failAttempt(
 		_ = s.store.InsertEvent(context.WithoutCancel(ctx), run.ID, RuntimeEvent{
 			Type: "run_failed", Stage: "failed", Title: "Не удалось завершить запрос",
 			Detail: "Ответ не потерян: можно повторить сообщение.",
+		})
+		return nil
+	}
+	return runErr
+}
+
+func (s *Service) failBeforeReservation(
+	ctx context.Context,
+	run Run,
+	job jobs.Job,
+	runErr error,
+) error {
+	terminal := job.Attempts >= job.MaxAttempts
+	_ = s.store.SetFailed(context.WithoutCancel(ctx), run.ID, runErr.Error(), terminal)
+	if terminal {
+		_ = s.store.InsertEvent(context.WithoutCancel(ctx), run.ID, RuntimeEvent{
+			Type: "run_failed", Stage: "failed", Title: "Не удалось запустить советника",
+			Detail: "Сообщение сохранено: запрос можно повторить.",
 		})
 		return nil
 	}

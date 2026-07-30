@@ -3671,6 +3671,37 @@ var migrations = []Migration{
 				ON v2_background_jobs (status, priority DESC, not_before, id);
 		`,
 	},
+	{
+		ID: "20260731_068_recover_orphaned_agent_runs",
+		SQL: `
+			INSERT INTO v2_background_jobs (
+				workspace_id, job_type, dedupe_key, payload_json, status,
+				priority, attempts, max_attempts, not_before, updated_at
+			)
+			SELECT
+				r.workspace_id,
+				'executive_agent.execute',
+				r.public_id,
+				jsonb_build_object('run_id', r.public_id),
+				'queued',
+				100,
+				0,
+				3,
+				NOW(),
+				NOW()
+			FROM v2_agent_runs r
+			WHERE r.status IN ('queued', 'running')
+				AND NOT EXISTS (
+					SELECT 1
+					FROM v2_background_jobs j
+					WHERE j.workspace_id=r.workspace_id
+						AND j.dedupe_key=r.public_id
+						AND j.job_type IN ('executive_agent.execute', 'executive_agent.resume')
+						AND j.status IN ('queued', 'running')
+				)
+			ON CONFLICT DO NOTHING;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
