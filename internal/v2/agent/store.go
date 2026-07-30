@@ -108,6 +108,16 @@ func (s *Store) SetRunning(ctx context.Context, runID int64, reservationID strin
 	return nil
 }
 
+func (s *Store) RequeueInterrupted(ctx context.Context, runID int64) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_agent_runs
+		SET status=$2, reservation_id='', error_text='Recovered after an interrupted agent worker.',
+			completed_at=NULL, updated_at=NOW()
+		WHERE id=$1 AND status=$3
+	`, runID, StatusQueued, StatusRunning)
+	return err
+}
+
 func (s *Store) SetWaiting(
 	ctx context.Context,
 	runID int64,

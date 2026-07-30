@@ -223,7 +223,7 @@ func Load() *Config {
 		AIRequestsPerMinute:           parseIntEnv("AI_RATE_LIMIT_PER_MINUTE", 60),
 		AIDailyBudgetUSD:              parseFloatEnv("AI_DAILY_BUDGET_USD", 0),
 		AIMonthlyBudgetUSD:            parseFloatEnv("AI_MONTHLY_BUDGET_USD", 0),
-		AIJobWorkers:                  parseIntEnv("AI_JOB_WORKERS", 2),
+		AIJobWorkers:                  parseIntEnv("AI_JOB_WORKERS", 6),
 		AgentRuntimeEnabled:           parseBoolEnv("AGENT_RUNTIME_ENABLED"),
 		AgentRuntimeURL:               agentRuntimeURL,
 		AgentRuntimeSecret:            strings.TrimSpace(os.Getenv("AGENT_RUNTIME_SECRET")),

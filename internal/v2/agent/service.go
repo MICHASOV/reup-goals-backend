@@ -161,7 +161,7 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 			"tactics_message_id": userMessageID,
 			"thread_id":          thread.ID,
 		}); err != nil {
-			return Run{}, err
+			log.Printf("[WARN] strategy transcript mirror failed workspace_id=%d thread_id=%d: %v", workspace.ID, thread.ID, err)
 		}
 	}
 	run, err := s.store.Create(
@@ -180,8 +180,9 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 			Detail: "История чата сохранена и перенесена в актуальную версию агента.",
 		})
 	}
-	if _, err := s.jobs.Enqueue(
+	if _, err := s.jobs.EnqueuePriority(
 		ctx, workspace.ID, JobTypeExecute, run.PublicID, agentJobPayload{RunID: run.PublicID}, 3, time.Time{},
+		100,
 	); err != nil {
 		_ = s.store.SetFailed(ctx, run.ID, "agent_job_enqueue_failed", true)
 		return Run{}, err
@@ -391,8 +392,9 @@ func (s *Service) Decide(ctx context.Context, userID int, publicID string, reque
 	if err := s.store.QueueResume(ctx, run.ID); err != nil {
 		return Run{}, err
 	}
-	if _, err := s.jobs.Enqueue(
+	if _, err := s.jobs.EnqueuePriority(
 		ctx, workspace.ID, JobTypeResume, run.PublicID, agentJobPayload{RunID: run.PublicID}, 3, time.Time{},
+		100,
 	); err != nil {
 		_ = s.store.SetFailed(ctx, run.ID, "agent_resume_enqueue_failed", true)
 		return Run{}, err
@@ -415,6 +417,20 @@ func (s *Service) handleExecuteJob(ctx context.Context, job jobs.Job) error {
 	}
 	if run.Status == StatusCompleted || run.Status == StatusWaitingApproval || run.Status == StatusCanceled {
 		return nil
+	}
+	if run.Status == StatusRunning {
+		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+		_ = s.billing.Settle(settleCtx, run.ReservationID, false, 0)
+		cancel()
+		if err := s.store.RequeueInterrupted(ctx, run.ID); err != nil {
+			return err
+		}
+		run.Status = StatusQueued
+		run.ReservationID = ""
+		_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
+			Type: "run_recovered", Stage: "starting",
+			Title: "Восстанавливаю запрос после обновления сервиса",
+		})
 	}
 	reservationID, stop, err := s.startBillableRun(ctx, run)
 	if err != nil || stop {
@@ -489,6 +505,20 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 	}
 	if run.Status == StatusCompleted || run.Status == StatusWaitingApproval || run.Status == StatusCanceled {
 		return nil
+	}
+	if run.Status == StatusRunning {
+		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+		_ = s.billing.Settle(settleCtx, run.ReservationID, false, 0)
+		cancel()
+		if err := s.store.RequeueInterrupted(ctx, run.ID); err != nil {
+			return err
+		}
+		run.Status = StatusQueued
+		run.ReservationID = ""
+		_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
+			Type: "run_recovered", Stage: "starting",
+			Title: "Восстанавливаю подтверждённое действие",
+		})
 	}
 	state, err := decryptState(s.secret, run.PublicID, run.StateCiphertext)
 	if err != nil || state == "" {

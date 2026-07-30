@@ -3656,6 +3656,21 @@ var migrations = []Migration{
 				);
 		`,
 	},
+	{
+		ID: "20260731_067_prioritize_interactive_agent_jobs",
+		SQL: `
+			ALTER TABLE v2_background_jobs
+				ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0;
+
+			UPDATE v2_background_jobs
+			SET priority=100, updated_at=NOW()
+			WHERE job_type IN ('executive_agent.execute', 'executive_agent.resume')
+				AND status IN ('queued', 'running');
+
+			CREATE INDEX IF NOT EXISTS idx_v2_background_jobs_priority_due
+				ON v2_background_jobs (status, priority DESC, not_before, id);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

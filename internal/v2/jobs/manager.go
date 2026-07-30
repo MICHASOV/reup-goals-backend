@@ -28,6 +28,7 @@ type Job struct {
 	Type        string
 	DedupeKey   string
 	Payload     json.RawMessage
+	Priority    int
 	Attempts    int
 	MaxAttempts int
 }
@@ -80,11 +81,27 @@ func (m *Manager) RegisterWithoutTimeout(jobType string, handler Handler) {
 }
 
 func (m *Manager) Enqueue(ctx context.Context, workspaceID int, jobType string, dedupeKey string, payload any, maxAttempts int, notBefore time.Time) (int64, error) {
+	return m.EnqueuePriority(ctx, workspaceID, jobType, dedupeKey, payload, maxAttempts, notBefore, 0)
+}
+
+func (m *Manager) EnqueuePriority(
+	ctx context.Context,
+	workspaceID int,
+	jobType string,
+	dedupeKey string,
+	payload any,
+	maxAttempts int,
+	notBefore time.Time,
+	priority int,
+) (int64, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 5
 	}
 	if notBefore.IsZero() {
 		notBefore = time.Now().UTC()
+	}
+	if priority < 0 {
+		priority = 0
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -95,18 +112,19 @@ func (m *Manager) Enqueue(ctx context.Context, workspaceID int, jobType string, 
 	err = m.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_background_jobs (
 			workspace_id, job_type, dedupe_key, payload_json, status,
-			attempts, max_attempts, not_before, updated_at
+			priority, attempts, max_attempts, not_before, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, 0, $6, $7, NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8, NOW())
 		ON CONFLICT (job_type, workspace_id, dedupe_key)
 			WHERE dedupe_key <> '' AND status='queued'
 		DO UPDATE SET
 			payload_json=EXCLUDED.payload_json,
+			priority=GREATEST(v2_background_jobs.priority, EXCLUDED.priority),
 			max_attempts=GREATEST(v2_background_jobs.max_attempts, EXCLUDED.max_attempts),
 			not_before=LEAST(v2_background_jobs.not_before, EXCLUDED.not_before),
 			updated_at=NOW()
 		RETURNING id
-	`, workspaceID, jobType, dedupeKey, raw, StatusQueued, maxAttempts, notBefore).Scan(&id)
+	`, workspaceID, jobType, dedupeKey, raw, StatusQueued, priority, maxAttempts, notBefore).Scan(&id)
 	return id, err
 }
 
@@ -129,9 +147,9 @@ func (m *Manager) EnqueueDebounced(ctx context.Context, workspaceID int, jobType
 	err = m.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_background_jobs (
 			workspace_id, job_type, dedupe_key, payload_json, status,
-			attempts, max_attempts, not_before, updated_at
+			priority, attempts, max_attempts, not_before, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, 0, $6, $7, NOW())
+		VALUES ($1, $2, $3, $4, $5, 0, 0, $6, $7, NOW())
 		ON CONFLICT (job_type, workspace_id, dedupe_key)
 			WHERE dedupe_key <> '' AND status='queued'
 		DO UPDATE SET
@@ -218,8 +236,16 @@ func (m *Manager) runOne(ctx context.Context) (bool, error) {
 	if timeout > 0 {
 		jobCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		m.heartbeat(heartbeatCtx, job.ID)
+	}()
 	err = invokeHandler(jobCtx, handler, job)
 	cancel()
+	stopHeartbeat()
+	<-heartbeatDone
 	if err != nil {
 		return true, m.fail(ctx, job, err)
 	}
@@ -250,13 +276,16 @@ func (m *Manager) claim(ctx context.Context) (Job, error) {
 	var job Job
 	var workspaceID sql.NullInt64
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, workspace_id, job_type, dedupe_key, payload_json, attempts, max_attempts
+		SELECT id, workspace_id, job_type, dedupe_key, payload_json, priority, attempts, max_attempts
 		FROM v2_background_jobs
 		WHERE status=$1 AND not_before <= NOW()
-		ORDER BY not_before, id
+		ORDER BY priority DESC, not_before, id
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1
-	`, StatusQueued).Scan(&job.ID, &workspaceID, &job.Type, &job.DedupeKey, &job.Payload, &job.Attempts, &job.MaxAttempts)
+	`, StatusQueued).Scan(
+		&job.ID, &workspaceID, &job.Type, &job.DedupeKey, &job.Payload,
+		&job.Priority, &job.Attempts, &job.MaxAttempts,
+	)
 	if err != nil {
 		return Job{}, err
 	}
@@ -301,14 +330,42 @@ func retryDelay(attempt int) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+func (m *Manager) heartbeat(ctx context.Context, jobID int64) {
+	interval := m.staleAfter / 4
+	if interval <= 0 || interval > time.Minute {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := m.dbx.ExecContext(ctx, `
+				UPDATE v2_background_jobs
+				SET locked_at=NOW(), updated_at=NOW()
+				WHERE id=$1 AND status=$2 AND locked_by=$3
+			`, jobID, StatusRunning, m.workerID); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("[WARN] background job heartbeat failed id=%d: %v", jobID, err)
+			}
+		}
+	}
+}
+
 func (m *Manager) recoverStale(ctx context.Context) error {
 	_, err := m.dbx.ExecContext(ctx, `
 		UPDATE v2_background_jobs
 		SET status=$1, not_before=NOW(), locked_at=NULL, locked_by='',
 			last_error=CASE WHEN last_error='' THEN 'Recovered after an interrupted worker.' ELSE last_error END,
 			updated_at=NOW()
-		WHERE status=$2 AND locked_at < NOW() - ($3 * INTERVAL '1 second')
-	`, StatusQueued, StatusRunning, int(m.staleAfter.Seconds()))
+		WHERE status=$2
+			AND (
+				locked_at IS NULL
+				OR locked_by<>$4
+				OR locked_at < NOW() - ($3 * INTERVAL '1 second')
+			)
+	`, StatusQueued, StatusRunning, int(m.staleAfter.Seconds()), m.workerID)
 	return err
 }
 

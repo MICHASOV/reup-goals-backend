@@ -114,7 +114,7 @@ jobs:
           AI_RATE_LIMIT_PER_MINUTE=60
           AI_DAILY_BUDGET_USD=0
           AI_MONTHLY_BUDGET_USD=0
-          AI_JOB_WORKERS=2
+          AI_JOB_WORKERS=6
           UNISENDER_API_KEY=
           UNISENDER_BASE_URL=https://api.unisender.com/ru/api
           UNISENDER_SENDER_EMAIL=noreply@reupgoals.pro
@@ -192,6 +192,11 @@ jobs:
             sed -i 's/^ENABLE_AI_BENCHMARK=.*/ENABLE_AI_BENCHMARK=false/' /etc/reup-goals-staging/backend.env
           else
             printf '\nENABLE_AI_BENCHMARK=false\n' >> /etc/reup-goals-staging/backend.env
+          fi
+          if grep -q '^AI_JOB_WORKERS=' /etc/reup-goals-staging/backend.env; then
+            sed -i 's/^AI_JOB_WORKERS=.*/AI_JOB_WORKERS=6/' /etc/reup-goals-staging/backend.env
+          else
+            printf '\nAI_JOB_WORKERS=6\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^CORS_ALLOWED_ORIGINS=' /etc/reup-goals-staging/backend.env; then
             sed -i 's|^CORS_ALLOWED_ORIGINS=.*|CORS_ALLOWED_ORIGINS=https://staging.reupgoals.pro|' /etc/reup-goals-staging/backend.env
