@@ -11,6 +11,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 const (
@@ -236,7 +238,11 @@ func (m *Manager) worker(ctx context.Context, minimumPriority int, maximumPriori
 }
 
 func (m *Manager) runOne(ctx context.Context, minimumPriority int, maximumPriority int) (bool, error) {
-	job, err := m.claim(ctx, minimumPriority, maximumPriority)
+	jobTypes := m.registeredJobTypes()
+	if len(jobTypes) == 0 {
+		return false, nil
+	}
+	job, err := m.claim(ctx, minimumPriority, maximumPriority, jobTypes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -287,7 +293,22 @@ func invokeHandler(ctx context.Context, handler Handler, job Job) (err error) {
 	return handler(ctx, job)
 }
 
-func (m *Manager) claim(ctx context.Context, minimumPriority int, maximumPriority int) (Job, error) {
+func (m *Manager) registeredJobTypes() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	jobTypes := make([]string, 0, len(m.handlers))
+	for jobType := range m.handlers {
+		jobTypes = append(jobTypes, jobType)
+	}
+	return jobTypes
+}
+
+func (m *Manager) claim(
+	ctx context.Context,
+	minimumPriority int,
+	maximumPriority int,
+	jobTypes []string,
+) (Job, error) {
 	tx, err := m.dbx.BeginTx(ctx, nil)
 	if err != nil {
 		return Job{}, err
@@ -303,10 +324,11 @@ func (m *Manager) claim(ctx context.Context, minimumPriority int, maximumPriorit
 			AND not_before <= NOW()
 			AND priority >= $2
 			AND ($3 <= 0 OR priority < $3)
+			AND job_type = ANY($4)
 		ORDER BY priority DESC, not_before, id
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1
-	`, StatusQueued, minimumPriority, maximumPriority).Scan(
+	`, StatusQueued, minimumPriority, maximumPriority, pq.Array(jobTypes)).Scan(
 		&job.ID, &workspaceID, &job.Type, &job.DedupeKey, &job.Payload,
 		&job.Priority, &job.Attempts, &job.MaxAttempts,
 	)

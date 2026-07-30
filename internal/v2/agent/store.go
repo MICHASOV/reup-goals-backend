@@ -89,6 +89,21 @@ func (s *Store) ActiveForThread(ctx context.Context, workspaceID int, userID int
 	`, workspaceID, userID, threadID, StatusQueued, StatusRunning, StatusWaitingApproval))
 }
 
+func (s *Store) HasActiveJob(ctx context.Context, run Run) (bool, error) {
+	var active bool
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM v2_background_jobs
+			WHERE workspace_id=$1
+				AND dedupe_key=$2
+				AND job_type IN ($3, $4)
+				AND status IN ('queued', 'running')
+		)
+	`, run.WorkspaceID, run.PublicID, JobTypeExecute, JobTypeResume).Scan(&active)
+	return active, err
+}
+
 func (s *Store) SetRunning(ctx context.Context, runID int64, reservationID string) error {
 	result, err := s.dbx.ExecContext(ctx, `
 		UPDATE v2_agent_runs

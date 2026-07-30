@@ -252,6 +252,10 @@ func (s *Service) RunForUser(ctx context.Context, userID int, publicID string, a
 	if err != nil {
 		return Run{}, err
 	}
+	run, err = s.reconcileOrphanedRun(ctx, run)
+	if err != nil {
+		return Run{}, err
+	}
 	return s.Hydrate(ctx, run, afterEventID)
 }
 
@@ -270,7 +274,32 @@ func (s *Service) ActiveRunForThread(ctx context.Context, userID int, threadID i
 	if err != nil {
 		return Run{}, err
 	}
+	run, err = s.reconcileOrphanedRun(ctx, run)
+	if err != nil {
+		return Run{}, err
+	}
 	return s.Hydrate(ctx, run, 0)
+}
+
+func (s *Service) reconcileOrphanedRun(ctx context.Context, run Run) (Run, error) {
+	if run.Status != StatusQueued && run.Status != StatusRunning {
+		return run, nil
+	}
+	if time.Since(run.UpdatedAt) < 3*time.Second {
+		return run, nil
+	}
+	active, err := s.store.HasActiveJob(ctx, run)
+	if err != nil || active {
+		return run, err
+	}
+	if err := s.store.SetFailed(ctx, run.ID, "agent_background_job_missing", true); err != nil {
+		return Run{}, err
+	}
+	_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
+		Type: "run_failed", Stage: "recovery", Title: "Предыдущий запуск остановлен",
+		Detail: "Сообщение сохранено: отправьте его повторно.",
+	})
+	return s.store.ByPublicIDForUser(ctx, run.PublicID, run.WorkspaceID, run.UserID)
 }
 
 func (s *Service) Hydrate(ctx context.Context, run Run, afterEventID int64) (Run, error) {
