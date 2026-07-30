@@ -268,6 +268,7 @@ type TacticsChatMessage struct {
 	ID              int                  `json:"id"`
 	Role            string               `json:"role"`
 	Content         string               `json:"content"`
+	AgentRunID      string               `json:"agent_run_id,omitempty"`
 	ProposedChanges []TacticsDraftChange `json:"proposed_changes,omitempty"`
 	AppliedIndices  []int                `json:"applied_indices,omitempty"`
 	ActionStates    []aiactions.Action   `json:"action_states,omitempty"`
@@ -470,6 +471,8 @@ type TacticsDraftChange struct {
 	DepartmentName           string         `json:"department_name,omitempty"`
 	OwnerUserID              *int           `json:"owner_user_id,omitempty"`
 	OwnerName                string         `json:"owner_name,omitempty"`
+	MemberUserIDs            []int          `json:"member_user_ids,omitempty"`
+	BlockingTaskIDs          []int          `json:"blocking_task_ids,omitempty"`
 	OwnerDeferred            bool           `json:"owner_deferred,omitempty"`
 	DueDate                  string         `json:"due_date,omitempty"`
 	DueDateDeferred          bool           `json:"due_date_deferred,omitempty"`
@@ -477,7 +480,9 @@ type TacticsDraftChange struct {
 	Probability              string         `json:"probability,omitempty"`
 	ProbabilityValue         *int           `json:"probability_value,omitempty"`
 	ImpactScore              *int           `json:"impact_score,omitempty"`
+	LeadingIndicators        string         `json:"leading_indicators,omitempty"`
 	MitigationPlan           string         `json:"mitigation_plan,omitempty"`
+	ContingencyPlan          string         `json:"contingency_plan,omitempty"`
 	Statement                string         `json:"statement,omitempty"`
 	ExpectedEffect           string         `json:"expected_effect,omitempty"`
 	TestMethod               string         `json:"test_method,omitempty"`

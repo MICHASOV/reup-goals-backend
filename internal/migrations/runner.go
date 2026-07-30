@@ -3519,6 +3519,94 @@ var migrations = []Migration{
 				);
 		`,
 	},
+	{
+		ID: "20260730_063_unified_agent_runs",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_agent_runs (
+				id BIGSERIAL PRIMARY KEY,
+				public_id TEXT NOT NULL UNIQUE,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				thread_id INTEGER NOT NULL REFERENCES v2_tactics_advisor_threads(id) ON DELETE CASCADE,
+				user_message_id INTEGER NULL REFERENCES v2_tactics_chat_messages(id) ON DELETE SET NULL,
+				assistant_message_id INTEGER NULL REFERENCES v2_tactics_chat_messages(id) ON DELETE SET NULL,
+				scope_type TEXT NOT NULL DEFAULT 'workspace',
+				scope_id INTEGER NOT NULL DEFAULT 0,
+				scope_label TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'queued',
+				model TEXT NOT NULL,
+				prompt_version TEXT NOT NULL DEFAULT 'executive_advisor_v1',
+				input_text TEXT NOT NULL,
+				output_text TEXT NOT NULL DEFAULT '',
+				partial_output TEXT NOT NULL DEFAULT '',
+				previous_response_id TEXT NOT NULL DEFAULT '',
+				conversation_id TEXT NOT NULL DEFAULT '',
+				vector_store_id TEXT NOT NULL DEFAULT '',
+				state_ciphertext TEXT NOT NULL DEFAULT '',
+				error_text TEXT NOT NULL DEFAULT '',
+				reservation_id TEXT NOT NULL DEFAULT '',
+				usage_requests INTEGER NOT NULL DEFAULT 0,
+				usage_input_tokens INTEGER NOT NULL DEFAULT 0,
+				usage_output_tokens INTEGER NOT NULL DEFAULT 0,
+				usage_total_tokens INTEGER NOT NULL DEFAULT 0,
+				started_at TIMESTAMPTZ NULL,
+				completed_at TIMESTAMPTZ NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				CHECK (status IN ('queued', 'running', 'waiting_approval', 'completed', 'failed', 'canceled'))
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_agent_runs_thread
+				ON v2_agent_runs (workspace_id, user_id, thread_id, created_at DESC);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_agent_runs_one_active_thread
+				ON v2_agent_runs (workspace_id, user_id, thread_id)
+				WHERE status IN ('queued', 'running', 'waiting_approval');
+			CREATE INDEX IF NOT EXISTS idx_v2_agent_runs_status
+				ON v2_agent_runs (status, updated_at)
+				WHERE status IN ('queued', 'running', 'waiting_approval');
+
+			CREATE TABLE IF NOT EXISTS v2_agent_run_events (
+				id BIGSERIAL PRIMARY KEY,
+				run_id BIGINT NOT NULL REFERENCES v2_agent_runs(id) ON DELETE CASCADE,
+				event_type TEXT NOT NULL,
+				stage TEXT NOT NULL DEFAULT '',
+				title TEXT NOT NULL,
+				detail TEXT NOT NULL DEFAULT '',
+				tool_name TEXT NOT NULL DEFAULT '',
+				tool_call_id TEXT NOT NULL DEFAULT '',
+				payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_agent_run_events_run
+				ON v2_agent_run_events (run_id, id);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_agent_run_events_tool_stage
+				ON v2_agent_run_events (run_id, event_type, tool_call_id)
+				WHERE tool_call_id <> '';
+
+			CREATE TABLE IF NOT EXISTS v2_agent_run_approvals (
+				id BIGSERIAL PRIMARY KEY,
+				run_id BIGINT NOT NULL REFERENCES v2_agent_runs(id) ON DELETE CASCADE,
+				call_id TEXT NOT NULL,
+				tool_name TEXT NOT NULL,
+				arguments_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				status TEXT NOT NULL DEFAULT 'pending',
+				action_index INTEGER NOT NULL,
+				result_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+				error_text TEXT NOT NULL DEFAULT '',
+				decided_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				decided_at TIMESTAMPTZ NULL,
+				applied_at TIMESTAMPTZ NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				UNIQUE (run_id, call_id),
+				CHECK (status IN ('pending', 'approved', 'rejected', 'applied', 'failed'))
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_agent_run_approvals_run
+				ON v2_agent_run_approvals (run_id, action_index);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

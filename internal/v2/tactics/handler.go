@@ -56,6 +56,17 @@ func NewHandler(dbx *sql.DB, aiClient ai.Provider, evaluatorAIClient ai.Provider
 	}
 }
 
+// ApplyAgentChanges keeps the unified agent on the same confirmation,
+// idempotency, evaluation, and strategic-memory path as the existing advisor.
+func (h *Handler) ApplyAgentChanges(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	request ApplyTacticsChangesRequest,
+) (ApplyTacticsChangesResponse, error) {
+	return h.facilitator.ApplyConfirmedChanges(ctx, workspaceID, userID, request)
+}
+
 func (h *Handler) Facilitator(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/v2/tactics-facilitator/state":

@@ -178,9 +178,11 @@ func (s *Store) ScopedChatMessages(ctx context.Context, workspaceID int, scope *
 		}
 		var metadata struct {
 			DraftChanges []TacticsDraftChange `json:"draft_changes"`
+			AgentRunID   string               `json:"agent_run_id"`
 		}
 		_ = json.Unmarshal(metadataRaw, &metadata)
 		item.ProposedChanges = normalizeTacticsDraftChanges(metadata.DraftChanges)
+		item.AgentRunID = strings.TrimSpace(metadata.AgentRunID)
 		item.AppliedIndices = []int{}
 		items = append(items, item)
 	}

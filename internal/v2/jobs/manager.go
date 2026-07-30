@@ -46,6 +46,7 @@ type Manager struct {
 
 	mu       sync.RWMutex
 	handlers map[string]Handler
+	timeouts map[string]time.Duration
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 }
@@ -58,6 +59,7 @@ func NewManager(dbx *sql.DB) *Manager {
 		pollInterval: time.Second,
 		staleAfter:   10 * time.Minute,
 		handlers:     make(map[string]Handler),
+		timeouts:     make(map[string]time.Duration),
 	}
 }
 
@@ -65,6 +67,16 @@ func (m *Manager) Register(jobType string, handler Handler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.handlers[jobType] = handler
+	m.timeouts[jobType] = 10 * time.Minute
+}
+
+// RegisterWithoutTimeout is reserved for providers that own their request
+// lifecycle and can legitimately take longer than a local HTTP deadline.
+func (m *Manager) RegisterWithoutTimeout(jobType string, handler Handler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.handlers[jobType] = handler
+	m.timeouts[jobType] = 0
 }
 
 func (m *Manager) Enqueue(ctx context.Context, workspaceID int, jobType string, dedupeKey string, payload any, maxAttempts int, notBefore time.Time) (int64, error) {
@@ -195,12 +207,17 @@ func (m *Manager) runOne(ctx context.Context) (bool, error) {
 
 	m.mu.RLock()
 	handler := m.handlers[job.Type]
+	timeout := m.timeouts[job.Type]
 	m.mu.RUnlock()
 	if handler == nil {
 		return true, m.fail(ctx, job, fmt.Errorf("no handler registered for %s", job.Type))
 	}
 
-	jobCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	jobCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		jobCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
 	err = invokeHandler(jobCtx, handler, job)
 	cancel()
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	"reup-goals-backend/internal/security"
 	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/tasks"
+	agentapi "reup-goals-backend/internal/v2/agent"
 	"reup-goals-backend/internal/v2/aiactions"
 	"reup-goals-backend/internal/v2/aiplatform"
 	v2api "reup-goals-backend/internal/v2/api"
@@ -110,6 +111,16 @@ func main() {
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
 	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
 	tacticsHandler := tactics.NewHandler(database, advisorAIClient, taskEvaluatorAIClient, cfg.OpenAIAdvisorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
+	agentService := agentapi.NewService(
+		database,
+		agentapi.ServiceConfig{
+			Enabled: cfg.AgentRuntimeEnabled, Model: cfg.OpenAIAdvisorModel,
+			Secret: cfg.AgentRuntimeSecret, MaxTurns: cfg.AgentRuntimeMaxTurns,
+		},
+		agentapi.NewRuntimeClient(cfg.AgentRuntimeURL, cfg.AgentRuntimeSecret),
+		jobManager, billingService, workspaceContextIndex, tacticsHandler,
+	)
+	agentHandler := agentapi.NewHandler(agentService)
 	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, taskEvaluatorAIClient, cfg.OpenAIAuditorCompactThreshold, strategicSourceRecorder).WithContextIndex(workspaceContextIndex)
 	operationsHandler := operations.NewHandler(database, jobManager)
 	privacyHandler := privacy.NewHandler(database)
@@ -237,6 +248,12 @@ func main() {
 	mux.Handle("/api/v2/tactics-advisor/state", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Advisor))
 	mux.Handle("/api/v2/tactics-advisor/messages", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Advisor))
 	mux.Handle("/api/v2/tactics-advisor/files", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Advisor))
+	mux.Handle("/api/v2/advisor/runs", v2api.RequireAuth(database, jwtSecret, agentHandler.Runs))
+	mux.Handle("/api/v2/advisor/runs/", v2api.RequireAuth(database, jwtSecret, agentHandler.Runs))
+	if cfg.AgentRuntimeEnabled {
+		mux.HandleFunc("/internal/agent/runs/", agentHandler.InternalEvents)
+		mux.HandleFunc("/internal/agent/tools/", agentHandler.InternalTools)
+	}
 	mux.Handle("/api/v2/tactics/workstreams", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Workstreams))
 	mux.Handle("/api/v2/tactics/workstreams/", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Workstreams))
 	mux.Handle("/api/v2/tactics/projects", v2api.RequireAuth(database, jwtSecret, tacticsHandler.Projects))

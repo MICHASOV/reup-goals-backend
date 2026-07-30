@@ -38,6 +38,10 @@ type Config struct {
 	AIDailyBudgetUSD              float64
 	AIMonthlyBudgetUSD            float64
 	AIJobWorkers                  int
+	AgentRuntimeEnabled           bool
+	AgentRuntimeURL               string
+	AgentRuntimeSecret            string
+	AgentRuntimeMaxTurns          int
 
 	JWTSecret                     string
 	CORSAllowedOrigins            []string
@@ -123,6 +127,10 @@ func Load() *Config {
 	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
 	if openAIProxyURL == "" {
 		openAIProxyURL = "socks5://127.0.0.1:10808"
+	}
+	agentRuntimeURL := strings.TrimRight(strings.TrimSpace(os.Getenv("AGENT_RUNTIME_URL")), "/")
+	if agentRuntimeURL == "" {
+		agentRuntimeURL = "http://127.0.0.1:8091"
 	}
 
 	jwtSecret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
@@ -215,6 +223,10 @@ func Load() *Config {
 		AIDailyBudgetUSD:              parseFloatEnv("AI_DAILY_BUDGET_USD", 0),
 		AIMonthlyBudgetUSD:            parseFloatEnv("AI_MONTHLY_BUDGET_USD", 0),
 		AIJobWorkers:                  parseIntEnv("AI_JOB_WORKERS", 2),
+		AgentRuntimeEnabled:           parseBoolEnv("AGENT_RUNTIME_ENABLED"),
+		AgentRuntimeURL:               agentRuntimeURL,
+		AgentRuntimeSecret:            strings.TrimSpace(os.Getenv("AGENT_RUNTIME_SECRET")),
+		AgentRuntimeMaxTurns:          parseIntEnv("AGENT_RUNTIME_MAX_TURNS", 12),
 
 		JWTSecret:                     jwtSecret,
 		CORSAllowedOrigins:            parseCSVEnv("CORS_ALLOWED_ORIGINS"),
@@ -413,6 +425,18 @@ func (c *Config) Validate() error {
 	}
 	if c.BillingEnforcementEnabled && !c.BillingPaymentsEnabled && strings.TrimSpace(c.BillingAdminKey) == "" {
 		return fmt.Errorf("billing enforcement requires either real payments or manual confirmation")
+	}
+	if c.AgentRuntimeEnabled {
+		if len(c.AgentRuntimeSecret) < 32 {
+			return fmt.Errorf("AGENT_RUNTIME_SECRET must contain at least 32 characters when the agent runtime is enabled")
+		}
+		runtimeURL, err := url.Parse(c.AgentRuntimeURL)
+		if err != nil || runtimeURL.Scheme == "" || runtimeURL.Host == "" {
+			return fmt.Errorf("AGENT_RUNTIME_URL must be a valid absolute URL")
+		}
+		if c.AgentRuntimeMaxTurns < 2 || c.AgentRuntimeMaxTurns > 30 {
+			return fmt.Errorf("AGENT_RUNTIME_MAX_TURNS must be between 2 and 30")
+		}
 	}
 	return nil
 }
