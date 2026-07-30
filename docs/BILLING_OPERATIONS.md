@@ -24,6 +24,10 @@ Confirmation is idempotent. For a subscription invoice it activates the selected
 seven-day AI window. For a reset invoice it adds one full weekly allowance to the persistent additional
 reserve. The action also records a manual payment.
 
+The weekly allowance is token-based, not message-based. It charges uncached input and output tokens at
+their full amount and cached input at 10%, matching the current GPT-5 cached-input price ratio. Raw input,
+output, total, and cached token counts remain available in the AI call log for cost and incident audits.
+
 ## Enabling a real provider later
 
 1. Configure provider credentials in the production secret store.

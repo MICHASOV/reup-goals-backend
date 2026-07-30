@@ -117,7 +117,6 @@ func (s *Service) HandleDocumentChatMessage(
 		PromptCacheKey:       session.PromptCacheKey,
 		MaxFileSearchResults: 6,
 		MaxOutputTokens:      6000,
-		RequestTimeout:       2 * time.Minute,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil && strings.TrimSpace(session.ConversationID) != "" && ai.IsConversationStateError(err) {
@@ -130,7 +129,6 @@ func (s *Service) HandleDocumentChatMessage(
 			PromptCacheKey:       session.PromptCacheKey,
 			MaxFileSearchResults: 6,
 			MaxOutputTokens:      6000,
-			RequestTimeout:       2 * time.Minute,
 		})
 		duration = time.Since(started).Milliseconds()
 	}
@@ -149,7 +147,6 @@ func (s *Service) HandleDocumentChatMessage(
 			PromptCacheKey:       session.PromptCacheKey,
 			MaxFileSearchResults: 6,
 			MaxOutputTokens:      6000,
-			RequestTimeout:       2 * time.Minute,
 		})
 		duration = time.Since(started).Milliseconds()
 		if err != nil || ai.LooksLikeJSONObject(result.Text) {

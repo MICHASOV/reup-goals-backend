@@ -118,8 +118,8 @@ func Load() *Config {
 		transcriptionModel = "gpt-4o-transcribe"
 	}
 	auditorMaxOutputTokens := parseIntEnv("OPENAI_AUDITOR_MAX_OUTPUT_TOKENS", 1800)
-	auditorCompactThreshold := parseIntEnv("OPENAI_AUDITOR_COMPACT_THRESHOLD", 60000)
-	advisorCompactThreshold := parseIntEnv("OPENAI_ADVISOR_COMPACT_THRESHOLD", 60000)
+	auditorCompactThreshold := parseIntEnv("OPENAI_AUDITOR_COMPACT_THRESHOLD", 24000)
+	advisorCompactThreshold := parseIntEnv("OPENAI_ADVISOR_COMPACT_THRESHOLD", 24000)
 	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
 	if openAIProxyURL == "" {
 		openAIProxyURL = "socks5://127.0.0.1:10808"
@@ -220,7 +220,7 @@ func Load() *Config {
 		CORSAllowedOrigins:            parseCSVEnv("CORS_ALLOWED_ORIGINS"),
 		Environment:                   environment,
 		HTTPReadTimeout:               parseDurationEnv("HTTP_READ_TIMEOUT", 90*time.Second),
-		HTTPWriteTimeout:              parseDurationEnv("HTTP_WRITE_TIMEOUT", 6*time.Minute),
+		HTTPWriteTimeout:              parseDurationEnv("HTTP_WRITE_TIMEOUT", 0),
 		HTTPIdleTimeout:               parseDurationEnv("HTTP_IDLE_TIMEOUT", 90*time.Second),
 		BrowserAuthOnly:               parseBoolEnv("BROWSER_AUTH_ONLY"),
 		SecureCookies:                 parseBoolEnv("COOKIE_SECURE"),

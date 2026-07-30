@@ -1,15 +1,18 @@
 package ai
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildResponsesRequestUsesConversationWithoutDuplicatingPrompt(t *testing.T) {
-	resolved := ResolvedCall{Model: "gpt-test", Instructions: "stable business prompt"}
+	resolved := ResolvedCall{Model: "gpt-5.4", Instructions: "stable business prompt"}
 	request := buildResponsesRequest(resolved, "latest user message", nil, ResponseContextOptions{
 		PreviousResponseID:   "resp_old",
+		UseConversation:      true,
 		VectorStoreIDs:       []string{"", "vs_workspace", "vs_workspace"},
 		CompactThreshold:     120000,
 		MaxFileSearchResults: 8,
@@ -23,6 +26,9 @@ func TestBuildResponsesRequestUsesConversationWithoutDuplicatingPrompt(t *testin
 	}
 	if request.PreviousResponseID != "" {
 		t.Fatalf("previous_response_id must not be combined with conversation: %q", request.PreviousResponseID)
+	}
+	if !request.Background {
+		t.Fatal("stateful GPT-5 conversations must run in background mode")
 	}
 	if len(request.ContextManagement) != 1 {
 		t.Fatalf("expected server-side compaction configuration, got %#v", request.ContextManagement)
@@ -62,6 +68,9 @@ func TestBuildResponsesRequestKeepsInstructionsForOneShotCall(t *testing.T) {
 	}
 	if request.Reasoning["effort"] != "none" {
 		t.Fatalf("reasoning = %#v", request.Reasoning)
+	}
+	if request.Background {
+		t.Fatal("one-shot call must remain synchronous")
 	}
 }
 
@@ -126,6 +135,56 @@ func TestIsConversationStateError(t *testing.T) {
 				t.Fatalf("IsConversationStateError(%q) = %v, want %v", test.err, got, test.want)
 			}
 		})
+	}
+}
+
+func TestResponseRequestContextHasNoImplicitDeadline(t *testing.T) {
+	ctx, cancel := responseRequestContext(context.Background(), 0)
+	defer cancel()
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("default response context must not have an artificial deadline")
+	}
+
+	ctx, cancel = responseRequestContext(context.Background(), time.Second)
+	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("explicit request timeout must create a deadline")
+	}
+}
+
+func TestConversationItemsBeforeCompactionPreserveDeveloperPrompt(t *testing.T) {
+	items := conversationItemList{}
+	items.Data = append(items.Data,
+		struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Role string `json:"role"`
+		}{ID: "developer", Type: "message", Role: "developer"},
+		struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Role string `json:"role"`
+		}{ID: "user-old", Type: "message", Role: "user"},
+		struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Role string `json:"role"`
+		}{ID: "assistant-old", Type: "message", Role: "assistant"},
+		struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Role string `json:"role"`
+		}{ID: "compact", Type: "compaction"},
+		struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+			Role string `json:"role"`
+		}{ID: "assistant-new", Type: "message", Role: "assistant"},
+	)
+
+	got := conversationItemIDsBeforeCompaction(items, "compact")
+	if len(got) != 2 || got[0] != "user-old" || got[1] != "assistant-old" {
+		t.Fatalf("items to prune = %#v", got)
 	}
 }
 

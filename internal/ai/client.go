@@ -106,11 +106,10 @@ func (c *OpenAIClient) buildHTTPClient() (*http.Client, error) {
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
 		},
-		MaxIdleConns:          50,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Minute,
+		MaxIdleConns:        50,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
 	}
 
 	return &http.Client{Transport: transport}, nil
@@ -119,14 +118,13 @@ func (c *OpenAIClient) buildHTTPClient() (*http.Client, error) {
 func defaultOpenAITransport() *http.Transport {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	return &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           dialer.DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          50,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Minute,
+		Proxy:               http.ProxyFromEnvironment,
+		DialContext:         dialer.DialContext,
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        50,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
 	}
 }
 
@@ -151,6 +149,7 @@ type responsesRequest struct {
 	Tools              []map[string]interface{} `json:"tools,omitempty"`
 	PromptCacheKey     string                   `json:"prompt_cache_key,omitempty"`
 	Reasoning          map[string]string        `json:"reasoning,omitempty"`
+	Background         bool                     `json:"background,omitempty"`
 }
 
 type conversationRequest struct {
@@ -169,15 +168,38 @@ type conversationResponse struct {
 }
 
 type responsesResponse struct {
-	ID     string `json:"id"`
-	Output []struct {
-		Type    string `json:"type"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"output"`
-	Usage Usage `json:"usage"`
+	ID                string           `json:"id"`
+	Status            string           `json:"status"`
+	Output            []responseOutput `json:"output"`
+	Usage             Usage            `json:"usage"`
+	Error             *responseError   `json:"error"`
+	IncompleteDetails json.RawMessage  `json:"incomplete_details"`
+}
+
+type responseOutput struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+type responseError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Type    string `json:"type"`
+}
+
+type conversationItemList struct {
+	Data []struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+		Role string `json:"role"`
+	} `json:"data"`
+	HasMore bool   `json:"has_more"`
+	LastID  string `json:"last_id"`
 }
 
 type transcriptionResponse struct {
@@ -417,13 +439,7 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 	if err != nil {
 		return TextResult{}, fmt.Errorf("proxy init error: %w", err)
 	}
-	requestCtx := ctx
-	requestCancel := func() {}
-	if options.RequestTimeout > 0 {
-		requestCtx, requestCancel = context.WithTimeout(ctx, options.RequestTimeout)
-	} else {
-		requestCtx, requestCancel = context.WithTimeout(ctx, 75*time.Second)
-	}
+	requestCtx, requestCancel := responseRequestContext(ctx, options.RequestTimeout)
 	defer requestCancel()
 
 	conversationID := strings.TrimSpace(options.ConversationID)
@@ -481,10 +497,22 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return TextResult{}, fmt.Errorf("json decode error: %w | body: %s", err, safeErrorBody(raw))
 	}
+	if responseInProgress(parsed.Status) {
+		parsed, err = c.waitForBackgroundResponse(requestCtx, parsed.ID)
+		if err != nil {
+			return TextResult{}, err
+		}
+	}
+	if err := terminalResponseError(parsed); err != nil {
+		return TextResult{}, err
+	}
 
 	text := firstResponseText(parsed)
 	if text == "" {
 		return TextResult{}, fmt.Errorf("empty model output")
+	}
+	if compactionID := latestCompactionID(parsed.Output); compactionID != "" && conversationID != "" {
+		c.pruneConversationAsync(conversationID, compactionID)
 	}
 
 	return TextResult{
@@ -509,6 +537,7 @@ func buildResponsesRequest(
 		MaxOutputTokens: defaultMaxOutputTokens,
 		Text:            textFormat,
 		PromptCacheKey:  normalizePromptCacheKey(options.PromptCacheKey),
+		Background:      options.UseConversation && supportsBackgroundResponses(resolved.Model),
 	}
 	if strings.TrimSpace(conversationID) != "" {
 		reqBody.Conversation = strings.TrimSpace(conversationID)
@@ -539,6 +568,186 @@ func buildResponsesRequest(
 		reqBody.Tools = []map[string]interface{}{fileSearchTool}
 	}
 	return reqBody
+}
+
+func responseRequestContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(ctx, timeout)
+	}
+	return ctx, func() {}
+}
+
+func supportsBackgroundResponses(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-5")
+}
+
+func responseInProgress(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "queued", "in_progress":
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalResponseError(response responsesResponse) error {
+	status := strings.TrimSpace(response.Status)
+	if status == "" || status == "completed" {
+		return nil
+	}
+	if response.Error != nil {
+		message := strings.TrimSpace(response.Error.Message)
+		if message == "" {
+			message = strings.TrimSpace(response.Error.Code)
+		}
+		if message != "" {
+			return fmt.Errorf("openai response %s: %s", status, message)
+		}
+	}
+	if len(response.IncompleteDetails) > 0 && string(response.IncompleteDetails) != "null" {
+		return fmt.Errorf("openai response %s: %s", status, safeErrorBody(response.IncompleteDetails))
+	}
+	return fmt.Errorf("openai response %s", status)
+}
+
+func (c *OpenAIClient) waitForBackgroundResponse(ctx context.Context, responseID string) (responsesResponse, error) {
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" {
+		return responsesResponse{}, fmt.Errorf("background response has no id")
+	}
+	endpoint := "https://api.openai.com/v1/responses/" + url.PathEscape(responseID)
+	consecutiveFailures := 0
+	for {
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			c.cancelBackgroundResponseAsync(responseID)
+			return responsesResponse{}, ctx.Err()
+		case <-timer.C:
+		}
+
+		var response responsesResponse
+		if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+			if ctx.Err() != nil {
+				c.cancelBackgroundResponseAsync(responseID)
+				return responsesResponse{}, ctx.Err()
+			}
+			consecutiveFailures++
+			if consecutiveFailures >= 5 {
+				return responsesResponse{}, fmt.Errorf("retrieve background response: %w", err)
+			}
+			continue
+		}
+		consecutiveFailures = 0
+		if responseInProgress(response.Status) {
+			continue
+		}
+		return response, nil
+	}
+}
+
+func (c *OpenAIClient) cancelBackgroundResponseAsync(responseID string) {
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = c.doJSON(
+			ctx,
+			http.MethodPost,
+			"https://api.openai.com/v1/responses/"+url.PathEscape(responseID)+"/cancel",
+			nil,
+			nil,
+		)
+	}()
+}
+
+func latestCompactionID(outputs []responseOutput) string {
+	for index := len(outputs) - 1; index >= 0; index-- {
+		if strings.TrimSpace(outputs[index].Type) == "compaction" {
+			return strings.TrimSpace(outputs[index].ID)
+		}
+	}
+	return ""
+}
+
+func (c *OpenAIClient) pruneConversationAsync(conversationID string, compactionID string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		_ = c.pruneConversationBeforeCompaction(ctx, conversationID, compactionID)
+	}()
+}
+
+func (c *OpenAIClient) pruneConversationBeforeCompaction(ctx context.Context, conversationID string, compactionID string) error {
+	conversationID = strings.TrimSpace(conversationID)
+	compactionID = strings.TrimSpace(compactionID)
+	if conversationID == "" || compactionID == "" {
+		return nil
+	}
+
+	items := conversationItemList{}
+	after := ""
+	for page := 0; page < 20; page++ {
+		endpoint := "https://api.openai.com/v1/conversations/" + url.PathEscape(conversationID) + "/items?limit=100&order=asc"
+		if after != "" {
+			endpoint += "&after=" + url.QueryEscape(after)
+		}
+		pageItems := conversationItemList{}
+		if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &pageItems); err != nil {
+			return err
+		}
+		items.Data = append(items.Data, pageItems.Data...)
+		if latestCompactionIDFromItems(pageItems, compactionID) || !pageItems.HasMore || strings.TrimSpace(pageItems.LastID) == "" {
+			break
+		}
+		after = strings.TrimSpace(pageItems.LastID)
+	}
+	for _, itemID := range conversationItemIDsBeforeCompaction(items, compactionID) {
+		if err := c.deleteResource(
+			ctx,
+			"https://api.openai.com/v1/conversations/"+
+				url.PathEscape(conversationID)+"/items/"+url.PathEscape(itemID),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func latestCompactionIDFromItems(items conversationItemList, compactionID string) bool {
+	for _, item := range items.Data {
+		if strings.TrimSpace(item.ID) == strings.TrimSpace(compactionID) {
+			return true
+		}
+	}
+	return false
+}
+
+func conversationItemIDsBeforeCompaction(items conversationItemList, compactionID string) []string {
+	compactionIndex := -1
+	for index, item := range items.Data {
+		if strings.TrimSpace(item.ID) == strings.TrimSpace(compactionID) {
+			compactionIndex = index
+			break
+		}
+	}
+	if compactionIndex <= 0 {
+		return nil
+	}
+	result := make([]string, 0, compactionIndex)
+	for _, item := range items.Data[:compactionIndex] {
+		if strings.TrimSpace(item.Role) == "developer" {
+			continue
+		}
+		if itemID := strings.TrimSpace(item.ID); itemID != "" {
+			result = append(result, itemID)
+		}
+	}
+	return result
 }
 
 func normalizePromptCacheKey(value string) string {

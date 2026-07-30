@@ -30,12 +30,18 @@ func TestUnknownModelHasNoInventedPrice(t *testing.T) {
 	}
 }
 
-func TestTotalTokenUsageUsesProviderTotalOrComponents(t *testing.T) {
-	if got := totalTokenUsage(ai.Usage{InputTokens: 1200, OutputTokens: 300, TotalTokens: 1400}); got != 1500 {
-		t.Fatalf("expected component total, got %d", got)
+func TestQuotaTokenUsageDiscountsCachedConversationHistory(t *testing.T) {
+	usage := ai.Usage{InputTokens: 12_000, OutputTokens: 300, TotalTokens: 12_300}
+	usage.InputTokenDetails.CachedTokens = 10_000
+	if got := quotaTokenUsage(usage); got != 3_300 {
+		t.Fatalf("effective quota tokens = %d, want 3300", got)
 	}
-	if got := totalTokenUsage(ai.Usage{InputTokens: 1200, OutputTokens: 300, TotalTokens: 1600}); got != 1600 {
-		t.Fatalf("expected provider total, got %d", got)
+}
+
+func TestQuotaTokenUsageKeepsProviderRemainder(t *testing.T) {
+	usage := ai.Usage{InputTokens: 1200, OutputTokens: 300, TotalTokens: 1600}
+	if got := quotaTokenUsage(usage); got != 1600 {
+		t.Fatalf("effective quota tokens = %d, want 1600", got)
 	}
 }
 

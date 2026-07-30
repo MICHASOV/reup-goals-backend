@@ -131,7 +131,7 @@ func (s *BrainstormService) HandleMessage(
 	result, err := s.ai.GenerateJSONNative(aiCtx, prompt, input, ai.ResponseContextOptions{
 		UseConversation: true, ConversationID: session.ConversationID, VectorStoreIDs: vectorStoreIDs,
 		CompactThreshold: session.CompactThreshold, PromptCacheKey: session.PromptCacheKey,
-		MaxFileSearchResults: 6, MaxOutputTokens: 8000, RequestTimeout: 2 * time.Minute,
+		MaxFileSearchResults: 6, MaxOutputTokens: 8000,
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil && strings.TrimSpace(session.ConversationID) != "" && ai.IsConversationStateError(err) {
@@ -140,7 +140,7 @@ func (s *BrainstormService) HandleMessage(
 		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, brainstormFreshInput(pack, request.Message), ai.ResponseContextOptions{
 			UseConversation: true, VectorStoreIDs: vectorStoreIDs, CompactThreshold: session.CompactThreshold,
 			PromptCacheKey: session.PromptCacheKey, MaxFileSearchResults: 6,
-			MaxOutputTokens: 8000, RequestTimeout: 2 * time.Minute,
+			MaxOutputTokens: 8000,
 		})
 		duration = time.Since(started).Milliseconds()
 	}
@@ -159,7 +159,7 @@ func (s *BrainstormService) HandleMessage(
 		result, err = s.ai.GenerateJSONNative(aiCtx, prompt, "Repair your previous response. Return valid JSON matching the required output contract. The message field must contain natural user-facing prose, never JSON or a serialized object. Preserve the intended meaning and do not ask the user to repeat anything.", ai.ResponseContextOptions{
 			UseConversation: true, ConversationID: result.ConversationID, VectorStoreIDs: vectorStoreIDs,
 			CompactThreshold: session.CompactThreshold, PromptCacheKey: session.PromptCacheKey,
-			MaxFileSearchResults: 6, MaxOutputTokens: 8000, RequestTimeout: 2 * time.Minute,
+			MaxFileSearchResults: 6, MaxOutputTokens: 8000,
 		})
 		duration = time.Since(started).Milliseconds()
 		if err == nil {

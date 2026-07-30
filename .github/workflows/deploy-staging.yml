@@ -89,8 +89,8 @@ jobs:
           OPENAI_AUDITOR_MODEL=gpt-5.4
           OPENAI_ADVISOR_MODEL=gpt-5.4-mini
           OPENAI_AUDITOR_MAX_OUTPUT_TOKENS=1800
-          OPENAI_AUDITOR_COMPACT_THRESHOLD=60000
-          OPENAI_ADVISOR_COMPACT_THRESHOLD=60000
+          OPENAI_AUDITOR_COMPACT_THRESHOLD=24000
+          OPENAI_ADVISOR_COMPACT_THRESHOLD=24000
           ENABLE_AI_BENCHMARK=false
           OPENAI_PROXY_URL=direct
           AI_RATE_LIMIT_PER_MINUTE=60
@@ -156,9 +156,9 @@ jobs:
             printf '\nOPENAI_AUDITOR_MAX_OUTPUT_TOKENS=1800\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^OPENAI_AUDITOR_COMPACT_THRESHOLD=' /etc/reup-goals-staging/backend.env; then
-            sed -i 's/^OPENAI_AUDITOR_COMPACT_THRESHOLD=.*/OPENAI_AUDITOR_COMPACT_THRESHOLD=60000/' /etc/reup-goals-staging/backend.env
+            sed -i 's/^OPENAI_AUDITOR_COMPACT_THRESHOLD=.*/OPENAI_AUDITOR_COMPACT_THRESHOLD=24000/' /etc/reup-goals-staging/backend.env
           else
-            printf '\nOPENAI_AUDITOR_COMPACT_THRESHOLD=60000\n' >> /etc/reup-goals-staging/backend.env
+            printf '\nOPENAI_AUDITOR_COMPACT_THRESHOLD=24000\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^OPENAI_ADVISOR_MODEL=' /etc/reup-goals-staging/backend.env; then
             sed -i 's/^OPENAI_ADVISOR_MODEL=.*/OPENAI_ADVISOR_MODEL=gpt-5.4-mini/' /etc/reup-goals-staging/backend.env
@@ -166,9 +166,9 @@ jobs:
             printf '\nOPENAI_ADVISOR_MODEL=gpt-5.4-mini\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^OPENAI_ADVISOR_COMPACT_THRESHOLD=' /etc/reup-goals-staging/backend.env; then
-            sed -i 's/^OPENAI_ADVISOR_COMPACT_THRESHOLD=.*/OPENAI_ADVISOR_COMPACT_THRESHOLD=60000/' /etc/reup-goals-staging/backend.env
+            sed -i 's/^OPENAI_ADVISOR_COMPACT_THRESHOLD=.*/OPENAI_ADVISOR_COMPACT_THRESHOLD=24000/' /etc/reup-goals-staging/backend.env
           else
-            printf '\nOPENAI_ADVISOR_COMPACT_THRESHOLD=60000\n' >> /etc/reup-goals-staging/backend.env
+            printf '\nOPENAI_ADVISOR_COMPACT_THRESHOLD=24000\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^ENABLE_AI_BENCHMARK=' /etc/reup-goals-staging/backend.env; then
             sed -i 's/^ENABLE_AI_BENCHMARK=.*/ENABLE_AI_BENCHMARK=false/' /etc/reup-goals-staging/backend.env
@@ -201,6 +201,7 @@ jobs:
             'INVOICE_FONT_PATH=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf' \
             'CROSS_BORDER_TRANSFER_REGISTERED=false' \
             'RETENTION_INTERVAL=24h' \
+            'HTTP_WRITE_TIMEOUT=0s' \
             'AUTH_CODE_RETENTION_DAYS=30' \
             'HTTP_REQUEST_LOG_RETENTION_DAYS=90' \
             'PRODUCT_EVENT_RETENTION_DAYS=365' \
@@ -297,6 +298,9 @@ jobs:
           }
           NGINX
           fi
+
+          sed -i -E 's/proxy_send_timeout [^;]+;/proxy_send_timeout 3600s;/g' "$api_site"
+          sed -i -E 's/proxy_read_timeout [^;]+;/proxy_read_timeout 3600s;/g' "$api_site"
 
           ln -sf "$api_site" /etc/nginx/sites-enabled/api-staging.reupgoals.pro
           nginx -t

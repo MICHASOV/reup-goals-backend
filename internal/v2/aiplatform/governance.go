@@ -105,7 +105,7 @@ func (g *Governance) AfterCall(ctx context.Context, call ai.ResolvedCall, result
 	settlementError := ""
 	if g.quotas != nil && call.ReservationID != "" {
 		settlementCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
-		err := g.quotas.Settle(settlementCtx, call.ReservationID, result.Err == nil, totalTokenUsage(result.Usage))
+		err := g.quotas.Settle(settlementCtx, call.ReservationID, result.Err == nil, quotaTokenUsage(result.Usage))
 		cancel()
 		if err != nil {
 			settlementError = "ai_quota_settlement_failed"
@@ -143,8 +143,23 @@ func (g *Governance) AfterCall(ctx context.Context, call ai.ResolvedCall, result
 	}
 }
 
-func totalTokenUsage(usage ai.Usage) int {
-	return max(usage.TotalTokens, usage.InputTokens+usage.OutputTokens)
+func quotaTokenUsage(usage ai.Usage) int {
+	inputTokens := max(0, usage.InputTokens)
+	outputTokens := max(0, usage.OutputTokens)
+	cachedTokens := usage.CachedInputTokens()
+	if cachedTokens < 0 || cachedTokens > inputTokens {
+		cachedTokens = 0
+	}
+
+	// GPT-5 cached input is priced at one tenth of regular input. Charge the
+	// workspace quota in the same effective-token proportion so repeated
+	// conversation history does not consume the weekly allowance at full price.
+	effectiveCachedTokens := (cachedTokens + 9) / 10
+	result := inputTokens - cachedTokens + effectiveCachedTokens + outputTokens
+	if providerRemainder := usage.TotalTokens - inputTokens - outputTokens; providerRemainder > 0 {
+		result += providerRemainder
+	}
+	return max(0, result)
 }
 
 func (g *Governance) registerFallback(ctx context.Context, metadata ai.CallMetadata, instructions string, model string) {

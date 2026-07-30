@@ -6,17 +6,22 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"reup-goals-backend/internal/ai"
+	"reup-goals-backend/internal/v2/metrics"
 )
 
 const RetrievalInstructions = `
 
-The current workspace context is available through file_search. Search it before relying on company facts, documents, strategy, course, tactics, projects, risks, opportunities, or tasks. Treat the newest indexed workspace context as the source of truth for current structured data. Use the conversation itself for what the user and assistant have said. Do not ask the user to repeat information that can be found through file_search.`
+The current workspace context is available through file_search. Search it before relying on company facts, documents, strategy, course, tactics, projects, risks, opportunities, metrics, or tasks. Treat the newest indexed workspace context as the source of truth for current structured data. Use the conversation itself for what the user and assistant have said. Do not ask the user to repeat information that can be found through file_search.
+
+The workspace context also contains a section named "Standard business metric catalog". Before recommending, selecting, or creating business metrics, search that section and prefer its canonical metrics, names, formulas, units, and interpretations. Propose a custom metric only when the catalog has no suitable match, and identify it as custom.`
 
 type Service struct {
 	dbx      *sql.DB
@@ -298,6 +303,38 @@ func (s *Service) RefreshAsync(workspaceID int) {
 	}()
 }
 
+func (s *Service) RefreshAllAsync() {
+	if s == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		rows, err := s.dbx.QueryContext(ctx, `
+			SELECT id
+			FROM workspaces
+			WHERE status='active' AND archived_at IS NULL
+			ORDER BY id
+		`)
+		if err != nil {
+			log.Printf("[WARN] list workspace contexts for refresh: %v", err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var workspaceID int
+			if err := rows.Scan(&workspaceID); err != nil {
+				log.Printf("[WARN] scan workspace context refresh: %v", err)
+				continue
+			}
+			s.RefreshAsync(workspaceID)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("[WARN] iterate workspace contexts for refresh: %v", err)
+		}
+	}()
+}
+
 func (s *Service) logRefreshFailure(workspaceID int, refreshErr error) {
 	if refreshErr == nil {
 		return
@@ -404,21 +441,39 @@ func (s *Service) acquireDatabaseLock(ctx context.Context, workspaceID int) (fun
 func (s *Service) buildSnapshot(ctx context.Context, workspaceID int) ([]byte, string, error) {
 	var builder strings.Builder
 	builder.WriteString("# REUP.goals workspace context\n\n")
-	builder.WriteString("This file contains the current structured state of the workspace. Empty arrays mean that the corresponding area has no structured data yet.\n")
+	builder.WriteString("Snapshot schema: 2026-07-30-metric-catalog-v1.\n\n")
+	builder.WriteString("This file contains the current structured state of the workspace and the canonical REUP.goals business metric catalog. Empty arrays mean that the corresponding workspace area has no structured data yet.\n")
 	for _, section := range snapshotSections {
 		var raw string
 		if err := s.dbx.QueryRowContext(ctx, section.Query, workspaceID).Scan(&raw); err != nil {
 			return nil, "", fmt.Errorf("%s: %w", section.Title, err)
 		}
-		builder.WriteString("\n## ")
-		builder.WriteString(section.Title)
-		builder.WriteString("\n\n```json\n")
-		builder.WriteString(raw)
-		builder.WriteString("\n```\n")
+		writeJSONSection(&builder, section.Title, raw)
 	}
+	catalog, err := standardMetricCatalogJSON()
+	if err != nil {
+		return nil, "", fmt.Errorf("standard business metric catalog: %w", err)
+	}
+	writeJSONSection(&builder, "Standard business metric catalog", catalog)
 	content := []byte(builder.String())
 	sum := sha256.Sum256(content)
 	return content, hex.EncodeToString(sum[:]), nil
+}
+
+func standardMetricCatalogJSON() (string, error) {
+	raw, err := json.MarshalIndent(metrics.Catalog("", ""), "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func writeJSONSection(builder *strings.Builder, title string, raw string) {
+	builder.WriteString("\n## ")
+	builder.WriteString(title)
+	builder.WriteString("\n\n```json\n")
+	builder.WriteString(raw)
+	builder.WriteString("\n```\n")
 }
 
 func (s *Service) ensureVectorStore(ctx context.Context, workspaceID int) (string, error) {
