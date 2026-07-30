@@ -166,8 +166,21 @@ func (m *Manager) EnqueueDebounced(ctx context.Context, workspaceID int, jobType
 }
 
 func (m *Manager) Start(parent context.Context, workers int) {
+	m.StartPartitioned(parent, workers, 0, 0)
+}
+
+// StartPartitioned reserves a worker pool for latency-sensitive jobs. Standard
+// jobs cannot consume those slots, and interactive jobs cannot be trapped
+// behind long-running maintenance work.
+func (m *Manager) StartPartitioned(parent context.Context, workers int, priorityWorkers int, priorityThreshold int) {
 	if workers <= 0 {
 		workers = 2
+	}
+	if priorityWorkers < 0 {
+		priorityWorkers = 0
+	}
+	if priorityWorkers > 0 && priorityThreshold <= 0 {
+		priorityThreshold = 1
 	}
 	ctx, cancel := context.WithCancel(parent)
 	m.cancel = cancel
@@ -176,7 +189,15 @@ func (m *Manager) Start(parent context.Context, workers int) {
 	}
 	for index := 0; index < workers; index++ {
 		m.wg.Add(1)
-		go m.worker(ctx)
+		if priorityWorkers > 0 {
+			go m.worker(ctx, 0, priorityThreshold)
+		} else {
+			go m.worker(ctx, 0, 0)
+		}
+	}
+	for index := 0; index < priorityWorkers; index++ {
+		m.wg.Add(1)
+		go m.worker(ctx, priorityThreshold, 0)
 	}
 }
 
@@ -187,7 +208,7 @@ func (m *Manager) Stop() {
 	m.wg.Wait()
 }
 
-func (m *Manager) worker(ctx context.Context) {
+func (m *Manager) worker(ctx context.Context, minimumPriority int, maximumPriority int) {
 	defer m.wg.Done()
 	ticker := time.NewTicker(m.pollInterval)
 	defer ticker.Stop()
@@ -195,7 +216,7 @@ func (m *Manager) worker(ctx context.Context) {
 	defer staleTicker.Stop()
 
 	for {
-		worked, err := m.runOne(ctx)
+		worked, err := m.runOne(ctx, minimumPriority, maximumPriority)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("[WARN] background job worker failed: %v", err)
 		}
@@ -214,8 +235,8 @@ func (m *Manager) worker(ctx context.Context) {
 	}
 }
 
-func (m *Manager) runOne(ctx context.Context) (bool, error) {
-	job, err := m.claim(ctx)
+func (m *Manager) runOne(ctx context.Context, minimumPriority int, maximumPriority int) (bool, error) {
+	job, err := m.claim(ctx, minimumPriority, maximumPriority)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -266,7 +287,7 @@ func invokeHandler(ctx context.Context, handler Handler, job Job) (err error) {
 	return handler(ctx, job)
 }
 
-func (m *Manager) claim(ctx context.Context) (Job, error) {
+func (m *Manager) claim(ctx context.Context, minimumPriority int, maximumPriority int) (Job, error) {
 	tx, err := m.dbx.BeginTx(ctx, nil)
 	if err != nil {
 		return Job{}, err
@@ -278,11 +299,14 @@ func (m *Manager) claim(ctx context.Context) (Job, error) {
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, workspace_id, job_type, dedupe_key, payload_json, priority, attempts, max_attempts
 		FROM v2_background_jobs
-		WHERE status=$1 AND not_before <= NOW()
+		WHERE status=$1
+			AND not_before <= NOW()
+			AND priority >= $2
+			AND ($3 <= 0 OR priority < $3)
 		ORDER BY priority DESC, not_before, id
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1
-	`, StatusQueued).Scan(
+	`, StatusQueued, minimumPriority, maximumPriority).Scan(
 		&job.ID, &workspaceID, &job.Type, &job.DedupeKey, &job.Payload,
 		&job.Priority, &job.Attempts, &job.MaxAttempts,
 	)

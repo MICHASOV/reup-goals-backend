@@ -129,7 +129,7 @@ func main() {
 	operationsCollector := operations.NewCollector(database, jwtSecret)
 	operationsCollector.Start(rootCtx)
 	defer operationsCollector.Stop()
-	jobManager.Start(rootCtx, cfg.AIJobWorkers)
+	jobManager.StartPartitioned(rootCtx, cfg.AIJobWorkers, cfg.AIAgentJobWorkers, agentapi.InteractiveJobPriority)
 	defer jobManager.Stop()
 	privacy.NewRetentionRunner(database, privacy.RetentionPolicy{
 		Interval:        cfg.RetentionInterval,

@@ -53,6 +53,8 @@ type agentJobPayload struct {
 	RunID string `json:"run_id"`
 }
 
+const InteractiveJobPriority = 100
+
 func NewService(
 	dbx *sql.DB,
 	cfg ServiceConfig,
@@ -180,9 +182,14 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 			Detail: "История чата сохранена и перенесена в актуальную версию агента.",
 		})
 	}
+	_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
+		Type:  "run_accepted",
+		Stage: "queued",
+		Title: "Запрос принят, готовлю рабочий контекст",
+	})
 	if _, err := s.jobs.EnqueuePriority(
 		ctx, workspace.ID, JobTypeExecute, run.PublicID, agentJobPayload{RunID: run.PublicID}, 3, time.Time{},
-		100,
+		InteractiveJobPriority,
 	); err != nil {
 		_ = s.store.SetFailed(ctx, run.ID, "agent_job_enqueue_failed", true)
 		return Run{}, err
@@ -432,6 +439,11 @@ func (s *Service) handleExecuteJob(ctx context.Context, job jobs.Job) error {
 			Title: "Восстанавливаю запрос после обновления сервиса",
 		})
 	}
+	_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
+		Type:  "run_started",
+		Stage: "starting",
+		Title: "Изучаю контекст и выбираю следующий шаг",
+	})
 	reservationID, stop, err := s.startBillableRun(ctx, run)
 	if err != nil || stop {
 		return err
@@ -520,6 +532,11 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 			Title: "Восстанавливаю подтверждённое действие",
 		})
 	}
+	_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
+		Type:  "run_resumed",
+		Stage: "starting",
+		Title: "Продолжаю подтверждённое действие",
+	})
 	state, err := decryptState(s.secret, run.PublicID, run.StateCiphertext)
 	if err != nil || state == "" {
 		if err == nil {
