@@ -41,12 +41,16 @@ func TestParseBrainstormOutputKeepsOnlyValidScopedActions(t *testing.T) {
 	pack := taskContextPack{
 		Projects:      []Project{{ID: projectID}},
 		ExistingTasks: []taskContextItem{{ID: taskID, Title: "Existing"}},
+		CreationOptions: taskCreationOptions{
+			Departments: []taskDepartmentOption{{ID: 3, Name: "Продажи"}},
+			Members:     []taskMemberOption{{UserID: 5, Name: "Анна"}},
+		},
 	}
 	raw := `{
 		"message":"Давайте зафиксируем следующий шаг【】.",
 		"task_actions":[
-			{"action_type":"create","title":"Проверить сегмент","project_id":12},
-			{"action_type":"create","title":"Проверить канал","project_id":99},
+			{"action_type":"create","title":"Проверить сегмент","description":"Провести интервью","expected_result":"Пять подтвержденных проблем","project_id":12,"department_id":3,"owner_user_id":5,"due_date":"2026-08-15"},
+			{"action_type":"create","title":"Проверить канал","description":"Запустить тест","expected_result":"Измеренный CAC","project_id":99,"department_id":3,"owner_deferred":true,"due_date_deferred":true},
 			{"action_type":"update","task_id":7,"title":"Уточненная задача"},
 			{"action_type":"archive","task_id":77,"title":"Чужая задача"}
 		]
@@ -55,8 +59,8 @@ func TestParseBrainstormOutputKeepsOnlyValidScopedActions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse brainstorm output: %v", err)
 	}
-	if len(result.Actions) != 3 {
-		t.Fatalf("expected 3 valid actions, got %d", len(result.Actions))
+	if len(result.Actions) != 2 {
+		t.Fatalf("expected 2 valid actions, got %d", len(result.Actions))
 	}
 	if result.Message != "Давайте зафиксируем следующий шаг." {
 		t.Fatalf("citation marker was not removed: %q", result.Message)
@@ -64,11 +68,8 @@ func TestParseBrainstormOutputKeepsOnlyValidScopedActions(t *testing.T) {
 	if result.Actions[0].ProjectID == nil || *result.Actions[0].ProjectID != projectID {
 		t.Fatalf("known project link was lost: %#v", result.Actions[0])
 	}
-	if result.Actions[1].ProjectID != nil {
-		t.Fatalf("unknown project link must be removed: %#v", result.Actions[1])
-	}
-	if result.Actions[2].TaskID == nil || *result.Actions[2].TaskID != taskID {
-		t.Fatalf("known task update was lost: %#v", result.Actions[2])
+	if result.Actions[1].TaskID == nil || *result.Actions[1].TaskID != taskID {
+		t.Fatalf("known task update was lost: %#v", result.Actions[1])
 	}
 	_ = unknownProjectID
 	_ = unknownTaskID

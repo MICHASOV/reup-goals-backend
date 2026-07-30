@@ -295,11 +295,15 @@ type BrainstormAction struct {
 	Title           string `json:"title"`
 	Description     string `json:"description"`
 	ExpectedResult  string `json:"expected_result"`
-	SuccessCriteria string `json:"success_criteria"`
 	WhyNow          string `json:"why_now"`
 	ProjectID       *int   `json:"project_id,omitempty"`
 	RiskID          *int   `json:"risk_id,omitempty"`
 	OpportunityID   *int   `json:"opportunity_id,omitempty"`
+	DepartmentID    *int   `json:"department_id,omitempty"`
+	OwnerUserID     *int   `json:"owner_user_id,omitempty"`
+	OwnerDeferred   bool   `json:"owner_deferred,omitempty"`
+	DueDate         string `json:"due_date,omitempty"`
+	DueDateDeferred bool   `json:"due_date_deferred,omitempty"`
 	DueInDays       *int   `json:"due_in_days,omitempty"`
 	Reason          string `json:"reason"`
 }
@@ -404,8 +408,26 @@ type taskContextPack struct {
 	Risks             []Risk                   `json:"risks"`
 	Opportunities     []Opportunity            `json:"opportunities"`
 	ExistingTasks     []taskContextItem        `json:"existing_tasks"`
+	CreationOptions   taskCreationOptions      `json:"creation_options"`
 	Communication     any                      `json:"communication_profile,omitempty"`
 	RecentMessages    []BrainstormMessage      `json:"recent_messages,omitempty"`
+}
+
+type taskCreationOptions struct {
+	Departments []taskDepartmentOption `json:"departments"`
+	Members     []taskMemberOption     `json:"members"`
+}
+
+type taskDepartmentOption struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type taskMemberOption struct {
+	UserID      int    `json:"user_id"`
+	Name        string `json:"name"`
+	Email       string `json:"email"`
+	CompanyRole string `json:"company_role,omitempty"`
 }
 
 type taskContextItem struct {

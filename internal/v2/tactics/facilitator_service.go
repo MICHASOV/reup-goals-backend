@@ -80,6 +80,10 @@ func (s *FacilitatorService) State(ctx context.Context, workspaceID int, userID 
 	if err != nil {
 		return TacticsFacilitatorState{}, err
 	}
+	creationOptions, err := s.store.CreationOptions(ctx, workspaceID)
+	if err != nil {
+		return TacticsFacilitatorState{}, err
+	}
 	messages, err := s.store.ChatMessages(ctx, workspaceID, 100)
 	if err != nil {
 		return TacticsFacilitatorState{}, err
@@ -97,16 +101,17 @@ func (s *FacilitatorService) State(ctx context.Context, workspaceID int, userID 
 		readiness = latest.Run
 	}
 	return TacticsFacilitatorState{
-		WorkspaceID:    workspaceID,
-		Current:        current,
-		StrategyDocs:   strategyDocs,
-		KnowledgeDocs:  knowledgeDocs,
-		KnowledgeAudit: quality,
-		Files:          files,
-		Communication:  communication,
-		RecentMessages: messages,
-		Session:        session,
-		Readiness:      readiness,
+		WorkspaceID:     workspaceID,
+		Current:         current,
+		StrategyDocs:    strategyDocs,
+		KnowledgeDocs:   knowledgeDocs,
+		KnowledgeAudit:  quality,
+		Files:           files,
+		Communication:   communication,
+		CreationOptions: creationOptions,
+		RecentMessages:  messages,
+		Session:         session,
+		Readiness:       readiness,
 	}, nil
 }
 
@@ -237,7 +242,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 			s.logAIRun(ctx, workspaceID, 0, 0, 0, "failed", "workspace context sync: "+indexErr.Error())
 		}
 	}
-	input := buildTacticsTurnInput(message, request)
+	input := buildTacticsTurnInput(message, request, state.CreationOptions)
 	if strings.TrimSpace(openAISession.ConversationID) == "" {
 		input = buildTacticsFreshInput(message, request, scopeContext, state)
 	}
@@ -286,11 +291,15 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 		modelOutput = recoverTacticsFacilitatorOutput(result.Text, state)
 	}
 	if requiredDraftType != "" && !hasTacticsDraftType(modelOutput.DraftChanges, requiredDraftType) {
-		modelOutput.DraftChanges = append(
-			modelOutput.DraftChanges,
-			buildRequestedTacticsDraft(requiredDraftType, message, modelOutput, contextScope, state),
-		)
+		if requiredDraftType == EntityRisk || requiredDraftType == EntityHypothesis {
+			modelOutput.DraftChanges = append(
+				modelOutput.DraftChanges,
+				buildRequestedTacticsDraft(requiredDraftType, message, modelOutput, contextScope, state),
+			)
+		}
 	}
+	hydrateTacticsDraftLabels(modelOutput.DraftChanges, state.CreationOptions)
+	modelOutput.DraftChanges = normalizeTacticsDraftChanges(modelOutput.DraftChanges)
 	s.logAIRun(ctx, workspaceID, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", aiRunNote)
 
 	assistantMessage := cleanTacticsAssistantMessage(modelOutput.Message)
@@ -398,6 +407,7 @@ func buildTacticsFreshInput(message string, request TacticsFacilitatorMessageReq
 			"session_state": state.Session,
 		},
 		"communication_profile":   state.Communication,
+		"creation_options":        state.CreationOptions,
 		"recent_dialogue":         state.RecentMessages,
 		"latest_quality_feedback": compactTacticsReadinessFeedback(state.Readiness),
 		"instruction":             "Continue as the company's business development advisor. Use an approved strategy as the primary decision frame when it exists; otherwise advise from the available business context and state uncertainty honestly.",
@@ -457,11 +467,20 @@ func compactTacticsWorkstreamIndex(workstreams []Workstream) []map[string]any {
 	return result
 }
 
-func buildTacticsTurnInput(message string, request TacticsFacilitatorMessageRequest) string {
+func buildTacticsTurnInput(
+	message string,
+	request TacticsFacilitatorMessageRequest,
+	options ...TacticsCreationOptions,
+) string {
 	turn := map[string]any{
 		"latest_user_message": message,
 		"participant_role":    normalizeParticipantRole(request.ParticipantRole),
 		"active_scope":        request.Scope,
+	}
+	if request.DraftEntityTypeHint != "" || requestedTacticsDraftType(message, request.DraftEntityTypeHint) != "" {
+		if len(options) > 0 {
+			turn["creation_options"] = options[0]
+		}
 	}
 	if len(request.ResolvedAttachments) > 0 {
 		turn["attached_context"] = request.ResolvedAttachments
@@ -497,6 +516,8 @@ func requestedTacticsDraftType(message string, hint string) string {
 		return normalizedHint
 	}
 	switch {
+	case containsAny(normalized, "задач", "task"):
+		return EntityTask
 	case containsAny(normalized, "проект", "project"):
 		return EntityProject
 	case containsAny(normalized, "направлен", "workstream"):
@@ -605,6 +626,8 @@ func requestedTacticsDraftTitle(entityType string, message string) string {
 		return "Новый риск"
 	case EntityHypothesis:
 		return "Новая гипотеза"
+	case EntityTask:
+		return "Новая задача"
 	default:
 		return "Новый проект"
 	}
@@ -629,6 +652,8 @@ func normalizeTacticsDraftType(value string) string {
 		return EntityRisk
 	case EntityHypothesis:
 		return EntityHypothesis
+	case EntityTask:
+		return EntityTask
 	default:
 		return ""
 	}
@@ -765,7 +790,8 @@ func tacticsContextFingerprint(state TacticsFacilitatorState) string {
 			}
 			return state.KnowledgeAudit.ID
 		}(),
-		"files": compactTacticsFiles(state.Files),
+		"files":            compactTacticsFiles(state.Files),
+		"creation_options": state.CreationOptions,
 	}
 	raw, _ := json.Marshal(source)
 	sum := sha256.Sum256(raw)

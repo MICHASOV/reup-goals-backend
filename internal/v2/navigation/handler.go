@@ -24,15 +24,17 @@ func NewHandler(dbx *sql.DB) *Handler {
 }
 
 type response struct {
-	Account               account             `json:"account"`
-	Workspace             workspace           `json:"workspace"`
-	ContextReady          bool                `json:"context_ready"`
-	Strategy              *strategy           `json:"strategy,omitempty"`
-	StrategySessionActive bool                `json:"strategy_session_active"`
-	Workstreams           []workstream        `json:"workstreams"`
-	Departments           []department        `json:"departments"`
-	WorkspaceDocuments    []workspaceDocument `json:"workspace_documents"`
-	KnowledgeDocuments    []knowledgeDocument `json:"knowledge_documents"`
+	Account                account             `json:"account"`
+	Workspace              workspace           `json:"workspace"`
+	ContextReady           bool                `json:"context_ready"`
+	Strategy               *strategy           `json:"strategy,omitempty"`
+	StrategySessionActive  bool                `json:"strategy_session_active"`
+	StrategySessionOwnerID *int                `json:"strategy_session_owner_id,omitempty"`
+	StrategySessionStatus  string              `json:"strategy_session_status,omitempty"`
+	Workstreams            []workstream        `json:"workstreams"`
+	Departments            []department        `json:"departments"`
+	WorkspaceDocuments     []workspaceDocument `json:"workspace_documents"`
+	KnowledgeDocuments     []knowledgeDocument `json:"knowledge_documents"`
 }
 
 type account struct {
@@ -49,6 +51,7 @@ type workspace struct {
 	ID          int    `json:"id"`
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
+	OwnerUserID int    `json:"owner_user_id"`
 }
 
 type strategy struct {
@@ -131,7 +134,7 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 	result := response{
 		Workspace: workspace{
 			ID: currentWorkspace.ID, Name: currentWorkspace.Name,
-			DisplayName: currentWorkspace.Name,
+			DisplayName: currentWorkspace.Name, OwnerUserID: currentWorkspace.OwnerUserID,
 		},
 		Workstreams:        []workstream{},
 		Departments:        []department{},
@@ -151,9 +154,11 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		loadResults <- loadResult{"navigation_account_failed", h.loadAccount(r, userID, &result.Account)}
 	}()
 	go func() {
-		strategy, sessionActive, loadErr := h.loadStrategy(r, currentWorkspace.ID)
+		strategy, sessionActive, sessionOwnerID, sessionStatus, loadErr := h.loadStrategy(r, currentWorkspace.ID)
 		result.Strategy = strategy
 		result.StrategySessionActive = sessionActive
+		result.StrategySessionOwnerID = sessionOwnerID
+		result.StrategySessionStatus = sessionStatus
 		loadResults <- loadResult{"navigation_strategy_failed", loadErr}
 	}()
 	go func() {
@@ -349,7 +354,7 @@ func (h *Handler) UpdateFeatureOnboarding(w http.ResponseWriter, r *http.Request
 	api.WriteJSON(w, http.StatusOK, map[string]any{"feature_onboarding": result})
 }
 
-func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, bool, error) {
+func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, bool, *int, string, error) {
 	var item strategy
 	err := h.dbx.QueryRowContext(r.Context(), `
 		SELECT strategy.id, strategy.status, strategy.version, strategy.summary,
@@ -366,10 +371,10 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, boo
 		LIMIT 1
 	`, workspaceID).Scan(&item.ID, &item.Status, &item.Version, &item.Summary, &item.CurrentStage)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
+		return nil, false, nil, "", nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, nil, "", err
 	}
 	var sessionActive bool
 	if err := h.dbx.QueryRowContext(r.Context(), `
@@ -381,7 +386,28 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, boo
 				AND status IN ('draft', 'ready_for_review')
 		)
 	`, workspaceID).Scan(&sessionActive); err != nil {
-		return nil, false, err
+		return nil, false, nil, "", err
+	}
+	var sessionOwner sql.NullInt64
+	var sessionStatus string
+	if sessionActive {
+		if err := h.dbx.QueryRowContext(r.Context(), `
+			SELECT strategy.status, COALESCE(strategy.created_by, session.last_user_id)
+			FROM v2_strategies strategy
+			LEFT JOIN v2_strategy_session_state session ON session.workspace_id=strategy.workspace_id
+			WHERE strategy.workspace_id=$1
+				AND strategy.archived_at IS NULL
+				AND strategy.status IN ('draft', 'ready_for_review')
+			ORDER BY strategy.version DESC, strategy.id DESC
+			LIMIT 1
+		`, workspaceID).Scan(&sessionStatus, &sessionOwner); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil, "", err
+		}
+	}
+	var sessionOwnerID *int
+	if sessionOwner.Valid {
+		value := int(sessionOwner.Int64)
+		sessionOwnerID = &value
 	}
 	rows, err := h.dbx.QueryContext(r.Context(), `
 		SELECT document.document_type, document.primary_signal, document.frame_title,
@@ -397,13 +423,13 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, boo
 			)
 	`, workspaceID, item.ID)
 	if err != nil {
-		return nil, false, err
+		return nil, false, nil, "", err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var documentType, primarySignal, frameTitle, frameSubtitle string
 		if err := rows.Scan(&documentType, &primarySignal, &frameTitle, &frameSubtitle); err != nil {
-			return nil, false, err
+			return nil, false, nil, "", err
 		}
 		signal := strings.TrimSpace(primarySignal)
 		if signal == "" {
@@ -430,7 +456,7 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, boo
 	if item.TargetMetric == "" {
 		item.TargetMetric = item.TargetSignal
 	}
-	return &item, sessionActive, rows.Err()
+	return &item, sessionActive, sessionOwnerID, sessionStatus, rows.Err()
 }
 
 func (h *Handler) loadWorkstreams(r *http.Request, workspaceID int) ([]workstream, error) {

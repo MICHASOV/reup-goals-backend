@@ -71,6 +71,10 @@ func (b *taskContextBuilder) Build(
 	workstream.Projects = nil
 	workstream.Risks = nil
 	workstream.Opportunities = nil
+	creationOptions, err := b.creationOptions(ctx, workspaceID)
+	if err != nil {
+		return taskContextPack{}, nil, "", err
+	}
 
 	pack := taskContextPack{
 		BusinessDocuments: businessDocuments,
@@ -83,6 +87,7 @@ func (b *taskContextBuilder) Build(
 		Risks:             state.Risks,
 		Opportunities:     state.Opportunities,
 		ExistingTasks:     compactTasks(state.Tasks),
+		CreationOptions:   creationOptions,
 		Communication:     communication,
 		RecentMessages:    messages,
 	}
@@ -101,6 +106,58 @@ func (b *taskContextBuilder) Build(
 	raw, _ := json.Marshal(fingerprintPack)
 	hash := sha256.Sum256(raw)
 	return pack, vectorStoreIDs, hex.EncodeToString(hash[:]), nil
+}
+
+func (b *taskContextBuilder) creationOptions(ctx context.Context, workspaceID int) (taskCreationOptions, error) {
+	result := taskCreationOptions{
+		Departments: []taskDepartmentOption{},
+		Members:     []taskMemberOption{},
+	}
+	departmentRows, err := b.store.dbx.QueryContext(ctx, `
+		SELECT id, name
+		FROM v2_departments
+		WHERE workspace_id=$1 AND archived_at IS NULL AND status='active'
+		ORDER BY sort_order, lower(name), id
+	`, workspaceID)
+	if err != nil {
+		return result, err
+	}
+	defer departmentRows.Close()
+	for departmentRows.Next() {
+		var item taskDepartmentOption
+		if err := departmentRows.Scan(&item.ID, &item.Name); err != nil {
+			return result, err
+		}
+		item.Name = strings.TrimSpace(item.Name)
+		result.Departments = append(result.Departments, item)
+	}
+	if err := departmentRows.Err(); err != nil {
+		return result, err
+	}
+
+	memberRows, err := b.store.dbx.QueryContext(ctx, `
+		SELECT users.id, COALESCE(users.name, ''), users.email, COALESCE(users.company_role, '')
+		FROM workspace_memberships membership
+		JOIN users ON users.id=membership.user_id
+		WHERE membership.workspace_id=$1 AND membership.status='active'
+		ORDER BY CASE WHEN membership.role='owner' THEN 0 ELSE 1 END,
+			lower(COALESCE(NULLIF(users.name, ''), users.email)), users.id
+	`, workspaceID)
+	if err != nil {
+		return result, err
+	}
+	defer memberRows.Close()
+	for memberRows.Next() {
+		var item taskMemberOption
+		if err := memberRows.Scan(&item.UserID, &item.Name, &item.Email, &item.CompanyRole); err != nil {
+			return result, err
+		}
+		item.Name = strings.TrimSpace(item.Name)
+		item.Email = strings.TrimSpace(item.Email)
+		item.CompanyRole = strings.TrimSpace(item.CompanyRole)
+		result.Members = append(result.Members, item)
+	}
+	return result, memberRows.Err()
 }
 
 func (b *taskContextBuilder) strategyContext(ctx context.Context, workspaceID int, strategyID int) (string, []compactContextDocument, error) {

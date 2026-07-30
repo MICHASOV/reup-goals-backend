@@ -296,16 +296,19 @@ func (s *BrainstormService) applyAction(
 	switch action.ActionType {
 	case "create":
 		dueDate := dueDateFromDays(action.DueInDays)
+		if action.DueDate != "" {
+			dueDate = &action.DueDate
+		}
 		sourceType := SourceAISuggestion
 		title := strings.TrimSpace(action.Title)
 		description := strings.TrimSpace(action.Description)
 		expectedResult := strings.TrimSpace(action.ExpectedResult)
-		successCriteria := strings.TrimSpace(action.SuccessCriteria)
 		whyNow := strings.TrimSpace(action.WhyNow)
 		return s.store.Create(ctx, workspaceID, userID, TaskInput{
-			WorkstreamID: workstreamID, ProjectID: action.ProjectID, RiskID: action.RiskID,
+			WorkstreamID: workstreamID, DepartmentID: action.DepartmentID,
+			ProjectID: action.ProjectID, RiskID: action.RiskID,
 			OpportunityID: action.OpportunityID, Title: &title, Description: &description,
-			ExpectedResult: &expectedResult, SuccessCriteria: &successCriteria, WhyNow: &whyNow,
+			ExpectedResult: &expectedResult, WhyNow: &whyNow, OwnerUserID: action.OwnerUserID,
 			DueDate: dueDate, SourceType: &sourceType,
 		})
 	case "update":
@@ -326,14 +329,25 @@ func (s *BrainstormService) applyAction(
 		if value := strings.TrimSpace(action.ExpectedResult); value != "" {
 			input.ExpectedResult = &value
 		}
-		if value := strings.TrimSpace(action.SuccessCriteria); value != "" {
-			input.SuccessCriteria = &value
-		}
 		if value := strings.TrimSpace(action.WhyNow); value != "" {
 			input.WhyNow = &value
 		}
 		if action.ProjectID != nil {
 			input.ProjectID = action.ProjectID
+		}
+		if action.DepartmentID != nil {
+			input.DepartmentID = action.DepartmentID
+		}
+		if action.OwnerUserID != nil {
+			input.OwnerUserID = action.OwnerUserID
+		} else if action.OwnerDeferred {
+			input.ClearOwner = true
+		}
+		if action.DueDate != "" {
+			input.DueDate = &action.DueDate
+		} else if action.DueDateDeferred {
+			empty := ""
+			input.DueDate = &empty
 		}
 		return s.store.Update(ctx, workspaceID, userID, current.ID, input)
 	case "archive":
@@ -364,6 +378,8 @@ func brainstormInitialInput(pack taskContextPack, message string) string {
 	raw, _ := json.Marshal(map[string]any{
 		"current_user_message": message,
 		"active_workstream":    pack.Workstream,
+		"projects":             pack.Projects,
+		"creation_options":     pack.CreationOptions,
 		"context_access":       "Use file_search for the current business, strategy, course, tactics, and tasks.",
 	})
 	return string(raw)
@@ -399,14 +415,22 @@ func parseBrainstormOutput(raw string, pack taskContextPack) (brainstormModelOut
 	for _, opportunity := range pack.Opportunities {
 		opportunities[opportunity.ID] = true
 	}
+	departments := map[int]bool{}
+	for _, department := range pack.CreationOptions.Departments {
+		departments[department.ID] = true
+	}
+	members := map[int]bool{}
+	for _, member := range pack.CreationOptions.Members {
+		members[member.UserID] = true
+	}
 	clean := []BrainstormAction{}
 	for _, action := range output.Actions {
 		action.ActionType = strings.ToLower(strings.TrimSpace(action.ActionType))
 		action.Title = strings.TrimSpace(action.Title)
 		action.Description = strings.TrimSpace(action.Description)
 		action.ExpectedResult = strings.TrimSpace(action.ExpectedResult)
-		action.SuccessCriteria = strings.TrimSpace(action.SuccessCriteria)
 		action.WhyNow = strings.TrimSpace(action.WhyNow)
+		action.DueDate = strings.TrimSpace(action.DueDate)
 		action.Reason = strings.TrimSpace(action.Reason)
 		if action.ActionType == "create" && action.Title == "" {
 			continue
@@ -426,8 +450,27 @@ func parseBrainstormOutput(raw string, pack taskContextPack) (brainstormModelOut
 		if action.OpportunityID != nil && !opportunities[*action.OpportunityID] {
 			action.OpportunityID = nil
 		}
+		if action.DepartmentID != nil && !departments[*action.DepartmentID] {
+			action.DepartmentID = nil
+		}
+		if action.OwnerUserID != nil && !members[*action.OwnerUserID] {
+			action.OwnerUserID = nil
+		}
+		if action.DueDate != "" {
+			if _, err := time.Parse("2006-01-02", action.DueDate); err != nil {
+				action.DueDate = ""
+			}
+		}
 		if action.DueInDays != nil && (*action.DueInDays < 0 || *action.DueInDays > 3650) {
 			action.DueInDays = nil
+		}
+		if action.ActionType == "create" {
+			hasOwnerDecision := action.OwnerUserID != nil || action.OwnerDeferred
+			hasDueDateDecision := action.DueDate != "" || action.DueDateDeferred || action.DueInDays != nil
+			if action.ProjectID == nil || action.Description == "" || action.ExpectedResult == "" ||
+				action.DepartmentID == nil || !hasOwnerDecision || !hasDueDateDecision {
+				continue
+			}
 		}
 		clean = append(clean, action)
 	}

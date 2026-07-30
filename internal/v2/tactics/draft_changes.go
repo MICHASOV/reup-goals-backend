@@ -6,10 +6,15 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"reup-goals-backend/internal/v2/aiactions"
+	"reup-goals-backend/internal/v2/departments"
+	"reup-goals-backend/internal/v2/metrics"
 	"reup-goals-backend/internal/v2/strategicmemory"
+	"reup-goals-backend/internal/v2/tasks"
 )
 
 const maxDraftChangesPerTurn = 16
@@ -36,6 +41,9 @@ func normalizeTacticsDraftChanges(changes []TacticsDraftChange) []TacticsDraftCh
 			metric.Name = strings.TrimSpace(metric.Name)
 			metric.Current = strings.TrimSpace(metric.Current)
 			metric.Target = strings.TrimSpace(metric.Target)
+			metric.Unit = strings.TrimSpace(metric.Unit)
+			metric.BetterDirection = strings.ToLower(strings.TrimSpace(metric.BetterDirection))
+			metric.TargetDate = strings.TrimSpace(metric.TargetDate)
 			if metric.Name == "" && metric.Current == "" && metric.Target == "" {
 				continue
 			}
@@ -45,10 +53,17 @@ func normalizeTacticsDraftChanges(changes []TacticsDraftChange) []TacticsDraftCh
 			}
 		}
 		change.Metrics = metrics
+		change.LeadDepartmentName = strings.TrimSpace(change.LeadDepartmentName)
+		change.ParticipantDepartmentIDs = normalizePositiveTacticsIDs(change.ParticipantDepartmentIDs)
 		change.WhyNeeded = strings.TrimSpace(change.WhyNeeded)
 		change.SuccessCriteria = strings.TrimSpace(change.SuccessCriteria)
 		change.FailureCriteria = strings.TrimSpace(change.FailureCriteria)
 		change.ExpectedValue = strings.TrimSpace(change.ExpectedValue)
+		change.ExpectedResult = strings.TrimSpace(change.ExpectedResult)
+		change.WhyNow = strings.TrimSpace(change.WhyNow)
+		change.DepartmentName = strings.TrimSpace(change.DepartmentName)
+		change.OwnerName = strings.TrimSpace(change.OwnerName)
+		change.DueDate = strings.TrimSpace(change.DueDate)
 		change.Severity = strings.ToLower(strings.TrimSpace(change.Severity))
 		change.Probability = strings.ToLower(strings.TrimSpace(change.Probability))
 		change.MitigationPlan = strings.TrimSpace(change.MitigationPlan)
@@ -64,7 +79,7 @@ func normalizeTacticsDraftChanges(changes []TacticsDraftChange) []TacticsDraftCh
 			continue
 		}
 		switch change.EntityType {
-		case EntityWorkstream, EntityProject, EntityRisk, EntityHypothesis, EntityOpportunity:
+		case EntityWorkstream, EntityProject, EntityTask, EntityRisk, EntityHypothesis, EntityOpportunity:
 		default:
 			continue
 		}
@@ -74,10 +89,73 @@ func normalizeTacticsDraftChanges(changes []TacticsDraftChange) []TacticsDraftCh
 		if change.Operation == "update" && (change.EntityID == nil || *change.EntityID <= 0) {
 			continue
 		}
+		if change.Operation == "create" && !tacticsDraftReadyForConfirmation(change) {
+			continue
+		}
 		result = append(result, change)
 		if len(result) >= maxDraftChangesPerTurn {
 			break
 		}
+	}
+	return result
+}
+
+func tacticsDraftReadyForConfirmation(change TacticsDraftChange) bool {
+	switch change.EntityType {
+	case EntityWorkstream:
+		return change.Description != "" && change.Goal != "" && change.CKP != "" &&
+			change.Reason != "" && change.LeadDepartmentID > 0 && completeDraftMetrics(change.Metrics)
+	case EntityProject:
+		hasParent := pointerValue(change.ParentEntityID) > 0 || change.ParentDraftKey != ""
+		return hasParent && change.Description != "" && change.WhyNeeded != "" &&
+			change.SuccessCriteria != "" && change.FailureCriteria != "" &&
+			change.ExpectedValue != "" && change.LeadDepartmentID > 0 &&
+			completeDraftMetrics(change.Metrics)
+	case EntityTask:
+		hasProject := pointerValue(change.ProjectID) > 0 ||
+			(change.ParentEntityType == EntityProject &&
+				(pointerValue(change.ParentEntityID) > 0 || change.ParentDraftKey != ""))
+		hasOwnerDecision := pointerValue(change.OwnerUserID) > 0 || change.OwnerDeferred
+		hasDueDateDecision := change.DueDate != "" || change.DueDateDeferred
+		if change.DueDate != "" {
+			if _, err := time.Parse("2006-01-02", change.DueDate); err != nil {
+				return false
+			}
+		}
+		return hasProject && change.Description != "" && change.ExpectedResult != "" &&
+			pointerValue(change.DepartmentID) > 0 && hasOwnerDecision && hasDueDateDecision
+	default:
+		return true
+	}
+}
+
+func completeDraftMetrics(items []TacticMetric) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if item.Name == "" || item.Target == "" {
+			return false
+		}
+		if _, err := strconv.ParseFloat(strings.ReplaceAll(item.Target, ",", "."), 64); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizePositiveTacticsIDs(items []int) []int {
+	seen := map[int]struct{}{}
+	result := make([]int, 0, len(items))
+	for _, item := range items {
+		if item <= 0 {
+			continue
+		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		result = append(result, item)
 	}
 	return result
 }
@@ -319,6 +397,8 @@ func (s *Store) applyFacilitatorDraftChange(
 		return s.applyWorkstreamDraft(ctx, workspaceID, userID, plan, change)
 	case EntityProject:
 		return s.applyProjectDraft(ctx, workspaceID, userID, plan, parentID, change)
+	case EntityTask:
+		return s.applyTaskDraft(ctx, workspaceID, userID, plan, parentID, change)
 	case EntityRisk:
 		return s.applyRiskDraft(ctx, workspaceID, userID, plan, parentID, change)
 	case EntityHypothesis:
@@ -361,6 +441,12 @@ func (s *Store) applyWorkstreamDraft(ctx context.Context, workspaceID int, userI
 	if err != nil {
 		return AppliedTacticsChange{}, false
 	}
+	if !s.applyDraftResponsibility(ctx, workspaceID, departments.EntityWorkstream, item.ID, change) {
+		return AppliedTacticsChange{}, false
+	}
+	if !s.applyDraftMetrics(ctx, workspaceID, userID, metrics.ScopeWorkstream, item.ID, change.Metrics) {
+		return AppliedTacticsChange{}, false
+	}
 	return appliedChange(operation, EntityWorkstream, item.ID, item.Title, change), true
 }
 
@@ -385,6 +471,9 @@ func (s *Store) applyProjectDraft(ctx context.Context, workspaceID int, userID i
 		WhyNeeded: change.WhyNeeded, SuccessCriteria: change.SuccessCriteria,
 		FailureCriteria: change.FailureCriteria, MetricName: change.MetricName, ExpectedValue: change.ExpectedValue,
 	}
+	if input.MetricName == "" && len(change.Metrics) > 0 {
+		input.MetricName = change.Metrics[0].Name
+	}
 	var item Project
 	var err error
 	if operation == "create" {
@@ -404,7 +493,219 @@ func (s *Store) applyProjectDraft(ctx context.Context, workspaceID int, userID i
 	if err != nil {
 		return AppliedTacticsChange{}, false
 	}
+	if !s.applyDraftResponsibility(ctx, workspaceID, departments.EntityProject, item.ID, change) {
+		return AppliedTacticsChange{}, false
+	}
+	if !s.applyDraftMetrics(ctx, workspaceID, userID, metrics.ScopeProject, item.ID, change.Metrics) {
+		return AppliedTacticsChange{}, false
+	}
 	return appliedChange(operation, EntityProject, item.ID, item.Title, change), true
+}
+
+func (s *Store) applyTaskDraft(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	plan TacticalPlan,
+	parentID int,
+	change TacticsDraftChange,
+) (AppliedTacticsChange, bool) {
+	taskStore := tasks.NewStore(s.dbx)
+	operation := change.Operation
+	entityID := pointerValue(change.EntityID)
+
+	if operation == "update" {
+		current, err := taskStore.Get(ctx, workspaceID, entityID)
+		if err != nil || current.TacticalPlanID != plan.ID {
+			return AppliedTacticsChange{}, false
+		}
+		input := tasks.TaskInput{}
+		if change.Title != "" {
+			input.Title = &change.Title
+		}
+		if change.Description != "" {
+			input.Description = &change.Description
+		}
+		if change.ExpectedResult != "" {
+			input.ExpectedResult = &change.ExpectedResult
+		}
+		if change.WhyNow != "" {
+			input.WhyNow = &change.WhyNow
+		}
+		if change.ProjectID != nil {
+			input.ProjectID = change.ProjectID
+			projectWorkstreamID, valid := s.taskDraftProjectWorkstream(ctx, workspaceID, plan.ID, *change.ProjectID)
+			if !valid {
+				return AppliedTacticsChange{}, false
+			}
+			input.WorkstreamID = projectWorkstreamID
+		}
+		if change.DepartmentID != nil {
+			input.DepartmentID = change.DepartmentID
+		}
+		if change.OwnerUserID != nil {
+			input.OwnerUserID = change.OwnerUserID
+		} else if change.OwnerDeferred {
+			input.ClearOwner = true
+		}
+		if change.DueDate != "" {
+			input.DueDate = &change.DueDate
+		} else if change.DueDateDeferred {
+			empty := ""
+			input.DueDate = &empty
+		}
+		item, err := taskStore.Update(ctx, workspaceID, userID, current.ID, input)
+		if err != nil {
+			return AppliedTacticsChange{}, false
+		}
+		if err := taskStore.QueueTaskEvaluation(ctx, workspaceID, userID, item.ID, true); err != nil {
+			return AppliedTacticsChange{}, false
+		}
+		return appliedChange(operation, EntityTask, item.ID, item.Title, change), true
+	}
+
+	projectID := pointerValue(change.ProjectID)
+	if projectID <= 0 && change.ParentEntityType == EntityProject {
+		projectID = parentID
+	}
+	workstreamID, valid := s.taskDraftProjectWorkstream(ctx, workspaceID, plan.ID, projectID)
+	if !valid {
+		return AppliedTacticsChange{}, false
+	}
+	if change.WorkstreamID != nil && *change.WorkstreamID != workstreamID {
+		return AppliedTacticsChange{}, false
+	}
+
+	source := tasks.SourceAISuggestion
+	projectIDValue := projectID
+	input := tasks.TaskInput{
+		WorkstreamID:   workstreamID,
+		ProjectID:      &projectIDValue,
+		DepartmentID:   change.DepartmentID,
+		Title:          &change.Title,
+		Description:    &change.Description,
+		ExpectedResult: &change.ExpectedResult,
+		WhyNow:         &change.WhyNow,
+		OwnerUserID:    change.OwnerUserID,
+		SourceType:     &source,
+	}
+	if change.DueDate != "" {
+		input.DueDate = &change.DueDate
+	}
+	item, err := taskStore.Create(ctx, workspaceID, userID, input)
+	if err != nil {
+		return AppliedTacticsChange{}, false
+	}
+	if err := taskStore.QueueTaskEvaluation(ctx, workspaceID, userID, item.ID, true); err != nil {
+		return AppliedTacticsChange{}, false
+	}
+	return appliedChange(operation, EntityTask, item.ID, item.Title, change), true
+}
+
+func (s *Store) taskDraftProjectWorkstream(
+	ctx context.Context,
+	workspaceID int,
+	planID int,
+	projectID int,
+) (int, bool) {
+	if projectID <= 0 {
+		return 0, false
+	}
+	var workstreamID int
+	var tacticalPlanID int
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT project.workstream_id, workstream.tactical_plan_id
+		FROM v2_tactical_projects project
+		JOIN v2_tactical_workstreams workstream ON workstream.id=project.workstream_id
+		WHERE project.id=$1 AND project.workspace_id=$2
+			AND project.archived_at IS NULL AND workstream.archived_at IS NULL
+	`, projectID, workspaceID).Scan(&workstreamID, &tacticalPlanID)
+	return workstreamID, err == nil && tacticalPlanID == planID
+}
+
+func (s *Store) applyDraftResponsibility(
+	ctx context.Context,
+	workspaceID int,
+	entityType string,
+	entityID int,
+	change TacticsDraftChange,
+) bool {
+	if change.LeadDepartmentID <= 0 {
+		return change.Operation == "update"
+	}
+	_, err := departments.NewStore(s.dbx).SetResponsibility(ctx, workspaceID, departments.Responsibility{
+		EntityType:               entityType,
+		EntityID:                 entityID,
+		LeadDepartmentID:         change.LeadDepartmentID,
+		ParticipantDepartmentIDs: change.ParticipantDepartmentIDs,
+	})
+	return err == nil
+}
+
+func (s *Store) applyDraftMetrics(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	scopeType string,
+	scopeID int,
+	items []TacticMetric,
+) bool {
+	if len(items) == 0 {
+		return true
+	}
+	metricStore := metrics.NewStore(s.dbx)
+	for index, item := range items {
+		target, err := parseDraftMetricNumber(item.Target)
+		if err != nil {
+			return false
+		}
+		var baseline *float64
+		if strings.TrimSpace(item.Current) != "" {
+			value, parseErr := parseDraftMetricNumber(item.Current)
+			if parseErr != nil {
+				return false
+			}
+			baseline = &value
+		}
+		unit := strings.TrimSpace(item.Unit)
+		if unit == "" {
+			unit = "number"
+		}
+		betterDirection := strings.ToLower(strings.TrimSpace(item.BetterDirection))
+		switch betterDirection {
+		case "increase", "decrease", "target":
+		default:
+			betterDirection = "increase"
+		}
+		role := metrics.RoleSupporting
+		if index == 0 {
+			role = metrics.RolePrimary
+		}
+		if _, err := metricStore.CreateTarget(ctx, workspaceID, userID, metrics.TargetInput{
+			Name:            item.Name,
+			Description:     "Метрика, подтвержденная при создании через AI-советника.",
+			Category:        "Пользовательские",
+			Unit:            unit,
+			ValueType:       "number",
+			BetterDirection: betterDirection,
+			ScopeType:       scopeType,
+			ScopeID:         scopeID,
+			Role:            role,
+			BaselineValue:   baseline,
+			TargetValue:     &target,
+			TargetDate:      item.TargetDate,
+			DisplayUnit:     unit,
+			Cadence:         "monthly",
+			SourceNote:      "Подтверждено в AI-советнике",
+		}); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func parseDraftMetricNumber(value string) (float64, error) {
+	return strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(value), ",", "."), 64)
 }
 
 func (s *Store) applyRiskDraft(ctx context.Context, workspaceID int, userID int, plan TacticalPlan, parentID int, change TacticsDraftChange) (AppliedTacticsChange, bool) {

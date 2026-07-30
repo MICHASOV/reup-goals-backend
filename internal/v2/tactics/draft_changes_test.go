@@ -6,7 +6,12 @@ func TestNormalizeTacticsDraftChangesKeepsOnlyApplicableValidChanges(t *testing.
 	id := 42
 	changes := normalizeTacticsDraftChanges([]TacticsDraftChange{
 		{Apply: false, Operation: "create", EntityType: "workstream", Title: "Suggested only"},
-		{Apply: true, Operation: " CREATE ", EntityType: " WORKSTREAM ", Title: "  Confirmed change  "},
+		{
+			Apply: true, Operation: " CREATE ", EntityType: " WORKSTREAM ", Title: "  Confirmed change  ",
+			Description: "Изменить бизнес", Goal: "Получить результат", CKP: "Проверенный результат",
+			Reason: "Это главный ограничитель", LeadDepartmentID: 3,
+			Metrics: []TacticMetric{{Name: "Выручка", Target: "100"}},
+		},
 		{Apply: true, Operation: "update", EntityType: "project", EntityID: &id, Title: "Updated project"},
 		{Apply: true, Operation: "update", EntityType: "risk", Title: "Missing id"},
 	})
@@ -20,13 +25,18 @@ func TestNormalizeTacticsDraftChangesKeepsOnlyApplicableValidChanges(t *testing.
 
 func TestNormalizeTacticsDraftChangesNormalizesProductFields(t *testing.T) {
 	changes := normalizeTacticsDraftChanges([]TacticsDraftChange{{
-		Apply:      true,
-		Operation:  "create",
-		EntityType: "workstream",
-		Title:      "  Revenue engine ",
+		Apply:            true,
+		Operation:        "create",
+		EntityType:       "workstream",
+		Title:            "  Revenue engine ",
+		Description:      " Improve recurring revenue ",
+		Goal:             " Validate the engine ",
+		CKP:              " Predictable recurring revenue ",
+		Reason:           " Revenue is the current constraint ",
+		LeadDepartmentID: 7,
 		Metrics: []TacticMetric{
 			{Name: " Revenue ", Current: " 10 ", Target: " 20 "},
-			{Name: " Margin ", Current: " 12% ", Target: " 25% "},
+			{Name: " Margin ", Current: " 12 ", Target: " 25 ", Unit: "%"},
 			{Name: " CAC ", Current: " 100 ", Target: " 60 "},
 			{Name: " Must be dropped ", Current: " 1 ", Target: " 2 "},
 		},
@@ -48,6 +58,15 @@ func TestNormalizeTacticsDraftChangesNormalizesProductFields(t *testing.T) {
 	}
 	if change.ExpectedValue != "Higher recurring revenue" || change.Probability != "high" || change.PotentialImpact != "medium" || change.Urgency != "low" {
 		t.Fatalf("product fields were not normalized: %#v", change)
+	}
+}
+
+func TestNormalizeTacticsDraftChangesRejectsIncompleteCreate(t *testing.T) {
+	changes := normalizeTacticsDraftChanges([]TacticsDraftChange{{
+		Apply: true, Operation: "create", EntityType: EntityProject, Title: "Проект без ответственных",
+	}})
+	if len(changes) != 0 {
+		t.Fatalf("incomplete create must remain a conversation question, got %#v", changes)
 	}
 }
 

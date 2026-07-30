@@ -90,7 +90,16 @@ func TestParseRequiredDraftTreatsApplyAsProposalNotMutationPermission(t *testing
 			"apply":false,
 			"operation":"create",
 			"entity_type":"project",
-			"title":"Легальный paid acquisition эксперимент"
+			"parent_entity_type":"workstream",
+			"parent_entity_id":42,
+			"title":"Легальный paid acquisition эксперимент",
+			"description":"Проверить легальный платный канал.",
+			"why_needed":"Нужен проверенный канал привлечения.",
+			"success_criteria":"Получен воспроизводимый CAC.",
+			"failure_criteria":"CAC не позволяет получать вклад в прибыль.",
+			"expected_value":"Новый прибыльный канал.",
+			"lead_department_id":3,
+			"metrics":[{"name":"CAC","target":"75","unit":"USD","better_direction":"decrease"}]
 		}]
 	}`
 	output, err := parseTacticsFacilitatorOutputForDraft(raw, EntityProject)

@@ -35,6 +35,7 @@ const (
 	EntityRisk          = "risk"
 	EntityOpportunity   = "opportunity"
 	EntityHypothesis    = "hypothesis"
+	EntityTask          = "task"
 	EntityAdvisorThread = "advisor_thread"
 
 	CoverageUncovered        = "uncovered"
@@ -46,7 +47,7 @@ const (
 	SourceManual       = "manual"
 	SourceAISuggestion = "ai_suggestion"
 
-	TacticsFacilitatorPromptVersion = "tactics_advisor_openai_native_v0_2_3"
+	TacticsFacilitatorPromptVersion = "tactics_advisor_openai_native_v0_2_4"
 	TacticsReadinessPromptVersion   = "tactics_quality_readiness_auditor_v0_1_2"
 
 	FacilitatorStatusInProgress     = "in_progress"
@@ -132,9 +133,12 @@ type Workstream struct {
 }
 
 type TacticMetric struct {
-	Name    string `json:"name"`
-	Current string `json:"current"`
-	Target  string `json:"target"`
+	Name            string `json:"name"`
+	Current         string `json:"current"`
+	Target          string `json:"target"`
+	Unit            string `json:"unit,omitempty"`
+	BetterDirection string `json:"better_direction,omitempty"`
+	TargetDate      string `json:"target_date,omitempty"`
 }
 
 type Project struct {
@@ -315,16 +319,34 @@ type TacticsStrategyDocument struct {
 }
 
 type TacticsFacilitatorState struct {
-	WorkspaceID    int                                  `json:"workspace_id"`
-	Current        CurrentResponse                      `json:"current"`
-	StrategyDocs   []TacticsStrategyDocument            `json:"strategy_documents"`
-	KnowledgeDocs  []strategicmemory.StrategicDocument  `json:"knowledge_documents"`
-	KnowledgeAudit *strategicmemory.QualityReport       `json:"knowledge_quality,omitempty"`
-	Files          []strategicmemory.StrategicFile      `json:"files,omitempty"`
-	Communication  strategicmemory.CommunicationProfile `json:"communication_profile"`
-	RecentMessages []TacticsChatMessage                 `json:"recent_messages"`
-	Session        TacticsSessionState                  `json:"session"`
-	Readiness      *TacticsReadinessRun                 `json:"readiness,omitempty"`
+	WorkspaceID     int                                  `json:"workspace_id"`
+	Current         CurrentResponse                      `json:"current"`
+	StrategyDocs    []TacticsStrategyDocument            `json:"strategy_documents"`
+	KnowledgeDocs   []strategicmemory.StrategicDocument  `json:"knowledge_documents"`
+	KnowledgeAudit  *strategicmemory.QualityReport       `json:"knowledge_quality,omitempty"`
+	Files           []strategicmemory.StrategicFile      `json:"files,omitempty"`
+	Communication   strategicmemory.CommunicationProfile `json:"communication_profile"`
+	RecentMessages  []TacticsChatMessage                 `json:"recent_messages"`
+	Session         TacticsSessionState                  `json:"session"`
+	Readiness       *TacticsReadinessRun                 `json:"readiness,omitempty"`
+	CreationOptions TacticsCreationOptions               `json:"creation_options"`
+}
+
+type TacticsCreationOptions struct {
+	Departments []TacticsDepartmentOption `json:"departments"`
+	Members     []TacticsMemberOption     `json:"members"`
+}
+
+type TacticsDepartmentOption struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type TacticsMemberOption struct {
+	UserID      int    `json:"user_id"`
+	Name        string `json:"name"`
+	Email       string `json:"email"`
+	CompanyRole string `json:"company_role,omitempty"`
 }
 
 type TacticsFacilitatorHistoryState struct {
@@ -415,40 +437,54 @@ type ApplyTacticsChangesResponse struct {
 }
 
 type TacticsDraftChange struct {
-	Apply            bool           `json:"apply"`
-	Operation        string         `json:"operation"`
-	EntityType       string         `json:"entity_type"`
-	EntityID         *int           `json:"entity_id,omitempty"`
-	DraftKey         string         `json:"draft_key,omitempty"`
-	ParentEntityType string         `json:"parent_entity_type,omitempty"`
-	ParentEntityID   *int           `json:"parent_entity_id,omitempty"`
-	ParentDraftKey   string         `json:"parent_draft_key,omitempty"`
-	Title            string         `json:"title"`
-	Description      string         `json:"description,omitempty"`
-	Goal             string         `json:"goal,omitempty"`
-	CKP              string         `json:"ckp,omitempty"`
-	Reason           string         `json:"reason,omitempty"`
-	ClosesRisk       string         `json:"closes_risk,omitempty"`
-	MetricName       string         `json:"metric_name,omitempty"`
-	MetricCurrent    string         `json:"metric_current,omitempty"`
-	MetricTarget     string         `json:"metric_target,omitempty"`
-	Metrics          []TacticMetric `json:"metrics,omitempty"`
-	WhyNeeded        string         `json:"why_needed,omitempty"`
-	SuccessCriteria  string         `json:"success_criteria,omitempty"`
-	FailureCriteria  string         `json:"failure_criteria,omitempty"`
-	ExpectedValue    string         `json:"expected_value,omitempty"`
-	Severity         string         `json:"severity,omitempty"`
-	Probability      string         `json:"probability,omitempty"`
-	ProbabilityValue *int           `json:"probability_value,omitempty"`
-	ImpactScore      *int           `json:"impact_score,omitempty"`
-	MitigationPlan   string         `json:"mitigation_plan,omitempty"`
-	Statement        string         `json:"statement,omitempty"`
-	ExpectedEffect   string         `json:"expected_effect,omitempty"`
-	TestMethod       string         `json:"test_method,omitempty"`
-	HypothesisStatus string         `json:"hypothesis_status,omitempty"`
-	PotentialImpact  string         `json:"potential_impact,omitempty"`
-	Urgency          string         `json:"urgency,omitempty"`
-	CoverageStatus   string         `json:"coverage_status,omitempty"`
+	Apply                    bool           `json:"apply"`
+	Operation                string         `json:"operation"`
+	EntityType               string         `json:"entity_type"`
+	EntityID                 *int           `json:"entity_id,omitempty"`
+	DraftKey                 string         `json:"draft_key,omitempty"`
+	ParentEntityType         string         `json:"parent_entity_type,omitempty"`
+	ParentEntityID           *int           `json:"parent_entity_id,omitempty"`
+	ParentDraftKey           string         `json:"parent_draft_key,omitempty"`
+	Title                    string         `json:"title"`
+	Description              string         `json:"description,omitempty"`
+	Goal                     string         `json:"goal,omitempty"`
+	CKP                      string         `json:"ckp,omitempty"`
+	Reason                   string         `json:"reason,omitempty"`
+	ClosesRisk               string         `json:"closes_risk,omitempty"`
+	MetricName               string         `json:"metric_name,omitempty"`
+	MetricCurrent            string         `json:"metric_current,omitempty"`
+	MetricTarget             string         `json:"metric_target,omitempty"`
+	Metrics                  []TacticMetric `json:"metrics,omitempty"`
+	LeadDepartmentID         int            `json:"lead_department_id,omitempty"`
+	LeadDepartmentName       string         `json:"lead_department_name,omitempty"`
+	ParticipantDepartmentIDs []int          `json:"participant_department_ids,omitempty"`
+	WhyNeeded                string         `json:"why_needed,omitempty"`
+	SuccessCriteria          string         `json:"success_criteria,omitempty"`
+	FailureCriteria          string         `json:"failure_criteria,omitempty"`
+	ExpectedValue            string         `json:"expected_value,omitempty"`
+	ExpectedResult           string         `json:"expected_result,omitempty"`
+	WhyNow                   string         `json:"why_now,omitempty"`
+	WorkstreamID             *int           `json:"workstream_id,omitempty"`
+	ProjectID                *int           `json:"project_id,omitempty"`
+	DepartmentID             *int           `json:"department_id,omitempty"`
+	DepartmentName           string         `json:"department_name,omitempty"`
+	OwnerUserID              *int           `json:"owner_user_id,omitempty"`
+	OwnerName                string         `json:"owner_name,omitempty"`
+	OwnerDeferred            bool           `json:"owner_deferred,omitempty"`
+	DueDate                  string         `json:"due_date,omitempty"`
+	DueDateDeferred          bool           `json:"due_date_deferred,omitempty"`
+	Severity                 string         `json:"severity,omitempty"`
+	Probability              string         `json:"probability,omitempty"`
+	ProbabilityValue         *int           `json:"probability_value,omitempty"`
+	ImpactScore              *int           `json:"impact_score,omitempty"`
+	MitigationPlan           string         `json:"mitigation_plan,omitempty"`
+	Statement                string         `json:"statement,omitempty"`
+	ExpectedEffect           string         `json:"expected_effect,omitempty"`
+	TestMethod               string         `json:"test_method,omitempty"`
+	HypothesisStatus         string         `json:"hypothesis_status,omitempty"`
+	PotentialImpact          string         `json:"potential_impact,omitempty"`
+	Urgency                  string         `json:"urgency,omitempty"`
+	CoverageStatus           string         `json:"coverage_status,omitempty"`
 }
 
 type AppliedTacticsChange struct {
