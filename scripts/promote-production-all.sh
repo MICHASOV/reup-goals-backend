@@ -163,7 +163,7 @@ frontend_deploy_started=true
   cd "$frontend_root"
   NEXT_PUBLIC_API_BASE_URL=https://api.reupgoals.pro \
     DEPLOY_PATH="$frontend_deploy_path" \
-    "$frontend_root/scripts/deploy.sh"
+    bash "$frontend_root/scripts/deploy.sh"
 )
 
 echo "Running public production checks..."
