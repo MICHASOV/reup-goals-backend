@@ -87,6 +87,9 @@ func TestDraftChangeSupportsCreateAndUpdate(t *testing.T) {
 	if created.ParentEntityID == nil || *created.ParentEntityID != 22 {
 		t.Fatalf("unexpected project parent: %#v", created.ParentEntityID)
 	}
+	if created.ExpectedResult != "Подтверждённая экономика канала" || created.ExpectedValue != "Рост выручки" {
+		t.Fatalf("project result fields were lost: %#v", created)
+	}
 
 	updated, ok := draftChange("propose_task", map[string]any{
 		"existing_entity_id": 91,
@@ -134,5 +137,42 @@ func TestAgentInputAddsOnlyAttachmentReferences(t *testing.T) {
 	}
 	if strings.Contains(input, "markdown") || strings.Contains(input, "content") {
 		t.Fatalf("attachment content must not be duplicated into the user turn: %q", input)
+	}
+}
+
+func TestCompatibleSessionPinsReleaseModelPromptAndGeneration(t *testing.T) {
+	session := ThreadSession{
+		Found:             true,
+		AgentReleaseID:    DefaultRelease,
+		Model:             "gpt-test",
+		PromptVersion:     PromptVersion,
+		SessionGeneration: 2,
+	}
+	if !compatibleSession(session, DefaultRelease, "gpt-test", PromptVersion) {
+		t.Fatal("matching session must remain reusable")
+	}
+	if compatibleSession(session, "next-release", "gpt-test", PromptVersion) {
+		t.Fatal("a new release must start a new session generation")
+	}
+	if compatibleSession(session, DefaultRelease, "gpt-next", PromptVersion) {
+		t.Fatal("a model change must start a new session generation")
+	}
+	if compatibleSession(session, DefaultRelease, "gpt-test", "next-prompt") {
+		t.Fatal("a prompt change must start a new session generation")
+	}
+}
+
+func TestBuildContinuityContextUsesRecentConversationAndBoundsSize(t *testing.T) {
+	messages := []tactics.TacticsChatMessage{
+		{Role: "user", Content: "Старое сообщение"},
+		{Role: "assistant", Content: strings.Repeat("а", 3000)},
+		{Role: "user", Content: "Текущее решение компании"},
+	}
+	context := buildContinuityContext(messages)
+	if !strings.Contains(context, "Пользователь: Текущее решение компании") {
+		t.Fatalf("latest user context is missing: %q", context)
+	}
+	if len([]rune(context)) > continuityMaxRunes {
+		t.Fatalf("continuity context is too large: %d", len([]rune(context)))
 	}
 }

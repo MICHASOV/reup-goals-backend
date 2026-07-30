@@ -42,6 +42,7 @@ type Config struct {
 	AgentRuntimeURL               string
 	AgentRuntimeSecret            string
 	AgentRuntimeMaxTurns          int
+	AgentReleaseID                string
 
 	JWTSecret                     string
 	CORSAllowedOrigins            []string
@@ -227,6 +228,7 @@ func Load() *Config {
 		AgentRuntimeURL:               agentRuntimeURL,
 		AgentRuntimeSecret:            strings.TrimSpace(os.Getenv("AGENT_RUNTIME_SECRET")),
 		AgentRuntimeMaxTurns:          parseIntEnv("AGENT_RUNTIME_MAX_TURNS", 12),
+		AgentReleaseID:                strings.TrimSpace(os.Getenv("AGENT_RELEASE_ID")),
 
 		JWTSecret:                     jwtSecret,
 		CORSAllowedOrigins:            parseCSVEnv("CORS_ALLOWED_ORIGINS"),

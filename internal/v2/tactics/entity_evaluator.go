@@ -307,7 +307,8 @@ func projectEvaluationContext(project Project) map[string]any {
 	return map[string]any{
 		"id": project.ID, "workstream_id": project.WorkstreamID,
 		"title": project.Title, "description": project.Description,
-		"why_needed": project.WhyNeeded, "success_criteria": project.SuccessCriteria,
+		"expected_result": project.ExpectedResult,
+		"why_needed":      project.WhyNeeded, "success_criteria": project.SuccessCriteria,
 		"failure_criteria": project.FailureCriteria, "metric_name": project.MetricName,
 		"expected_value": project.ExpectedValue, "status": project.Status,
 		"confidence": project.Confidence,

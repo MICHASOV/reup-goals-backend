@@ -104,7 +104,7 @@ func (s *Service) listEntities(ctx context.Context, workspaceID int, input map[s
 		selected.sql = `SELECT jsonb_build_object('id', id, 'title', title, 'description', description, 'goal', goal, 'ckp', ckp, 'status', status)
 			FROM v2_tactical_workstreams WHERE workspace_id=$1 AND archived_at IS NULL`
 	case "project":
-		selected.sql = `SELECT jsonb_build_object('id', id, 'workstream_id', workstream_id, 'title', title, 'description', description, 'status', status, 'expected_value', expected_value)
+		selected.sql = `SELECT jsonb_build_object('id', id, 'workstream_id', workstream_id, 'title', title, 'description', description, 'expected_result', expected_result, 'status', status, 'expected_value', expected_value)
 			FROM v2_tactical_projects WHERE workspace_id=$1 AND archived_at IS NULL`
 		if parentType == "workstream" && parentID > 0 {
 			selected.sql += ` AND workstream_id=$4`
@@ -192,7 +192,7 @@ func (s *Service) getEntity(ctx context.Context, workspaceID int, input map[stri
 	queries := map[string]string{
 		"strategy":   `SELECT jsonb_build_object('id', id, 'title', title, 'summary', summary, 'status', status, 'version', version) FROM v2_strategies WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL`,
 		"workstream": `SELECT to_jsonb(item) FROM (SELECT id, title, description, goal, ckp, reason, status, health_status, metric_name, metric_current, metric_target FROM v2_tactical_workstreams WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
-		"project":    `SELECT to_jsonb(item) FROM (SELECT id, workstream_id, title, description, why_needed, success_criteria, failure_criteria, metric_name, expected_value, status FROM v2_tactical_projects WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
+		"project":    `SELECT to_jsonb(item) FROM (SELECT id, workstream_id, title, description, expected_result, why_needed, success_criteria, failure_criteria, metric_name, expected_value, status FROM v2_tactical_projects WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
 		"department": `SELECT to_jsonb(item) FROM (SELECT id, name, description, responsibility, manager_user_id, kpis_json, status FROM v2_departments WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
 		"task":       `SELECT to_jsonb(item) FROM (SELECT id, project_id, workstream_id, department_id, title, description, expected_result, why_now, status, blocked, owner_user_id, due_date, completion_result FROM v2_tasks WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
 		"risk":       `SELECT to_jsonb(item) FROM (SELECT id, entity_type, entity_id, title, description, severity, probability, probability_value, impact_score, mitigation_plan, status FROM v2_tactical_risks WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,

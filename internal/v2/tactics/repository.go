@@ -421,16 +421,16 @@ func (s *Store) createProject(ctx context.Context, workspaceID int, userID int, 
 
 	row := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_tactical_projects (
-			workspace_id, workstream_id, title, description, why_needed, success_criteria,
-			failure_criteria, metric_name, expected_value, status, source, sort_order, created_by
+			workspace_id, workstream_id, title, description, expected_result, why_needed,
+			success_criteria, failure_criteria, metric_name, expected_value, status, source, sort_order, created_by
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING
-			id, workspace_id, workstream_id, title, description, why_needed,
+			id, workspace_id, workstream_id, title, description, expected_result, why_needed,
 			success_criteria, failure_criteria, metric_name, expected_value, status, confidence,
 			source, sort_order, created_at, updated_at
-	`, workspaceID, workstream.ID, input.Title, input.Description, input.WhyNeeded, input.SuccessCriteria,
-		input.FailureCriteria, input.MetricName, input.ExpectedValue, input.Status, source, sortOrder, userID)
+	`, workspaceID, workstream.ID, input.Title, input.Description, input.ExpectedResult, input.WhyNeeded,
+		input.SuccessCriteria, input.FailureCriteria, input.MetricName, input.ExpectedValue, input.Status, source, sortOrder, userID)
 
 	return scanProject(row)
 }
@@ -446,6 +446,9 @@ func (s *Store) UpdateProject(ctx context.Context, workspaceID int, projectID in
 	}
 	if input.Description == "" {
 		input.Description = current.Description
+	}
+	if input.ExpectedResult == "" {
+		input.ExpectedResult = current.ExpectedResult
 	}
 	if input.WhyNeeded == "" {
 		input.WhyNeeded = current.WhyNeeded
@@ -470,20 +473,21 @@ func (s *Store) UpdateProject(ctx context.Context, workspaceID int, projectID in
 		UPDATE v2_tactical_projects
 		SET title=$1,
 			description=$2,
-			why_needed=$3,
-			success_criteria=$4,
-			failure_criteria=$5,
-			metric_name=$6,
-			expected_value=$7,
-			status=$8,
+			expected_result=$3,
+			why_needed=$4,
+			success_criteria=$5,
+			failure_criteria=$6,
+			metric_name=$7,
+			expected_value=$8,
+			status=$9,
 			updated_at=NOW()
-		WHERE id=$9 AND workspace_id=$10 AND archived_at IS NULL
+		WHERE id=$10 AND workspace_id=$11 AND archived_at IS NULL
 		RETURNING
-			id, workspace_id, workstream_id, title, description, why_needed,
+			id, workspace_id, workstream_id, title, description, expected_result, why_needed,
 			success_criteria, failure_criteria, metric_name, expected_value, status, confidence,
 			source, sort_order, created_at, updated_at
-	`, input.Title, input.Description, input.WhyNeeded, input.SuccessCriteria, input.FailureCriteria,
-		input.MetricName, input.ExpectedValue, input.Status, projectID, workspaceID)
+	`, input.Title, input.Description, input.ExpectedResult, input.WhyNeeded, input.SuccessCriteria,
+		input.FailureCriteria, input.MetricName, input.ExpectedValue, input.Status, projectID, workspaceID)
 
 	return scanProject(row)
 }
@@ -1088,7 +1092,7 @@ func (s *Store) workstreamByID(ctx context.Context, workspaceID int, workstreamI
 func (s *Store) projectByID(ctx context.Context, workspaceID int, projectID int) (Project, error) {
 	row := s.dbx.QueryRowContext(ctx, `
 		SELECT
-			id, workspace_id, workstream_id, title, description, why_needed,
+			id, workspace_id, workstream_id, title, description, expected_result, why_needed,
 			success_criteria, failure_criteria, metric_name, expected_value, status, confidence,
 			source, sort_order, created_at, updated_at
 		FROM v2_tactical_projects
@@ -1334,7 +1338,7 @@ func (s *Store) listProjects(ctx context.Context, workspaceID int, workstreams [
 
 	rows, err := s.dbx.QueryContext(ctx, `
 		SELECT
-			id, workspace_id, workstream_id, title, description, why_needed,
+			id, workspace_id, workstream_id, title, description, expected_result, why_needed,
 			success_criteria, failure_criteria, metric_name, expected_value, status, confidence,
 			source, sort_order, created_at, updated_at
 		FROM v2_tactical_projects
@@ -1786,6 +1790,7 @@ type ProjectInput struct {
 	WorkstreamID    int    `json:"workstream_id"`
 	Title           string `json:"title"`
 	Description     string `json:"description"`
+	ExpectedResult  string `json:"expected_result"`
 	WhyNeeded       string `json:"why_needed"`
 	SuccessCriteria string `json:"success_criteria"`
 	FailureCriteria string `json:"failure_criteria"`
@@ -1804,6 +1809,7 @@ func (i *ProjectInput) normalize() {
 func (i *ProjectInput) trim() {
 	i.Title = strings.TrimSpace(i.Title)
 	i.Description = strings.TrimSpace(i.Description)
+	i.ExpectedResult = strings.TrimSpace(i.ExpectedResult)
 	i.WhyNeeded = strings.TrimSpace(i.WhyNeeded)
 	i.SuccessCriteria = strings.TrimSpace(i.SuccessCriteria)
 	i.FailureCriteria = strings.TrimSpace(i.FailureCriteria)
@@ -2024,7 +2030,7 @@ func scanProject(scanner scanner) (Project, error) {
 	var confidence sql.NullFloat64
 	err := scanner.Scan(
 		&project.ID, &project.WorkspaceID, &project.WorkstreamID, &project.Title, &project.Description,
-		&project.WhyNeeded, &project.SuccessCriteria, &project.FailureCriteria, &project.MetricName,
+		&project.ExpectedResult, &project.WhyNeeded, &project.SuccessCriteria, &project.FailureCriteria, &project.MetricName,
 		&project.ExpectedValue, &project.Status, &confidence, &project.Source, &project.SortOrder, &project.CreatedAt, &project.UpdatedAt,
 	)
 	if err != nil {

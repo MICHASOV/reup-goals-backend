@@ -180,6 +180,7 @@ func (s *FacilitatorService) resolveProjectAttachment(
 	}
 	content, _ := json.Marshal(map[string]any{
 		"title": item.Title, "description": item.Description, "why_needed": item.WhyNeeded,
+		"expected_result":  item.ExpectedResult,
 		"success_criteria": item.SuccessCriteria, "failure_criteria": item.FailureCriteria,
 		"metric_name": item.MetricName, "expected_value": item.ExpectedValue,
 		"status": item.Status,

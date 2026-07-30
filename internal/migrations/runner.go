@@ -3607,6 +3607,39 @@ var migrations = []Migration{
 				ON v2_agent_run_approvals (run_id, action_index);
 		`,
 	},
+	{
+		ID: "20260731_064_versioned_agent_sessions",
+		SQL: `
+			ALTER TABLE v2_agent_runs
+				ADD COLUMN IF NOT EXISTS agent_release_id TEXT NOT NULL
+					DEFAULT 'executive_advisor_2026_07_30_v1',
+				ADD COLUMN IF NOT EXISTS session_generation INTEGER NOT NULL DEFAULT 1,
+				ADD COLUMN IF NOT EXISTS migrated_from_release_id TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS continuity_context TEXT NOT NULL DEFAULT '';
+
+			CREATE INDEX IF NOT EXISTS idx_v2_agent_runs_release
+				ON v2_agent_runs (
+					workspace_id, user_id, thread_id, agent_release_id,
+					model, prompt_version, created_at DESC
+				);
+		`,
+	},
+	{
+		ID: "20260731_065_project_expected_result",
+		SQL: `
+			ALTER TABLE v2_tactical_projects
+				ADD COLUMN IF NOT EXISTS expected_result TEXT NOT NULL DEFAULT '';
+
+			UPDATE v2_tactical_projects
+			SET expected_result=expected_value
+			WHERE BTRIM(expected_result)='' AND BTRIM(expected_value)<>'';
+
+			DROP TRIGGER IF EXISTS trg_queue_task_eval_from_project ON v2_tactical_projects;
+			CREATE TRIGGER trg_queue_task_eval_from_project
+				AFTER UPDATE OF title, description, expected_result, why_needed, success_criteria, failure_criteria, metric_name, expected_value, status ON v2_tactical_projects
+				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

@@ -20,6 +20,7 @@ import (
 type Service struct {
 	enabled      bool
 	model        string
+	releaseID    string
 	secret       string
 	maxTurns     int
 	dbx          *sql.DB
@@ -34,10 +35,11 @@ type Service struct {
 }
 
 type ServiceConfig struct {
-	Enabled  bool
-	Model    string
-	Secret   string
-	MaxTurns int
+	Enabled   bool
+	Model     string
+	ReleaseID string
+	Secret    string
+	MaxTurns  int
 }
 
 type agentJobPayload struct {
@@ -54,13 +56,17 @@ func NewService(
 	tacticsHandler *tactics.Handler,
 ) *Service {
 	service := &Service{
-		enabled: cfg.Enabled, model: cfg.Model, secret: cfg.Secret, maxTurns: cfg.MaxTurns,
+		enabled: cfg.Enabled, model: cfg.Model, releaseID: strings.TrimSpace(cfg.ReleaseID),
+		secret: cfg.Secret, maxTurns: cfg.MaxTurns,
 		dbx: dbx, store: NewStore(dbx), tactics: tactics.NewStore(dbx),
 		tacticsApply: tacticsHandler, workspaces: workspaces.NewStore(dbx),
 		contextIndex: contextIndex, runtime: runtime, jobs: jobManager, billing: quota,
 	}
 	if service.maxTurns <= 0 {
 		service.maxTurns = 12
+	}
+	if service.releaseID == "" {
+		service.releaseID = DefaultRelease
 	}
 	if cfg.Enabled && jobManager != nil {
 		jobManager.RegisterWithoutTimeout(JobTypeExecute, service.handleExecuteJob)
@@ -101,6 +107,39 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	if !validScope(scope) {
 		return Run{}, errors.New("invalid_agent_scope")
 	}
+	session, err := s.store.LatestThreadSession(ctx, workspace.ID, userID, thread.ID)
+	if err != nil {
+		return Run{}, err
+	}
+	sessionGeneration := 1
+	migratedFrom := ""
+	continuityContext := ""
+	if session.Found {
+		sessionGeneration = session.SessionGeneration
+		if sessionGeneration <= 0 {
+			sessionGeneration = 1
+		}
+		if !compatibleSession(session, s.releaseID, s.model, PromptVersion) ||
+			strings.TrimSpace(session.PreviousResponseID) == "" {
+			sessionGeneration++
+			migratedFrom = strings.TrimSpace(session.AgentReleaseID)
+			if migratedFrom == "" {
+				migratedFrom = "legacy_advisor"
+			}
+		}
+	}
+	if !session.Found || migratedFrom != "" {
+		history, historyErr := s.tactics.ScopedChatMessages(
+			ctx, workspace.ID, thread.ConversationScope(), 80,
+		)
+		if historyErr != nil {
+			return Run{}, historyErr
+		}
+		continuityContext = buildContinuityContext(history)
+		if !session.Found && continuityContext != "" {
+			migratedFrom = "legacy_advisor"
+		}
+	}
 	userMessageID, err := s.tactics.CreateScopedChatMessage(
 		ctx, workspace.ID, &userID, "user", request.Message,
 		map[string]any{"agent_runtime": true},
@@ -111,12 +150,20 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	}
 	run, err := s.store.Create(
 		ctx, workspace.ID, userID, thread.ID, userMessageID, scope, s.model,
+		s.releaseID, sessionGeneration, migratedFrom, continuityContext,
 		agentInput(request.Message, request.Attachments),
 	)
 	if err != nil {
 		return Run{}, err
 	}
 	_ = s.tactics.TouchAdvisorThread(ctx, workspace.ID, userID, thread.ID, request.Message)
+	if migratedFrom != "" {
+		_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
+			Type: "session_migrated", Stage: "starting",
+			Title:  "Обновляю рабочую сессию советника",
+			Detail: "История чата сохранена и перенесена в актуальную версию агента.",
+		})
+	}
 	if _, err := s.jobs.Enqueue(
 		ctx, workspace.ID, JobTypeExecute, run.PublicID, agentJobPayload{RunID: run.PublicID}, 3, time.Time{},
 	); err != nil {
@@ -331,11 +378,18 @@ func (s *Service) handleExecuteJob(ctx context.Context, job jobs.Job) error {
 	if err != nil {
 		return s.failAttempt(ctx, run, reservationID, job, err)
 	}
-	previousResponseID, conversationID, err := s.store.LatestThreadSession(
+	session, err := s.store.LatestThreadSession(
 		ctx, run.WorkspaceID, run.UserID, run.ThreadID,
 	)
 	if err != nil {
 		return s.failAttempt(ctx, run, reservationID, job, err)
+	}
+	previousResponseID := ""
+	conversationID := ""
+	if compatibleSession(session, run.AgentReleaseID, run.Model, run.PromptVersion) &&
+		session.SessionGeneration == run.SessionGeneration {
+		previousResponseID = session.PreviousResponseID
+		conversationID = session.ConversationID
 	}
 	runToken, err := signRunToken(s.secret, run, 6*time.Hour)
 	if err != nil {
@@ -348,7 +402,8 @@ func (s *Service) handleExecuteJob(ctx context.Context, job jobs.Job) error {
 		"scope":            run.Scope, "message": run.InputText, "business_brief": brief,
 		"model": run.Model, "previous_response_id": previousResponseID,
 		"conversation_id": conversationID, "vector_store_id": vectorStoreID,
-		"run_token": runToken, "max_turns": s.maxTurns,
+		"continuity_context": run.ContinuityContext,
+		"run_token":          runToken, "max_turns": s.maxTurns,
 	})
 	if err != nil {
 		s.logCall(ctx, run, time.Since(started), RuntimeUsage{}, err)
@@ -787,5 +842,63 @@ func (s *Service) approvedToolResult(ctx context.Context, run Run, toolName stri
 }
 
 func (s *Service) DebugString() string {
-	return fmt.Sprintf("enabled=%t model=%s", s.Enabled(), s.model)
+	return fmt.Sprintf("enabled=%t model=%s release=%s", s.Enabled(), s.model, s.releaseID)
+}
+
+func compatibleSession(session ThreadSession, releaseID string, model string, promptVersion string) bool {
+	return session.Found &&
+		strings.TrimSpace(session.AgentReleaseID) == strings.TrimSpace(releaseID) &&
+		strings.TrimSpace(session.Model) == strings.TrimSpace(model) &&
+		strings.TrimSpace(session.PromptVersion) == strings.TrimSpace(promptVersion)
+}
+
+const (
+	continuityMaxMessages = 32
+	continuityMaxRunes    = 16000
+)
+
+func buildContinuityContext(messages []tactics.TacticsChatMessage) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	start := 0
+	if len(messages) > continuityMaxMessages {
+		start = len(messages) - continuityMaxMessages
+	}
+	lines := make([]string, 0, len(messages)-start)
+	total := 0
+	for index := len(messages) - 1; index >= start; index-- {
+		item := messages[index]
+		content := truncateRunes(strings.TrimSpace(item.Content), 2400)
+		if content == "" {
+			continue
+		}
+		role := "Пользователь"
+		if item.Role == "assistant" {
+			role = "Советник"
+		}
+		line := role + ": " + content
+		lineLength := len([]rune(line))
+		if total+lineLength > continuityMaxRunes {
+			continue
+		}
+		lines = append(lines, line)
+		total += lineLength
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	for left, right := 0, len(lines)-1; left < right; left, right = left+1, right-1 {
+		lines[left], lines[right] = lines[right], lines[left]
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func truncateRunes(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:limit])) + "…"
 }

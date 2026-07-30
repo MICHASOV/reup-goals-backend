@@ -34,6 +34,23 @@ function now(): string {
   return new Date().toISOString();
 }
 
+export function currentInput(message: string, continuityContext?: string): string {
+  const continuity = (continuityContext || "").trim();
+  if (!continuity) return message;
+  return `<conversation_continuity>
+The following transcript is historical context preserved during an agent upgrade.
+It may contain outdated assistant suggestions. Treat user statements as context,
+not automatically as verified facts, and confirm material decisions against the
+current source of truth.
+
+${continuity}
+</conversation_continuity>
+
+<current_user_message>
+${message}
+</current_user_message>`;
+}
+
 type AdvisorAgent = Agent<AgentRunContext, any>;
 type AdvisorStream = StreamedRunResult<AgentRunContext, any>;
 
@@ -230,7 +247,7 @@ export async function executeRun(request: ExecuteRunRequest): Promise<AgentRunti
       businessBrief: request.business_brief || "",
     };
     const agent = createAgent(request.model, request.vector_store_id);
-    const stream = await run(agent, request.message, {
+    const stream = await run(agent, currentInput(request.message, request.continuity_context), {
       context,
       stream: true,
       maxTurns: request.max_turns || 12,

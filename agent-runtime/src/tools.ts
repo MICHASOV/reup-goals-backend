@@ -84,10 +84,15 @@ const searchMetricCatalog = tool<any, AgentRunContext, unknown>({
   execute: executeTool("search_metric_catalog"),
 });
 
+const metricNumber = z.string()
+  .regex(/^-?\d+(?:[.,]\d+)?$/, "Use one numeric value without units, spaces, ranges, or explanatory text")
+  .max(40)
+  .describe("A single numeric value as text. Put currency, percent, time period, and other units in the unit field.");
+
 const metricSchema = z.object({
   name: z.string().min(1).max(160),
-  current: z.string().max(80).nullable(),
-  target: z.string().min(1).max(80),
+  current: metricNumber.nullable(),
+  target: metricNumber,
   unit: z.string().max(40).nullable(),
   target_date: z.string().max(20).nullable(),
 });

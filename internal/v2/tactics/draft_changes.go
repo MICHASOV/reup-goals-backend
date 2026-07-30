@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -528,9 +529,12 @@ func (s *Store) applyProjectDraft(ctx context.Context, workspaceID int, userID i
 			entityID = existingID
 		}
 	}
+	if !draftMetricsParsable(change.Metrics) {
+		return AppliedTacticsChange{}, false
+	}
 	input := ProjectInput{
 		WorkstreamID: parentID, Title: change.Title, Description: change.Description,
-		WhyNeeded: change.WhyNeeded, SuccessCriteria: change.SuccessCriteria,
+		ExpectedResult: change.ExpectedResult, WhyNeeded: change.WhyNeeded, SuccessCriteria: change.SuccessCriteria,
 		FailureCriteria: change.FailureCriteria, MetricName: change.MetricName, ExpectedValue: change.ExpectedValue,
 	}
 	if input.MetricName == "" && len(change.Metrics) > 0 {
@@ -769,7 +773,40 @@ func (s *Store) applyDraftMetrics(
 }
 
 func parseDraftMetricNumber(value string) (float64, error) {
-	return strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(value), ",", "."), 64)
+	normalized := strings.NewReplacer(
+		"\u00a0", " ",
+		"\u202f", " ",
+	).Replace(strings.TrimSpace(value))
+	normalized = draftMetricRange.ReplaceAllString(normalized, "$1|$2")
+	normalized = strings.ReplaceAll(normalized, " ", "")
+	normalized = strings.ReplaceAll(normalized, ",", ".")
+	if parsed, err := strconv.ParseFloat(normalized, 64); err == nil {
+		return parsed, nil
+	}
+	matches := draftMetricNumber.FindAllString(normalized, -1)
+	if len(matches) == 0 {
+		return 0, strconv.ErrSyntax
+	}
+	return strconv.ParseFloat(strings.ReplaceAll(matches[len(matches)-1], ",", "."), 64)
+}
+
+var (
+	draftMetricRange  = regexp.MustCompile(`(\d)\s*[-–—]\s*(\d)`)
+	draftMetricNumber = regexp.MustCompile(`[-+]?\d+(?:[.,]\d+)?`)
+)
+
+func draftMetricsParsable(items []TacticMetric) bool {
+	for _, item := range items {
+		if _, err := parseDraftMetricNumber(item.Target); err != nil {
+			return false
+		}
+		if strings.TrimSpace(item.Current) != "" {
+			if _, err := parseDraftMetricNumber(item.Current); err != nil {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (s *Store) applyRiskDraft(ctx context.Context, workspaceID int, userID int, plan TacticalPlan, parentID int, change TacticsDraftChange) (AppliedTacticsChange, bool) {

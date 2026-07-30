@@ -765,7 +765,8 @@ func (h *Handler) ensureProjectDocument(
 ) {
 	content := "# " + project.Title + "\n\n" +
 		documentSection("Контекст проекта", firstNonEmpty(project.Description, project.WhyNeeded, "Контекст пока не заполнен.")) +
-		documentSection("Ожидаемая ценность", project.ExpectedValue) +
+		documentSection("Ожидаемый результат", project.ExpectedResult) +
+		documentSection("Ожидаемый экономический эффект", project.ExpectedValue) +
 		documentSection("Критерий успеха", project.SuccessCriteria)
 	if _, err := h.documents.EnsureEntityDocument(
 		ctx, workspaceID, userID, EntityProject, project.ID, project.WorkstreamID,

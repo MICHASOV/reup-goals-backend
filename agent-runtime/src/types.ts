@@ -49,6 +49,7 @@ export type ExecuteRunRequest = {
   model: string;
   previous_response_id?: string;
   conversation_id?: string;
+  continuity_context?: string;
   vector_store_id?: string;
   run_token: string;
   max_turns?: number;

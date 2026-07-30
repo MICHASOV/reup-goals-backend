@@ -18,7 +18,8 @@ const (
 	JobTypeExecute = "executive_agent.execute"
 	JobTypeResume  = "executive_agent.resume"
 
-	PromptVersion = "executive_advisor_v1"
+	PromptVersion  = "executive_advisor_v2"
+	DefaultRelease = "executive_advisor_2026_07_31_v2"
 )
 
 type Scope struct {
@@ -39,6 +40,10 @@ type Run struct {
 	Status             string                       `json:"status"`
 	Model              string                       `json:"model"`
 	PromptVersion      string                       `json:"prompt_version"`
+	AgentReleaseID     string                       `json:"agent_release_id"`
+	SessionGeneration  int                          `json:"session_generation"`
+	MigratedFrom       string                       `json:"migrated_from_release_id,omitempty"`
+	ContinuityContext  string                       `json:"-"`
 	InputText          string                       `json:"-"`
 	OutputText         string                       `json:"output_text"`
 	PartialOutput      string                       `json:"partial_output"`
@@ -132,6 +137,16 @@ type RuntimeUsage struct {
 	CachedInputTokens int `json:"cached_input_tokens"`
 	OutputTokens      int `json:"output_tokens"`
 	TotalTokens       int `json:"total_tokens"`
+}
+
+type ThreadSession struct {
+	PreviousResponseID string
+	ConversationID     string
+	AgentReleaseID     string
+	Model              string
+	PromptVersion      string
+	SessionGeneration  int
+	Found              bool
 }
 
 type RuntimeResult struct {

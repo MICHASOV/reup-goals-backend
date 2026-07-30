@@ -26,6 +26,10 @@ func (s *Store) Create(
 	userMessageID int,
 	scope Scope,
 	model string,
+	releaseID string,
+	sessionGeneration int,
+	migratedFrom string,
+	continuityContext string,
 	input string,
 ) (Run, error) {
 	publicID, err := randomPublicID()
@@ -43,19 +47,26 @@ func (s *Store) Create(
 	row := s.dbx.QueryRowContext(ctx, `
 		INSERT INTO v2_agent_runs (
 			public_id, workspace_id, user_id, thread_id, user_message_id,
-			scope_type, scope_id, scope_label, status, model, prompt_version, input_text
+			scope_type, scope_id, scope_label, status, model, prompt_version,
+			agent_release_id, session_generation, migrated_from_release_id,
+			continuity_context, input_text
 		)
-		VALUES ($1, $2, $3, $4, NULLIF($5, 0), $6, $7, $8, $9, $10, $11, $12)
+		VALUES (
+			$1, $2, $3, $4, NULLIF($5, 0), $6, $7, $8, $9, $10, $11,
+			$12, $13, $14, $15, $16
+		)
 		RETURNING
 			id, public_id, workspace_id, user_id, thread_id,
 			COALESCE(user_message_id, 0), COALESCE(assistant_message_id, 0),
 			scope_type, scope_id, scope_label, status, model, prompt_version,
+			agent_release_id, session_generation, migrated_from_release_id, continuity_context,
 			input_text, output_text, partial_output, previous_response_id,
 			conversation_id, vector_store_id, state_ciphertext, error_text,
 			reservation_id, usage_requests, usage_input_tokens, usage_output_tokens,
 			usage_total_tokens, started_at, completed_at, created_at, updated_at
 	`, publicID, workspaceID, userID, threadID, userMessageID, scope.Type, scope.ID,
-		scope.Label, StatusQueued, model, PromptVersion, strings.TrimSpace(input))
+		scope.Label, StatusQueued, model, PromptVersion, releaseID, sessionGeneration,
+		migratedFrom, continuityContext, strings.TrimSpace(input))
 	return scanRun(row)
 }
 
@@ -173,21 +184,26 @@ func (s *Store) SetVectorStore(ctx context.Context, runID int64, vectorStoreID s
 	return err
 }
 
-func (s *Store) LatestThreadSession(ctx context.Context, workspaceID int, userID int, threadID int) (string, string, error) {
-	var previousResponseID, conversationID string
+func (s *Store) LatestThreadSession(ctx context.Context, workspaceID int, userID int, threadID int) (ThreadSession, error) {
+	var session ThreadSession
 	err := s.dbx.QueryRowContext(ctx, `
-		SELECT previous_response_id, conversation_id
+		SELECT previous_response_id, conversation_id, agent_release_id, model,
+			prompt_version, session_generation
 		FROM v2_agent_runs
 		WHERE workspace_id=$1 AND user_id=$2 AND thread_id=$3
-			AND status IN ($4, $5) AND previous_response_id <> ''
+			AND status IN ($4, $5)
 		ORDER BY created_at DESC, id DESC
 		LIMIT 1
 	`, workspaceID, userID, threadID, StatusCompleted, StatusWaitingApproval).
-		Scan(&previousResponseID, &conversationID)
+		Scan(
+			&session.PreviousResponseID, &session.ConversationID, &session.AgentReleaseID,
+			&session.Model, &session.PromptVersion, &session.SessionGeneration,
+		)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", nil
+		return ThreadSession{}, nil
 	}
-	return previousResponseID, conversationID, err
+	session.Found = err == nil
+	return session, err
 }
 
 func (s *Store) InsertEvent(ctx context.Context, runID int64, event RuntimeEvent) error {
@@ -347,11 +363,12 @@ func (s *Store) SetApprovalResult(ctx context.Context, runID int64, actionIndex 
 }
 
 const runSelect = `
-	SELECT
-		id, public_id, workspace_id, user_id, thread_id,
-		COALESCE(user_message_id, 0), COALESCE(assistant_message_id, 0),
-		scope_type, scope_id, scope_label, status, model, prompt_version,
-		input_text, output_text, partial_output, previous_response_id,
+		SELECT
+			id, public_id, workspace_id, user_id, thread_id,
+			COALESCE(user_message_id, 0), COALESCE(assistant_message_id, 0),
+			scope_type, scope_id, scope_label, status, model, prompt_version,
+			agent_release_id, session_generation, migrated_from_release_id, continuity_context,
+			input_text, output_text, partial_output, previous_response_id,
 		conversation_id, vector_store_id, state_ciphertext, error_text,
 		reservation_id, usage_requests, usage_input_tokens, usage_output_tokens,
 		usage_total_tokens, started_at, completed_at, created_at, updated_at
@@ -367,7 +384,9 @@ func scanRun(row rowScanner) (Run, error) {
 	err := row.Scan(
 		&item.ID, &item.PublicID, &item.WorkspaceID, &item.UserID, &item.ThreadID,
 		&item.UserMessageID, &item.AssistantMessageID, &item.Scope.Type, &item.Scope.ID,
-		&item.Scope.Label, &item.Status, &item.Model, &item.PromptVersion, &item.InputText,
+		&item.Scope.Label, &item.Status, &item.Model, &item.PromptVersion,
+		&item.AgentReleaseID, &item.SessionGeneration, &item.MigratedFrom,
+		&item.ContinuityContext, &item.InputText,
 		&item.OutputText, &item.PartialOutput, &item.PreviousResponseID, &item.ConversationID,
 		&item.VectorStoreID, &item.StateCiphertext, &item.ErrorText, &item.ReservationID,
 		&item.UsageRequests, &item.UsageInputTokens, &item.UsageOutputTokens,

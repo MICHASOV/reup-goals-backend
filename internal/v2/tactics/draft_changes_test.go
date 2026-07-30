@@ -113,3 +113,22 @@ func TestOrderedTacticsActionIndicesRejectsNonApplicableChange(t *testing.T) {
 		t.Fatal("expected non-applicable change to fail")
 	}
 }
+
+func TestParseDraftMetricNumberSupportsLegacyDisplayValues(t *testing.T) {
+	tests := map[string]float64{
+		"85000":               85000,
+		"85 000":              85000,
+		"75–85 000 EUR/month": 85000,
+		"12,5 %":              12.5,
+		"-1200":               -1200,
+	}
+	for input, want := range tests {
+		got, err := parseDraftMetricNumber(input)
+		if err != nil {
+			t.Fatalf("parseDraftMetricNumber(%q): %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("parseDraftMetricNumber(%q) = %v, want %v", input, got, want)
+		}
+	}
+}

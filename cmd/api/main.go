@@ -116,6 +116,7 @@ func main() {
 		agentapi.ServiceConfig{
 			Enabled: cfg.AgentRuntimeEnabled, Model: cfg.OpenAIAdvisorModel,
 			Secret: cfg.AgentRuntimeSecret, MaxTurns: cfg.AgentRuntimeMaxTurns,
+			ReleaseID: cfg.AgentReleaseID,
 		},
 		agentapi.NewRuntimeClient(cfg.AgentRuntimeURL, cfg.AgentRuntimeSecret),
 		jobManager, billingService, workspaceContextIndex, tacticsHandler,

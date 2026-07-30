@@ -147,6 +147,7 @@ type Project struct {
 	WorkstreamID     int                       `json:"workstream_id"`
 	Title            string                    `json:"title"`
 	Description      string                    `json:"description"`
+	ExpectedResult   string                    `json:"expected_result"`
 	WhyNeeded        string                    `json:"why_needed"`
 	SuccessCriteria  string                    `json:"success_criteria"`
 	FailureCriteria  string                    `json:"failure_criteria"`
