@@ -136,9 +136,9 @@ func limitRequestBodies(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limit := int64(defaultRequestLimit)
 		switch r.URL.Path {
-		case "/api/v2/strategic-director/files":
+		case "/api/v2/strategic-director/files", "/api/v2/strategy-facilitator/files":
 			limit = fileRequestLimit
-		case "/api/v2/audio/transcriptions", "/api/v2/strategy-facilitator/files", "/api/v2/tactics-facilitator/files":
+		case "/api/v2/audio/transcriptions", "/api/v2/tactics-facilitator/files":
 			limit = audioRequestLimit
 		}
 		if r.ContentLength > limit {

@@ -21,7 +21,7 @@ const (
 
 	SourceManual = "manual"
 
-	StrategyFacilitatorPromptVersion       = "strategy_facilitator_openai_native_v0_4_0"
+	StrategyFacilitatorPromptVersion       = "strategy_facilitator_openai_native_v0_4_1"
 	StrategySynthesizerPromptVersion       = "strategy_synthesizer_v0_2_0"
 	StrategyArtifactFormatterPromptVersion = "strategy_artifact_formatter_v0_1_0"
 

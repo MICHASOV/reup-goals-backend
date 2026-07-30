@@ -68,3 +68,33 @@ func TestTrustedOriginRequiredForCookieMutation(t *testing.T) {
 		t.Fatalf("expected trusted origin to pass, got %d", response.Code)
 	}
 }
+
+func TestStrategyFileUploadUsesBusinessDocumentLimit(t *testing.T) {
+	handler := limitRequestBodies(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/api/v2/strategy-facilitator/files", strings.NewReader("file"))
+	request.ContentLength = 30 << 20
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("strategy documents below 80 MB must reach the upload handler, got %d", response.Code)
+	}
+}
+
+func TestStrategyFileUploadRejectsOversizedBusinessDocument(t *testing.T) {
+	handler := limitRequestBodies(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/api/v2/strategy-facilitator/files", strings.NewReader("file"))
+	request.ContentLength = fileRequestLimit + 1
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized strategy document must be rejected, got %d", response.Code)
+	}
+}

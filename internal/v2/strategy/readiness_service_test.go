@@ -150,6 +150,11 @@ func TestStrategyPromptsSupportAdaptiveHorizonAndContainEveryReadinessCriterion(
 			t.Fatalf("strategy prompts must support adaptive planning horizon %q", required)
 		}
 	}
+	for _, required := range []string{"does not create or update tactical workstreams", "separate confirmation actions", "set session_status to candidate_ready immediately", "do not continue into projects"} {
+		if !strings.Contains(combinedPrompt, required) {
+			t.Fatalf("strategy prompt must preserve the strategy-to-tactics handoff %q", required)
+		}
+	}
 	for _, code := range strategyReadinessCriterionOrder {
 		if !strings.Contains(strategyReadinessPrompt, code) {
 			t.Fatalf("readiness prompt is missing criterion %q", code)

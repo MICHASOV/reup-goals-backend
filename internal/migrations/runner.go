@@ -3491,6 +3491,34 @@ var migrations = []Migration{
 				ON v2_course_reviews (workspace_id, course_id, created_at DESC);
 		`,
 	},
+	{
+		ID: "20260730_062_recover_completed_strategy_synthesis",
+		SQL: `
+			UPDATE v2_strategies strategy
+			SET status='ready_for_review', updated_at=NOW()
+			WHERE strategy.status='draft'
+				AND strategy.archived_at IS NULL
+				AND EXISTS (
+					SELECT 1
+					FROM v2_strategy_synthesis_runs run
+					JOIN v2_strategy_session_state session
+						ON session.workspace_id=run.workspace_id
+						AND session.revision=run.session_revision
+						AND session.last_user_message_id=run.through_message_id
+					JOIN v2_strategy_readiness_runs readiness
+						ON readiness.workspace_id=run.workspace_id
+						AND readiness.strategy_id=run.strategy_id
+						AND readiness.session_revision=run.session_revision
+						AND readiness.validated_through_message_id=run.through_message_id
+						AND readiness.status='completed'
+						AND readiness.verdict='ready'
+						AND readiness.can_synthesize=TRUE
+					WHERE run.workspace_id=strategy.workspace_id
+						AND run.strategy_id=strategy.id
+						AND run.status='completed'
+				);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

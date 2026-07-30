@@ -20,7 +20,7 @@ import (
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
-const maxStrategyFileBytes = 25 << 20
+const maxStrategyFileBytes = 80 << 20
 
 type Handler struct {
 	store       *Store

@@ -225,6 +225,40 @@ func (s *Store) CompleteSynthesisRun(
 		return sql.ErrNoRows
 	}
 
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE v2_strategies strategy
+		SET status=$1, updated_at=NOW()
+		WHERE strategy.id=(
+				SELECT run.strategy_id
+				FROM v2_strategy_synthesis_runs run
+				WHERE run.id=$2 AND run.workspace_id=$3 AND run.status=$4
+			)
+			AND strategy.workspace_id=$3
+			AND strategy.status=$5
+			AND strategy.archived_at IS NULL
+			AND EXISTS (
+				SELECT 1
+				FROM v2_strategy_synthesis_runs run
+				JOIN v2_strategy_session_state session
+					ON session.workspace_id=run.workspace_id
+					AND session.revision=run.session_revision
+					AND session.last_user_message_id=run.through_message_id
+				JOIN v2_strategy_readiness_runs readiness
+					ON readiness.workspace_id=run.workspace_id
+					AND readiness.strategy_id=run.strategy_id
+					AND readiness.session_revision=run.session_revision
+					AND readiness.validated_through_message_id=run.through_message_id
+					AND readiness.status=$6
+					AND readiness.verdict=$7
+					AND readiness.can_synthesize=TRUE
+				WHERE run.id=$2
+					AND run.workspace_id=$3
+					AND run.status=$4
+			)
+	`, StatusReadyForReview, runID, workspaceID, SynthesisStatusCompleted, StatusDraft, ReadinessRunCompleted, ReadinessVerdictReady); err != nil {
+		return err
+	}
+
 	return tx.Commit()
 }
 
