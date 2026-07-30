@@ -28,6 +28,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: agent-runtime/package-lock.json
+
       - name: Test
         run: |
           go test ./...
@@ -35,6 +42,17 @@ jobs:
           go vet ./...
           go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
           go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 -quiet -exclude-generated ./...
+
+      - name: Build agent runtime
+        working-directory: agent-runtime
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+          npm prune --omit=dev
+          cp "$(command -v node)" node
+          tar -czf ../agent-runtime.tar.gz dist node_modules package.json package-lock.json node
 
       - name: Build Linux binary
         run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o reup_goals_backend ./cmd/api
@@ -69,7 +87,7 @@ jobs:
             sleep 10
           done
 
-          mkdir -p /opt/reup-goals-staging/backend /etc/reup-goals-staging
+          mkdir -p /opt/reup-goals-staging/backend /opt/reup-goals-staging/agent /etc/reup-goals-staging
 
           if [ ! -f /etc/reup-goals-staging/backend.env ]; then
             cat >/etc/reup-goals-staging/backend.env <<'ENV'
@@ -313,7 +331,8 @@ jobs:
         run: |
           scp -i ~/.ssh/staging_key -o IdentitiesOnly=yes \
             reup_goals_backend \
-            "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}:/tmp/reup_goals_backend"
+            agent-runtime.tar.gz \
+            "${{ secrets.STAGING_USER }}@${{ secrets.STAGING_HOST }}:/tmp/"
 
       - name: Install and start backend
         run: |
@@ -326,6 +345,114 @@ jobs:
             cp -p /opt/reup-goals-staging/backend/reup_goals_backend "$previous_binary"
           fi
           install -o reupgoals -g reupgoals -m 755 /tmp/reup_goals_backend /opt/reup-goals-staging/backend/reup_goals_backend
+
+          runtime_secret=$(grep '^AGENT_RUNTIME_SECRET=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
+          if [ "${#runtime_secret}" -lt 32 ]; then
+            runtime_secret=$(openssl rand -hex 32)
+          fi
+          set_backend_env() {
+            key=$1
+            value=$2
+            if grep -q "^${key}=" /etc/reup-goals-staging/backend.env; then
+              sed -i "s|^${key}=.*|${key}=${value}|" /etc/reup-goals-staging/backend.env
+            else
+              printf '\n%s=%s\n' "$key" "$value" >> /etc/reup-goals-staging/backend.env
+            fi
+          }
+          set_backend_env AGENT_RUNTIME_SECRET "$runtime_secret"
+          set_backend_env AGENT_RUNTIME_URL "http://127.0.0.1:8091"
+          set_backend_env AGENT_RUNTIME_MAX_TURNS "12"
+
+          openai_api_key=$(grep '^OPENAI_API_KEY=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
+          openai_proxy_url=$(grep '^OPENAI_PROXY_URL=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
+          if [ "$openai_proxy_url" = "direct" ]; then
+            openai_proxy_url=
+          fi
+          if [ -z "$openai_api_key" ]; then
+            echo "OPENAI_API_KEY is required to start the agent runtime."
+            exit 1
+          fi
+
+          rm -rf /opt/reup-goals-staging/agent.next
+          mkdir -p /opt/reup-goals-staging/agent.next
+          tar -xzf /tmp/agent-runtime.tar.gz -C /opt/reup-goals-staging/agent.next
+          chmod 755 /opt/reup-goals-staging/agent.next/node
+          chown -R reupgoals:reupgoals /opt/reup-goals-staging/agent.next
+          rm -rf /opt/reup-goals-staging/agent.previous
+          if [ -d /opt/reup-goals-staging/agent ]; then
+            mv /opt/reup-goals-staging/agent /opt/reup-goals-staging/agent.previous
+          fi
+          mv /opt/reup-goals-staging/agent.next /opt/reup-goals-staging/agent
+
+          {
+            printf 'PORT=8091\n'
+            printf 'GO_INTERNAL_URL=http://127.0.0.1:8080\n'
+            printf 'AGENT_RUNTIME_SECRET=%s\n' "$runtime_secret"
+            printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
+            if [ -n "$openai_proxy_url" ]; then
+              printf 'OPENAI_PROXY_URL=%s\n' "$openai_proxy_url"
+            fi
+          } >/etc/reup-goals-staging/agent.env
+          chmod 600 /etc/reup-goals-staging/agent.env
+
+          cat >/etc/systemd/system/reup-goals-agent-staging.service <<'SERVICE'
+          [Unit]
+          Description=REUP Goals Agent Runtime Staging
+          After=network-online.target reup-goals-staging.service
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          WorkingDirectory=/opt/reup-goals-staging/agent
+          Environment=NODE_ENV=production
+          EnvironmentFile=/etc/reup-goals-staging/agent.env
+          ExecStart=/opt/reup-goals-staging/agent/node dist/server.js
+          Restart=always
+          RestartSec=3
+          StandardOutput=journal
+          StandardError=journal
+          User=reupgoals
+          Group=reupgoals
+          NoNewPrivileges=true
+          PrivateTmp=true
+          PrivateDevices=true
+          ProtectSystem=strict
+          ProtectHome=true
+          ProtectKernelTunables=true
+          ProtectKernelModules=true
+          ProtectControlGroups=true
+          RestrictSUIDSGID=true
+          UMask=0077
+          ProtectClock=true
+          ProtectHostname=true
+          RestrictNamespaces=true
+          LockPersonality=true
+          RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
+
+          systemctl daemon-reload
+          systemctl enable reup-goals-agent-staging.service
+          systemctl restart reup-goals-agent-staging.service
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8091/healthz >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              journalctl -u reup-goals-agent-staging.service -n 100 --no-pager
+              systemctl stop reup-goals-agent-staging.service || true
+              rm -rf /opt/reup-goals-staging/agent
+              if [ -d /opt/reup-goals-staging/agent.previous ]; then
+                mv /opt/reup-goals-staging/agent.previous /opt/reup-goals-staging/agent
+                systemctl restart reup-goals-agent-staging.service || true
+              fi
+              exit 1
+            fi
+            sleep 1
+          done
+          set_backend_env AGENT_RUNTIME_ENABLED "true"
 
           if ! grep -Eq '^DB_HOST=.+$' /etc/reup-goals-staging/backend.env; then
             echo "Staging backend env is not filled yet. Binary installed, service start skipped."
