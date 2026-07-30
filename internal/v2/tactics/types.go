@@ -29,6 +29,7 @@ const (
 
 	EntityPlan          = "tactical_plan"
 	EntityWorkspace     = "workspace"
+	EntityStrategy      = "strategy"
 	EntityWorkstream    = "workstream"
 	EntityProject       = "project"
 	EntityDepartment    = "department"
@@ -491,6 +492,13 @@ type TacticsDraftChange struct {
 	PotentialImpact          string         `json:"potential_impact,omitempty"`
 	Urgency                  string         `json:"urgency,omitempty"`
 	CoverageStatus           string         `json:"coverage_status,omitempty"`
+	CurrentState             string         `json:"current_state,omitempty"`
+	TargetState              string         `json:"target_state,omitempty"`
+	EconomicEngine           string         `json:"economic_engine,omitempty"`
+	KeyMetric                string         `json:"key_metric,omitempty"`
+	StrategicLogic           string         `json:"strategic_logic,omitempty"`
+	DeliberateNonPriorities  string         `json:"deliberate_non_priorities,omitempty"`
+	RisksAndAssumptions      string         `json:"risks_and_assumptions,omitempty"`
 }
 
 type AppliedTacticsChange struct {

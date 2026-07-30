@@ -3640,6 +3640,22 @@ var migrations = []Migration{
 				FOR EACH ROW EXECUTE FUNCTION reup_queue_task_evaluations_from_context();
 		`,
 	},
+	{
+		ID: "20260731_066_release_stalled_agent_approvals",
+		SQL: `
+			UPDATE v2_agent_runs run
+			SET status='failed',
+				error_text='agent_approval_no_longer_pending',
+				completed_at=NOW(),
+				updated_at=NOW()
+			WHERE run.status='waiting_approval'
+				AND NOT EXISTS (
+					SELECT 1
+					FROM v2_agent_run_approvals approval
+					WHERE approval.run_id=run.id AND approval.status='pending'
+				);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

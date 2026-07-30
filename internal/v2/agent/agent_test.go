@@ -128,6 +128,28 @@ func TestDepartmentDraftKeepsPeopleAndKPIs(t *testing.T) {
 	}
 }
 
+func TestStrategyReviewDraftKeepsCompleteStrategy(t *testing.T) {
+	change, ok := draftChange("propose_strategy_review", map[string]any{
+		"strategic_goal":            "Доказать устойчивую экономику продукта",
+		"current_state":             "Первые продажи и непроверенная повторяемость",
+		"target_state":              "Стабильная прибыльная модель привлечения",
+		"economic_engine":           "Повторные продажи финансируют привлечение",
+		"key_metric":                "Contribution margin",
+		"strategic_logic":           "Сначала подтверждаем экономику ядра, затем масштабируем.",
+		"deliberate_non_priorities": "Новые географии и побочные продукты",
+		"risks_and_assumptions":     "Спрос может оказаться недостаточно повторяемым",
+	})
+	if !ok || change.EntityType != "strategy_review" || change.Operation != "submit" {
+		t.Fatalf("unexpected strategy review draft: %#v", change)
+	}
+	if change.CurrentState == "" || change.TargetState == "" || change.EconomicEngine == "" {
+		t.Fatalf("strategy context was lost: %#v", change)
+	}
+	if change.KeyMetric != "Contribution margin" || change.DeliberateNonPriorities == "" {
+		t.Fatalf("strategy decision fields were lost: %#v", change)
+	}
+}
+
 func TestAgentInputAddsOnlyAttachmentReferences(t *testing.T) {
 	input := agentInput("Обсудим проект", []Attachment{{
 		Type: "project", ID: 42, Label: "Новый рынок",

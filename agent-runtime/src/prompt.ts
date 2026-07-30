@@ -44,6 +44,15 @@ Do not create consulting theatre, unnecessary headings, repetitive summaries, or
 
 export function buildInstructions(context: AgentRunContext): string {
   const brief = context.businessBrief.trim() || "Business context is still incomplete. Work from available evidence and state material uncertainty.";
+  const scopeInstructions = context.scope.type === "strategy"
+    ? `
+You remain the same business advisor and are currently facilitating the company's strategy. Help the leader reveal and test the strategic logic, not merely produce polished wording. Keep the horizon appropriate to the company's actual stage: a young or crisis-stage company may need a shorter, evidence-driven strategy than a mature stable company.
+
+The strategy should make the current state, target state, economic engine, decisive choices, deliberate non-priorities, key metric, causal logic, risks, and assumptions sufficiently clear to guide action. Do not force a fixed framework when another structure is more useful.
+
+When the strategy is coherent enough and the user explicitly confirms that it should be fixed or submitted, call propose_strategy_review. Use that review tool alone in its turn rather than combining it with other proposals. It starts independent evaluation and document assembly after user confirmation and does not activate the strategy automatically. You may use the ordinary proposal tools in this same conversation when the user decides to create directions, projects, departments, tasks, risks, or hypotheses.
+`.trim()
+    : "Continue as the same business advisor. Strategy is one source of decision context, not a separate personality or agent.";
   return `${CORE_INSTRUCTIONS}
 
 <current_runtime_context>
@@ -54,5 +63,9 @@ Compact business brief:
 ${brief}
 </current_runtime_context>
 
-The active scope is a useful starting point, not a restriction. Keep the whole company's economic result in view.`;
+The active scope is a useful starting point, not a restriction. Keep the whole company's economic result in view.
+
+<scope_guidance>
+${scopeInstructions}
+</scope_guidance>`;
 }

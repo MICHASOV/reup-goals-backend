@@ -27,7 +27,46 @@ func (s *Store) CreateAdvisorThread(ctx context.Context, workspaceID int, userID
 		RETURNING id, workspace_id, user_id, scope_type, scope_id, scope_label,
 			title, status, created_at, updated_at, archived_at
 	`, workspaceID, userID, scopeType, scopeID, scopeLabel, title)
-	return scanAdvisorThread(row)
+	item, err := scanAdvisorThread(row)
+	if err != nil {
+		return AdvisorThread{}, err
+	}
+	if item.ScopeType == EntityStrategy {
+		if err := s.seedStrategyAdvisorHistory(ctx, item); err != nil {
+			return AdvisorThread{}, err
+		}
+	}
+	return item, nil
+}
+
+func (s *Store) seedStrategyAdvisorHistory(ctx context.Context, thread AdvisorThread) error {
+	var previousThreads int
+	if err := s.dbx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM v2_tactics_advisor_threads
+		WHERE workspace_id=$1 AND user_id=$2 AND scope_type=$3 AND id<>$4
+	`, thread.WorkspaceID, thread.UserID, EntityStrategy, thread.ID).Scan(&previousThreads); err != nil {
+		return err
+	}
+	if previousThreads > 0 {
+		return nil
+	}
+	_, err := s.dbx.ExecContext(ctx, `
+		INSERT INTO v2_tactics_chat_messages (
+			workspace_id, user_id, role, content, metadata_json, scope_type, scope_id, created_at
+		)
+		SELECT
+			message.workspace_id, message.user_id, message.role, message.content,
+			jsonb_build_object(
+				'migrated_from', 'strategy_facilitator',
+				'strategy_message_id', message.id
+			),
+			$2, $3, message.created_at
+		FROM v2_strategy_chat_messages message
+		WHERE message.workspace_id=$1
+		ORDER BY message.created_at, message.id
+	`, thread.WorkspaceID, EntityAdvisorThread, thread.ID)
+	return err
 }
 
 func (s *Store) AdvisorThreads(ctx context.Context, workspaceID int, userID int) ([]AdvisorThread, error) {
@@ -568,6 +607,39 @@ func (s *Store) ScopeContext(ctx context.Context, workspaceID int, scope *Tactic
 	switch strings.TrimSpace(scope.EntityType) {
 	case EntityPlan:
 		return s.planByID(ctx, workspaceID, scope.EntityID)
+	case EntityStrategy:
+		var result map[string]any
+		var raw []byte
+		err := s.dbx.QueryRowContext(ctx, `
+			SELECT jsonb_build_object(
+				'id', id,
+				'title', title,
+				'summary', summary,
+				'status', status,
+				'version', version
+			)
+			FROM v2_strategies
+			WHERE workspace_id=$1 AND archived_at IS NULL
+				AND ($2=0 OR id=$2 OR status IN ('draft', 'ready_for_review'))
+			ORDER BY (status IN ('draft', 'ready_for_review')) DESC, version DESC, id DESC
+			LIMIT 1
+		`, workspaceID, scope.EntityID).Scan(&raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			return map[string]any{
+				"id":      0,
+				"title":   "Стратегия компании",
+				"summary": "",
+				"status":  "not_started",
+				"version": 0,
+			}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return nil, err
+		}
+		return result, nil
 	case EntityWorkstream:
 		item, err := s.workstreamByID(ctx, workspaceID, scope.EntityID)
 		if err != nil {
@@ -606,6 +678,8 @@ func tacticsScopeKey(scope *TacticsMessageScope) (string, int) {
 
 func normalizeAdvisorScope(scopeType string, scopeID int) (string, int) {
 	switch strings.TrimSpace(scopeType) {
+	case EntityStrategy:
+		return EntityStrategy, 0
 	case EntityWorkstream, EntityProject, EntityDepartment:
 		if scopeID > 0 {
 			return strings.TrimSpace(scopeType), scopeID

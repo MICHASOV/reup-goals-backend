@@ -208,6 +208,21 @@ const proposeDepartment = proposalTool(
   }),
 );
 
+const proposeStrategyReview = proposalTool(
+  "propose_strategy_review",
+  "Prepare the coherent strategy discussed with the user for independent quality review and document assembly. Use only in strategy scope when the strategic logic is sufficiently complete and the user explicitly agrees to fix or submit it. This does not activate the strategy by itself.",
+  z.object({
+    strategic_goal: z.string().min(10).max(2000),
+    current_state: z.string().min(10).max(2400),
+    target_state: z.string().min(10).max(2400),
+    economic_engine: z.string().min(10).max(3000),
+    key_metric: z.string().min(3).max(800),
+    strategic_logic: z.string().min(20).max(5000),
+    deliberate_non_priorities: z.string().min(3).max(2400),
+    risks_and_assumptions: z.string().min(3).max(3000),
+  }),
+);
+
 export function functionTools(): FunctionTool<AgentRunContext, any, any>[] {
   return [
     getBusinessBrief,
@@ -222,5 +237,6 @@ export function functionTools(): FunctionTool<AgentRunContext, any, any>[] {
     proposeRisk,
     proposeHypothesis,
     proposeDepartment,
+    proposeStrategyReview,
   ] as FunctionTool<AgentRunContext, any, any>[];
 }

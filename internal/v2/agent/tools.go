@@ -406,6 +406,18 @@ func draftChange(toolName string, input map[string]any) (tactics.TacticsDraftCha
 		change.OwnerUserID = intPointer(intValue(input, "manager_user_id"))
 		change.MemberUserIDs = intSlice(input["member_user_ids"])
 		change.Metrics = tacticMetrics(input["kpis"])
+	case "propose_strategy_review":
+		change.Operation = "submit"
+		change.EntityType = "strategy_review"
+		change.Title = stringValue(input, "strategic_goal")
+		change.Description = stringValue(input, "strategic_logic")
+		change.CurrentState = stringValue(input, "current_state")
+		change.TargetState = stringValue(input, "target_state")
+		change.EconomicEngine = stringValue(input, "economic_engine")
+		change.KeyMetric = stringValue(input, "key_metric")
+		change.StrategicLogic = stringValue(input, "strategic_logic")
+		change.DeliberateNonPriorities = stringValue(input, "deliberate_non_priorities")
+		change.RisksAndAssumptions = stringValue(input, "risks_and_assumptions")
 	default:
 		return tactics.TacticsDraftChange{}, false
 	}

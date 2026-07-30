@@ -119,7 +119,7 @@ func main() {
 			ReleaseID: cfg.AgentReleaseID,
 		},
 		agentapi.NewRuntimeClient(cfg.AgentRuntimeURL, cfg.AgentRuntimeSecret),
-		jobManager, billingService, workspaceContextIndex, tacticsHandler,
+		jobManager, billingService, workspaceContextIndex, tacticsHandler, strategyHandler,
 	)
 	agentHandler := agentapi.NewHandler(agentService)
 	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, taskEvaluatorAIClient, cfg.OpenAIAuditorCompactThreshold, strategicSourceRecorder).WithContextIndex(workspaceContextIndex)

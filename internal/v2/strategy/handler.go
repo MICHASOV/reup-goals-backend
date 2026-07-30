@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/strategicmemory"
+	"reup-goals-backend/internal/v2/tactics"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -51,6 +53,121 @@ func NewHandler(dbx *sql.DB, aiClient ai.Provider, compactThreshold int, manager
 		synthesis:   synthesis,
 		readiness:   readiness,
 	}
+}
+
+func (h *Handler) RecordAgentUserMessage(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	content string,
+	metadata map[string]any,
+) error {
+	messageID, err := h.store.CreateChatMessage(ctx, workspaceID, &userID, "user", content, metadata)
+	if err != nil {
+		return err
+	}
+	if _, err := h.store.BeginFacilitatorTurn(ctx, workspaceID, userID, messageID); err != nil {
+		return err
+	}
+	if err := h.facilitator.memoryService.CaptureStrategyFacts(ctx, workspaceID, userID, messageID, content); err != nil {
+		h.facilitator.memoryStore.LogAIRunWithUsage(
+			ctx, workspaceID, "strategy_facts_to_knowledge_base",
+			h.facilitator.ai.ModelName(), StrategyFacilitatorPromptVersion,
+			0, 0, 0, "failed", err.Error(),
+		)
+	}
+	return nil
+}
+
+func (h *Handler) RecordAgentAssistantMessage(
+	ctx context.Context,
+	workspaceID int,
+	content string,
+	metadata map[string]any,
+) error {
+	_, err := h.store.CreateChatMessage(ctx, workspaceID, nil, "assistant", content, metadata)
+	return err
+}
+
+func (h *Handler) SubmitAgentStrategyForReview(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	input map[string]any,
+) (tactics.AppliedTacticsChange, error) {
+	state, err := h.facilitator.State(ctx, workspaceID, userID)
+	if err != nil {
+		return tactics.AppliedTacticsChange{}, err
+	}
+	session, err := h.store.SessionState(ctx, workspaceID)
+	if err != nil {
+		return tactics.AppliedTacticsChange{}, err
+	}
+	if session.LastUserMessageID <= 0 {
+		return tactics.AppliedTacticsChange{}, fmt.Errorf("strategy_review_no_session")
+	}
+	summary := formatAgentStrategyCandidate(input)
+	if _, err := h.store.CreateChatMessage(ctx, workspaceID, nil, "assistant", summary, map[string]any{
+		"agent_runtime":      true,
+		"strategy_candidate": input,
+		"session_status":     FacilitatorStatusCandidateReady,
+	}); err != nil {
+		return tactics.AppliedTacticsChange{}, err
+	}
+	assessment := strategyFacilitatorModelOutput{
+		Message:       summary,
+		SessionStatus: FacilitatorStatusCandidateReady,
+		StatusReason:  "The user explicitly confirmed the strategy package prepared by the unified advisor.",
+	}
+	session, err = h.store.RecordFacilitatorAssessment(ctx, workspaceID, session.LastUserMessageID, assessment)
+	if err != nil {
+		return tactics.AppliedTacticsChange{}, err
+	}
+	if h.readiness != nil {
+		if _, err := h.readiness.QueueCandidate(ctx, session, state.Strategy.ID); err != nil {
+			return tactics.AppliedTacticsChange{}, err
+		}
+	}
+	title := agentStrategyValue(input, "strategic_goal")
+	if title == "" {
+		title = "Стратегия компании"
+	}
+	return tactics.AppliedTacticsChange{
+		Operation:  "submit",
+		EntityType: "strategy_review",
+		EntityID:   state.Strategy.ID,
+		Title:      title,
+		Status:     "queued",
+		Fields:     input,
+	}, nil
+}
+
+func formatAgentStrategyCandidate(input map[string]any) string {
+	fields := []struct {
+		label string
+		key   string
+	}{
+		{"Стратегическая цель", "strategic_goal"},
+		{"Текущее состояние", "current_state"},
+		{"Целевое состояние", "target_state"},
+		{"Экономический двигатель", "economic_engine"},
+		{"Ключевая метрика", "key_metric"},
+		{"Стратегическая логика", "strategic_logic"},
+		{"Сознательные отказы", "deliberate_non_priorities"},
+		{"Основные риски и допущения", "risks_and_assumptions"},
+	}
+	lines := []string{"Подтверждённый пакет стратегии для независимой проверки:"}
+	for _, field := range fields {
+		if value := agentStrategyValue(input, field.key); value != "" {
+			lines = append(lines, fmt.Sprintf("%s: %s", field.label, value))
+		}
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func agentStrategyValue(input map[string]any, key string) string {
+	value, _ := input[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func (h *Handler) Current(w http.ResponseWriter, r *http.Request) {

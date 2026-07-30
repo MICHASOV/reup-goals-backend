@@ -27,11 +27,18 @@ type Service struct {
 	store        *Store
 	tactics      *tactics.Store
 	tacticsApply *tactics.Handler
+	strategy     StrategyBridge
 	workspaces   *workspaces.Store
 	contextIndex *contextindex.Service
 	runtime      *RuntimeClient
 	jobs         *jobs.Manager
 	billing      *billing.Service
+}
+
+type StrategyBridge interface {
+	RecordAgentUserMessage(ctx context.Context, workspaceID int, userID int, content string, metadata map[string]any) error
+	RecordAgentAssistantMessage(ctx context.Context, workspaceID int, content string, metadata map[string]any) error
+	SubmitAgentStrategyForReview(ctx context.Context, workspaceID int, userID int, input map[string]any) (tactics.AppliedTacticsChange, error)
 }
 
 type ServiceConfig struct {
@@ -54,12 +61,14 @@ func NewService(
 	quota *billing.Service,
 	contextIndex *contextindex.Service,
 	tacticsHandler *tactics.Handler,
+	strategyBridge StrategyBridge,
 ) *Service {
 	service := &Service{
 		enabled: cfg.Enabled, model: cfg.Model, releaseID: strings.TrimSpace(cfg.ReleaseID),
 		secret: cfg.Secret, maxTurns: cfg.MaxTurns,
 		dbx: dbx, store: NewStore(dbx), tactics: tactics.NewStore(dbx),
 		tacticsApply: tacticsHandler, workspaces: workspaces.NewStore(dbx),
+		strategy:     strategyBridge,
 		contextIndex: contextIndex, runtime: runtime, jobs: jobManager, billing: quota,
 	}
 	if service.maxTurns <= 0 {
@@ -95,9 +104,7 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	if err != nil {
 		return Run{}, err
 	}
-	if _, err := s.store.ActiveForThread(ctx, workspace.ID, userID, thread.ID); err == nil {
-		return Run{}, errors.New("agent_run_already_active")
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	if err := s.releaseStaleActiveRun(ctx, workspace.ID, userID, thread.ID); err != nil {
 		return Run{}, err
 	}
 	scope := request.Scope
@@ -148,6 +155,15 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	if err != nil {
 		return Run{}, err
 	}
+	if scope.Type == "strategy" && s.strategy != nil {
+		if err := s.strategy.RecordAgentUserMessage(ctx, workspace.ID, userID, request.Message, map[string]any{
+			"agent_runtime":      true,
+			"tactics_message_id": userMessageID,
+			"thread_id":          thread.ID,
+		}); err != nil {
+			return Run{}, err
+		}
+	}
 	run, err := s.store.Create(
 		ctx, workspace.ID, userID, thread.ID, userMessageID, scope, s.model,
 		s.releaseID, sessionGeneration, migratedFrom, continuityContext,
@@ -172,6 +188,29 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	}
 	_ = membership
 	return s.Hydrate(ctx, run, 0)
+}
+
+func (s *Service) releaseStaleActiveRun(ctx context.Context, workspaceID int, userID int, threadID int) error {
+	active, err := s.store.ActiveForThread(ctx, workspaceID, userID, threadID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if active.Status != StatusWaitingApproval {
+		return errors.New("agent_run_already_active")
+	}
+	approvals, err := s.store.Approvals(ctx, active.ID)
+	if err != nil {
+		return err
+	}
+	for _, approval := range approvals {
+		if approval.Status == "pending" {
+			return errors.New("agent_run_already_active")
+		}
+	}
+	return s.store.SetFailed(ctx, active.ID, "agent_approval_no_longer_pending", true)
 }
 
 func agentInput(message string, attachments []Attachment) string {
@@ -287,10 +326,36 @@ func (s *Service) Decide(ctx context.Context, userID int, publicID string, reque
 		return Run{}, err
 	}
 	approvedIndices := make([]int, 0)
+	strategyApplied := make(map[int]bool)
 	for _, item := range approvals {
-		if item.Status == "approved" {
-			approvedIndices = append(approvedIndices, item.ActionIndex)
+		if item.Status != "approved" {
+			continue
 		}
+		if item.ToolName == "propose_strategy_review" {
+			if s.strategy == nil {
+				err = errors.New("strategy_agent_bridge_unavailable")
+			} else {
+				var input map[string]any
+				if err = json.Unmarshal(item.Arguments, &input); err == nil {
+					var applied tactics.AppliedTacticsChange
+					applied, err = s.strategy.SubmitAgentStrategyForReview(ctx, workspace.ID, userID, input)
+					if err == nil {
+						err = s.store.SetApprovalResult(
+							ctx, run.ID, item.ActionIndex,
+							map[string]any{"ok": true, "entity": applied}, nil,
+						)
+						strategyApplied[item.ActionIndex] = err == nil
+					}
+				}
+			}
+			if err != nil {
+				_ = s.store.SetApprovalResult(ctx, run.ID, item.ActionIndex, map[string]any{}, err)
+				_ = s.store.SetFailed(ctx, run.ID, err.Error(), true)
+				return Run{}, err
+			}
+			continue
+		}
+		approvedIndices = append(approvedIndices, item.ActionIndex)
 	}
 	var applyResponse tactics.ApplyTacticsChangesResponse
 	if len(approvedIndices) > 0 {
@@ -301,6 +366,7 @@ func (s *Service) Decide(ctx context.Context, userID int, publicID string, reque
 			for _, index := range approvedIndices {
 				_ = s.store.SetApprovalResult(ctx, run.ID, index, map[string]any{}, err)
 			}
+			_ = s.store.SetFailed(ctx, run.ID, err.Error(), true)
 			return Run{}, err
 		}
 	}
@@ -311,7 +377,7 @@ func (s *Service) Decide(ctx context.Context, userID int, publicID string, reque
 		}
 	}
 	for _, item := range approvals {
-		if item.Status != "approved" {
+		if item.Status != "approved" || strategyApplied[item.ActionIndex] {
 			continue
 		}
 		result := map[string]any{"ok": true}
@@ -543,6 +609,15 @@ func (s *Service) finishRuntimeResult(
 	if err != nil {
 		return err
 	}
+	if run.Scope.Type == "strategy" && s.strategy != nil {
+		if err := s.strategy.RecordAgentAssistantMessage(ctx, run.WorkspaceID, output, map[string]any{
+			"agent_runtime":      true,
+			"agent_run_id":       run.PublicID,
+			"tactics_message_id": assistantMessageID,
+		}); err != nil {
+			return err
+		}
+	}
 	return s.store.SetCompleted(
 		ctx, run.ID, output, result.PartialOutput, result.PreviousResponseID,
 		assistantMessageID, result.Usage,
@@ -557,12 +632,23 @@ func (s *Service) saveApprovalTurn(ctx context.Context, run Run, result RuntimeR
 	if len(changes) != len(result.Interruptions) {
 		return errors.New("agent_proposal_not_applicable")
 	}
-	state, err := s.tactics.Current(ctx, run.WorkspaceID, run.UserID)
-	if err != nil || state.TacticalPlan == nil {
-		if err == nil {
-			err = errors.New("tactics_plan_required")
+	hasTacticsChanges := false
+	for _, change := range changes {
+		if change.EntityType != "strategy_review" {
+			hasTacticsChanges = true
+			break
 		}
-		return err
+	}
+	var state tactics.CurrentResponse
+	var err error
+	if hasTacticsChanges {
+		state, err = s.tactics.Current(ctx, run.WorkspaceID, run.UserID)
+		if err != nil || state.TacticalPlan == nil {
+			if err == nil {
+				err = errors.New("tactics_plan_required")
+			}
+			return err
+		}
 	}
 	thread, err := s.tactics.AdvisorThread(ctx, run.WorkspaceID, run.UserID, run.ThreadID)
 	if err != nil {
@@ -582,10 +668,22 @@ func (s *Service) saveApprovalTurn(ctx context.Context, run Run, result RuntimeR
 	if err != nil {
 		return err
 	}
-	if err := s.tactics.RegisterTacticsActions(
-		ctx, run.WorkspaceID, state.TacticalPlan.ID, assistantMessageID, changes,
-	); err != nil {
-		return err
+	if run.Scope.Type == "strategy" && s.strategy != nil {
+		if err := s.strategy.RecordAgentAssistantMessage(ctx, run.WorkspaceID, message, map[string]any{
+			"agent_runtime":      true,
+			"agent_run_id":       run.PublicID,
+			"tactics_message_id": assistantMessageID,
+			"draft_changes":      changes,
+		}); err != nil {
+			return err
+		}
+	}
+	if hasTacticsChanges {
+		if err := s.tactics.RegisterTacticsActions(
+			ctx, run.WorkspaceID, state.TacticalPlan.ID, assistantMessageID, changes,
+		); err != nil {
+			return err
+		}
 	}
 	if err := s.store.InsertApprovals(ctx, run.ID, result.Interruptions); err != nil {
 		return err
@@ -657,7 +755,9 @@ func validScope(scope Scope) bool {
 	switch strings.TrimSpace(scope.Type) {
 	case "workspace":
 		return scope.ID == 0
-	case "strategy", "workstream", "project", "department", "document", "task":
+	case "strategy":
+		return scope.ID == 0
+	case "workstream", "project", "department", "document", "task":
 		return scope.ID > 0
 	default:
 		return false
