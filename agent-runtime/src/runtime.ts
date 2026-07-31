@@ -53,11 +53,18 @@ ${message}
 
 type AdvisorAgent = Agent<AgentRunContext, any>;
 type AdvisorStream = StreamedRunResult<AgentRunContext, any>;
+type AdvisorReasoningEffort = "low" | "medium" | "high";
 
 export function compactionThreshold(raw = process.env.AGENT_COMPACT_THRESHOLD): number {
   const parsed = Number.parseInt(raw || "", 10);
   if (!Number.isFinite(parsed)) return 100_000;
   return Math.min(200_000, Math.max(20_000, parsed));
+}
+
+export function reasoningEffort(raw = process.env.AGENT_REASONING_EFFORT): AdvisorReasoningEffort {
+  const value = (raw || "").trim().toLowerCase();
+  if (value === "low" || value === "medium" || value === "high") return value;
+  return "high";
 }
 
 function createAgent(model: string, vectorStoreId?: string): AdvisorAgent {
@@ -73,7 +80,7 @@ function createAgent(model: string, vectorStoreId?: string): AdvisorAgent {
     instructions: (context) => buildInstructions(context.context),
     model,
     modelSettings: {
-      reasoning: { effort: "medium", summary: "auto" },
+      reasoning: { effort: reasoningEffort(), summary: "auto" },
       text: { verbosity: "medium" },
       parallelToolCalls: true,
       providerData: {

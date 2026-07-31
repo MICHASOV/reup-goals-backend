@@ -105,7 +105,7 @@ jobs:
           OPENAI_API_KEY=
           OPENAI_MODEL=gpt-4.1
           OPENAI_AUDITOR_MODEL=gpt-5.4
-          OPENAI_ADVISOR_MODEL=gpt-5.4-mini
+          OPENAI_ADVISOR_MODEL=gpt-5.4
           OPENAI_AUDITOR_MAX_OUTPUT_TOKENS=1800
           OPENAI_AUDITOR_COMPACT_THRESHOLD=24000
           OPENAI_ADVISOR_COMPACT_THRESHOLD=24000
@@ -186,9 +186,9 @@ jobs:
             printf '\nOPENAI_AUDITOR_COMPACT_THRESHOLD=24000\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^OPENAI_ADVISOR_MODEL=' /etc/reup-goals-staging/backend.env; then
-            sed -i 's/^OPENAI_ADVISOR_MODEL=.*/OPENAI_ADVISOR_MODEL=gpt-5.4-mini/' /etc/reup-goals-staging/backend.env
+            sed -i 's/^OPENAI_ADVISOR_MODEL=.*/OPENAI_ADVISOR_MODEL=gpt-5.4/' /etc/reup-goals-staging/backend.env
           else
-            printf '\nOPENAI_ADVISOR_MODEL=gpt-5.4-mini\n' >> /etc/reup-goals-staging/backend.env
+            printf '\nOPENAI_ADVISOR_MODEL=gpt-5.4\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^OPENAI_ADVISOR_COMPACT_THRESHOLD=' /etc/reup-goals-staging/backend.env; then
             sed -i 's/^OPENAI_ADVISOR_COMPACT_THRESHOLD=.*/OPENAI_ADVISOR_COMPACT_THRESHOLD=24000/' /etc/reup-goals-staging/backend.env
@@ -415,6 +415,7 @@ jobs:
             printf 'AGENT_RUNTIME_SECRET=%s\n' "$runtime_secret"
             printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
             printf 'AGENT_COMPACT_THRESHOLD=100000\n'
+            printf 'AGENT_REASONING_EFFORT=high\n'
             if [ -n "$openai_proxy_url" ]; then
               printf 'OPENAI_PROXY_URL=%s\n' "$openai_proxy_url"
             fi

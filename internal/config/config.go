@@ -114,7 +114,7 @@ func Load() *Config {
 	}
 	advisorModel := os.Getenv("OPENAI_ADVISOR_MODEL")
 	if advisorModel == "" {
-		advisorModel = "gpt-5.4-mini"
+		advisorModel = "gpt-5.4"
 	}
 	taskModel := os.Getenv("OPENAI_TASK_MODEL")
 	if taskModel == "" {

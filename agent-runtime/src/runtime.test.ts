@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compactionThreshold, currentInput } from "./runtime.js";
+import { compactionThreshold, currentInput, reasoningEffort } from "./runtime.js";
 
 test("currentInput leaves a new conversation untouched", () => {
   assert.equal(currentInput("Что делать дальше?"), "Что делать дальше?");
@@ -25,4 +25,11 @@ test("compactionThreshold defaults to 100k and rejects unsafe extremes", () => {
   assert.equal(compactionThreshold("100"), 20_000);
   assert.equal(compactionThreshold("900000"), 200_000);
   assert.equal(compactionThreshold("invalid"), 100_000);
+});
+
+test("reasoningEffort defaults to high and accepts supported overrides", () => {
+  assert.equal(reasoningEffort(), "high");
+  assert.equal(reasoningEffort("medium"), "medium");
+  assert.equal(reasoningEffort("low"), "low");
+  assert.equal(reasoningEffort("unsupported"), "high");
 });
