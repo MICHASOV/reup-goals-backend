@@ -3724,9 +3724,46 @@ var migrations = []Migration{
 				WHERE dedupe_key <> '' AND status='queued';
 
 			DROP INDEX IF EXISTS idx_v2_background_jobs_priority_due;
-			CREATE INDEX IF NOT EXISTS idx_v2_background_jobs_priority_due
-				ON v2_background_jobs (queue_name, status, priority DESC, not_before, id);
-		`,
+				CREATE INDEX IF NOT EXISTS idx_v2_background_jobs_priority_due
+					ON v2_background_jobs (queue_name, status, priority DESC, not_before, id);
+			`,
+	},
+	{
+		ID: "20260731_071_repair_agent_proposal_messages",
+		SQL: `
+				UPDATE v2_agent_runs run
+				SET assistant_message_id=(
+						SELECT message.id
+						FROM v2_tactics_chat_messages message
+						WHERE message.workspace_id=run.workspace_id
+							AND message.scope_type='advisor_thread'
+							AND message.scope_id=run.thread_id
+							AND message.role='assistant'
+							AND message.metadata_json->>'agent_run_id'=run.public_id
+							AND jsonb_typeof(message.metadata_json->'draft_changes')='array'
+							AND jsonb_array_length(
+								COALESCE(message.metadata_json->'draft_changes', '[]'::jsonb)
+							)>0
+						ORDER BY message.created_at DESC, message.id DESC
+						LIMIT 1
+					),
+					updated_at=NOW()
+				WHERE run.status='waiting_approval'
+					AND run.assistant_message_id IS NULL
+					AND EXISTS (
+						SELECT 1
+						FROM v2_tactics_chat_messages message
+						WHERE message.workspace_id=run.workspace_id
+							AND message.scope_type='advisor_thread'
+							AND message.scope_id=run.thread_id
+							AND message.role='assistant'
+							AND message.metadata_json->>'agent_run_id'=run.public_id
+							AND jsonb_typeof(message.metadata_json->'draft_changes')='array'
+							AND jsonb_array_length(
+								COALESCE(message.metadata_json->'draft_changes', '[]'::jsonb)
+							)>0
+					);
+			`,
 	},
 }
 

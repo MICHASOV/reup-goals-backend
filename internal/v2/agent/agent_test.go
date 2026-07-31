@@ -185,7 +185,7 @@ func TestDraftPackageKeepsParentReferencesAndMetricDirection(t *testing.T) {
 func TestDraftChangePreservesDirectionRiskAndHypothesisFields(t *testing.T) {
 	direction, ok := draftChange("propose_direction", map[string]any{
 		"draft_key": "direction-retention", "title": "Удержание клиентов",
-		"description": "Системно повышать повторные покупки и маржинальность клиентской базы.",
+		"description":     "Системно повышать повторные покупки и маржинальность клиентской базы.",
 		"expected_result": "Предсказуемая повторная выручка", "ckp": "Повторные покупки растут",
 		"rationale": "Это главный ограничитель прибыли", "lead_department_id": 7,
 		"participant_department_ids": []any{8.0, json.Number("9")},
@@ -216,7 +216,7 @@ func TestDraftChangePreservesDirectionRiskAndHypothesisFields(t *testing.T) {
 
 	hypothesis, ok := draftChange("propose_hypothesis", map[string]any{
 		"entity_type": "project", "entity_id": 31, "title": "Повторное предложение",
-		"statement": "Повторным клиентам нужен отдельный оффер.",
+		"statement":       "Повторным клиентам нужен отдельный оффер.",
 		"expected_effect": "Рост повторной выручки", "test_method": "A/B тест на двух когортах",
 		"success_signal": "Repeat revenue share выше на 5 п.п.", "owner_user_id": 19,
 	})
@@ -294,5 +294,29 @@ func TestBuildContinuityContextUsesRecentConversationAndBoundsSize(t *testing.T)
 	}
 	if len([]rune(context)) > continuityMaxRunes {
 		t.Fatalf("continuity context is too large: %d", len([]rune(context)))
+	}
+}
+
+func TestProposalMessageIDForRunFindsLatestMatchingProposal(t *testing.T) {
+	messages := []tactics.TacticsChatMessage{
+		{
+			ID: 12, Role: "assistant", AgentRunID: "run_target",
+			ProposedChanges: []tactics.TacticsDraftChange{{Title: "Старый пакет"}},
+		},
+		{ID: 13, Role: "user", AgentRunID: "run_target"},
+		{
+			ID: 14, Role: "assistant", AgentRunID: "run_other",
+			ProposedChanges: []tactics.TacticsDraftChange{{Title: "Другой пакет"}},
+		},
+		{
+			ID: 15, Role: "assistant", AgentRunID: "run_target",
+			ProposedChanges: []tactics.TacticsDraftChange{{Title: "Актуальный пакет"}},
+		},
+	}
+	if got := proposalMessageIDForRun("run_target", messages); got != 15 {
+		t.Fatalf("proposalMessageIDForRun() = %d, want 15", got)
+	}
+	if got := proposalMessageIDForRun("run_missing", messages); got != 0 {
+		t.Fatalf("proposalMessageIDForRun() = %d, want 0", got)
 	}
 }

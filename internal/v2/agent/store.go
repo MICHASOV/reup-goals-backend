@@ -210,6 +210,18 @@ func (s *Store) SetVectorStore(ctx context.Context, runID int64, vectorStoreID s
 	return err
 }
 
+func (s *Store) SetAssistantMessageID(ctx context.Context, runID int64, messageID int) error {
+	if messageID <= 0 {
+		return errors.New("invalid_agent_assistant_message")
+	}
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_agent_runs
+		SET assistant_message_id=$2, updated_at=NOW()
+		WHERE id=$1
+	`, runID, messageID)
+	return err
+}
+
 func (s *Store) LatestThreadSession(ctx context.Context, workspaceID int, userID int, threadID int) (ThreadSession, error) {
 	var session ThreadSession
 	err := s.dbx.QueryRowContext(ctx, `

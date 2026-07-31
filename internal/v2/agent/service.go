@@ -215,6 +215,13 @@ func (s *Service) releaseStaleActiveRun(ctx context.Context, workspaceID int, us
 	if err != nil {
 		return err
 	}
+	active, err = s.reconcileOrphanedRun(ctx, active)
+	if err != nil {
+		return err
+	}
+	if active.Status == StatusFailed || active.Status == StatusCompleted || active.Status == StatusCanceled {
+		return nil
+	}
 	if active.Status != StatusWaitingApproval {
 		return errors.New("agent_run_already_active")
 	}
@@ -291,6 +298,9 @@ func (s *Service) ActiveRunForThread(ctx context.Context, userID int, threadID i
 }
 
 func (s *Service) reconcileOrphanedRun(ctx context.Context, run Run) (Run, error) {
+	if run.Status == StatusWaitingApproval {
+		return s.reconcileWaitingApprovalRun(ctx, run)
+	}
 	if run.Status != StatusQueued && run.Status != StatusRunning {
 		return run, nil
 	}
@@ -307,6 +317,57 @@ func (s *Service) reconcileOrphanedRun(ctx context.Context, run Run) (Run, error
 	_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
 		Type: "run_failed", Stage: "recovery", Title: "Предыдущий запуск остановлен",
 		Detail: "Сообщение сохранено: отправьте его повторно.",
+	})
+	return s.store.ByPublicIDForUser(ctx, run.PublicID, run.WorkspaceID, run.UserID)
+}
+
+func (s *Service) reconcileWaitingApprovalRun(ctx context.Context, run Run) (Run, error) {
+	approvals, err := s.store.Approvals(ctx, run.ID)
+	if err != nil {
+		return Run{}, err
+	}
+	pendingCount := 0
+	for _, approval := range approvals {
+		if approval.Status == "pending" {
+			pendingCount++
+		}
+	}
+	if pendingCount == 0 || len(draftChangesFromApprovals(approvals)) != pendingCount {
+		return s.failUnrecoverableApproval(ctx, run, "agent_approval_no_longer_pending")
+	}
+	if run.AssistantMessageID > 0 {
+		return run, nil
+	}
+	thread, err := s.tactics.AdvisorThread(ctx, run.WorkspaceID, run.UserID, run.ThreadID)
+	if err != nil {
+		return Run{}, err
+	}
+	messages, err := s.tactics.ScopedChatMessages(
+		ctx, run.WorkspaceID, thread.ConversationScope(), 500,
+	)
+	if err != nil {
+		return Run{}, err
+	}
+	messageID := proposalMessageIDForRun(run.PublicID, messages)
+	if messageID <= 0 {
+		return s.failUnrecoverableApproval(ctx, run, "agent_proposal_message_missing")
+	}
+	if err := s.store.SetAssistantMessageID(ctx, run.ID, messageID); err != nil {
+		return Run{}, err
+	}
+	run.AssistantMessageID = messageID
+	return run, nil
+}
+
+func (s *Service) failUnrecoverableApproval(ctx context.Context, run Run, reason string) (Run, error) {
+	if err := s.store.SetFailed(ctx, run.ID, reason, true); err != nil {
+		return Run{}, err
+	}
+	_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
+		Type:   "run_failed",
+		Stage:  "recovery",
+		Title:  "Предыдущее действие безопасно закрыто",
+		Detail: "Сообщение сохранено: запрос можно отправить повторно.",
 	})
 	return s.store.ByPublicIDForUser(ctx, run.PublicID, run.WorkspaceID, run.UserID)
 }
@@ -1185,6 +1246,21 @@ func buildContinuityContext(messages []tactics.TacticsChatMessage) string {
 		lines[left], lines[right] = lines[right], lines[left]
 	}
 	return strings.Join(lines, "\n\n")
+}
+
+func proposalMessageIDForRun(publicID string, messages []tactics.TacticsChatMessage) int {
+	publicID = strings.TrimSpace(publicID)
+	if publicID == "" {
+		return 0
+	}
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message.Role == "assistant" && message.AgentRunID == publicID &&
+			len(message.ProposedChanges) > 0 {
+			return message.ID
+		}
+	}
+	return 0
 }
 
 func truncateRunes(value string, limit int) string {
