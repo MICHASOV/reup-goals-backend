@@ -56,7 +56,7 @@ type AdvisorStream = StreamedRunResult<AgentRunContext, any>;
 
 export function compactionThreshold(raw = process.env.AGENT_COMPACT_THRESHOLD): number {
   const parsed = Number.parseInt(raw || "", 10);
-  if (!Number.isFinite(parsed)) return 60_000;
+  if (!Number.isFinite(parsed)) return 100_000;
   return Math.min(200_000, Math.max(20_000, parsed));
 }
 

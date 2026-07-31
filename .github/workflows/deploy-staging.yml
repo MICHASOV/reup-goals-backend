@@ -414,7 +414,7 @@ jobs:
             printf 'GO_INTERNAL_URL=http://127.0.0.1:8080\n'
             printf 'AGENT_RUNTIME_SECRET=%s\n' "$runtime_secret"
             printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
-            printf 'AGENT_COMPACT_THRESHOLD=60000\n'
+            printf 'AGENT_COMPACT_THRESHOLD=100000\n'
             if [ -n "$openai_proxy_url" ]; then
               printf 'OPENAI_PROXY_URL=%s\n' "$openai_proxy_url"
             fi

@@ -13,28 +13,55 @@ import (
 )
 
 func (s *Store) CreateAdvisorThread(ctx context.Context, workspaceID int, userID int, input CreateAdvisorThreadRequest) (AdvisorThread, error) {
-	scopeType, scopeID := normalizeAdvisorScope(input.ScopeType, input.ScopeID)
-	scopeLabel := truncateRunes(strings.TrimSpace(input.ScopeLabel), 160)
-	title := truncateRunes(strings.TrimSpace(input.Title), 120)
-	if title == "" {
-		title = "Новый разговор"
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return AdvisorThread{}, err
 	}
-	row := s.dbx.QueryRowContext(ctx, `
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, workspaceID, userID); err != nil {
+		return AdvisorThread{}, err
+	}
+
+	existing, err := scanAdvisorThread(tx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, user_id, scope_type, scope_id, scope_label,
+			title, status, created_at, updated_at, archived_at
+		FROM v2_tactics_advisor_threads
+		WHERE workspace_id=$1 AND user_id=$2 AND status='active' AND archived_at IS NULL
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 1
+		FOR UPDATE
+	`, workspaceID, userID))
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return AdvisorThread{}, err
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return AdvisorThread{}, err
+	}
+
+	scopeLabel := truncateRunes(strings.TrimSpace(input.ScopeLabel), 160)
+	if scopeLabel == "" {
+		scopeLabel = "Компания"
+	}
+	row := tx.QueryRowContext(ctx, `
 		INSERT INTO v2_tactics_advisor_threads (
 			workspace_id, user_id, scope_type, scope_id, scope_label, title
 		)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, workspace_id, user_id, scope_type, scope_id, scope_label,
 			title, status, created_at, updated_at, archived_at
-	`, workspaceID, userID, scopeType, scopeID, scopeLabel, title)
+	`, workspaceID, userID, EntityWorkspace, 0, scopeLabel, "Советник")
 	item, err := scanAdvisorThread(row)
 	if err != nil {
 		return AdvisorThread{}, err
 	}
-	if item.ScopeType == EntityStrategy {
-		if err := s.seedStrategyAdvisorHistory(ctx, item); err != nil {
-			return AdvisorThread{}, err
-		}
+	if err := tx.Commit(); err != nil {
+		return AdvisorThread{}, err
+	}
+	if err := s.seedStrategyAdvisorHistory(ctx, item); err != nil {
+		return AdvisorThread{}, err
 	}
 	return item, nil
 }
@@ -76,6 +103,7 @@ func (s *Store) AdvisorThreads(ctx context.Context, workspaceID int, userID int)
 		FROM v2_tactics_advisor_threads
 		WHERE workspace_id=$1 AND user_id=$2 AND status='active' AND archived_at IS NULL
 		ORDER BY updated_at DESC, id DESC
+		LIMIT 1
 	`, workspaceID, userID)
 	if err != nil {
 		return nil, err

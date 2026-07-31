@@ -11,6 +11,7 @@ import (
 	"reup-goals-backend/internal/auth"
 	"reup-goals-backend/internal/v2/api"
 	"reup-goals-backend/internal/v2/strategicmemory"
+	tasksv2 "reup-goals-backend/internal/v2/tasks"
 	"reup-goals-backend/internal/v2/workspaces"
 )
 
@@ -31,6 +32,7 @@ type response struct {
 	StrategySessionActive  bool                `json:"strategy_session_active"`
 	StrategySessionOwnerID *int                `json:"strategy_session_owner_id,omitempty"`
 	StrategySessionStatus  string              `json:"strategy_session_status,omitempty"`
+	MainTask               *tasksv2.FocusTask  `json:"main_task,omitempty"`
 	Workstreams            []workstream        `json:"workstreams"`
 	Departments            []department        `json:"departments"`
 	WorkspaceDocuments     []workspaceDocument `json:"workspace_documents"`
@@ -149,7 +151,7 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		code string
 		err  error
 	}
-	loadResults := make(chan loadResult, 7)
+	loadResults := make(chan loadResult, 8)
 	go func() {
 		loadResults <- loadResult{"navigation_account_failed", h.loadAccount(r, userID, &result.Account)}
 	}()
@@ -165,6 +167,16 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		workstreams, loadErr := h.loadWorkstreams(r, currentWorkspace.ID)
 		result.Workstreams = workstreams
 		loadResults <- loadResult{"navigation_tactics_failed", loadErr}
+	}()
+	go func() {
+		focus, loadErr := tasksv2.NewStore(h.dbx).FocusSummary(
+			r.Context(), currentWorkspace.ID, tasksv2.FocusScopeWorkspace, 0,
+		)
+		if loadErr == nil {
+			result.MainTask = focus.RecommendedTask
+		}
+		// The focus card enriches navigation, but must never block the shell.
+		loadResults <- loadResult{"", nil}
 	}()
 	go func() {
 		departments, loadErr := h.loadDepartments(r, currentWorkspace.ID)
@@ -196,7 +208,7 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		loadResults <- loadResult{"navigation_quality_failed", qualityErr}
 	}()
 
-	for range 7 {
+	for range 8 {
 		load := <-loadResults
 		if load.err != nil {
 			api.WriteError(w, http.StatusInternalServerError, load.code)
