@@ -13,11 +13,11 @@ var standardCatalog = []Template{
 	{Key: "gross_margin", Name: "Валовая маржа", Description: "Доля валовой прибыли в выручке.", Category: "Финансы", Unit: "%", ValueType: "percent", BetterDirection: "increase", Formula: "Валовая прибыль ÷ выручка × 100%", Interpretation: "Позволяет сравнивать экономику продуктов и периодов разного масштаба.", Aliases: []string{"gross margin"}},
 	{Key: "contribution_margin", Name: "Маржинальная прибыль", Description: "Выручка за вычетом переменных расходов.", Category: "Финансы", Unit: "currency", ValueType: "currency", BetterDirection: "increase", Formula: "Выручка − переменные расходы", Interpretation: "Показывает вклад продаж в покрытие постоянных расходов и прибыль.", Aliases: []string{"contribution margin"}},
 	{Key: "contribution_margin_rate", Name: "Маржинальность", Description: "Доля маржинальной прибыли в выручке.", Category: "Финансы", Unit: "%", ValueType: "percent", BetterDirection: "increase", Formula: "Маржинальная прибыль ÷ выручка × 100%", Interpretation: "Помогает оценивать качество роста и экономику направлений.", Aliases: []string{"contribution margin rate"}},
-	{Key: "operating_profit", Name: "Операционная прибыль", Description: "Прибыль от основной деятельности до процентов и налогов.", Category: "Финансы", Unit: "currency", ValueType: "currency", BetterDirection: "increase", Formula: "Валовая прибыль − операционные расходы", Interpretation: "Показывает эффективность основной бизнес-модели.", Aliases: []string{"operating income", "EBIT"}},
-	{Key: "ebitda", Name: "EBITDA", Description: "Прибыль до процентов, налогов, амортизации и износа.", Category: "Финансы", Unit: "currency", ValueType: "currency", BetterDirection: "increase", Formula: "Операционная прибыль + амортизация", Interpretation: "Приближённо показывает операционную доходность до структуры финансирования.", Aliases: []string{"ебитда"}},
+	{Key: "operating_profit", Name: "Операционная прибыль", Description: "Прибыль от основной деятельности до процентов и налогов.", Category: "Финансы", Unit: "currency", ValueType: "currency", BetterDirection: "increase", Formula: "Валовая прибыль − операционные расходы", Interpretation: "Показывает эффективность основной бизнес-модели.", Aliases: []string{"operating income", "EBIT", "снижение расходов", "оптимизация расходов", "cost reduction", "operating expenses"}},
+	{Key: "ebitda", Name: "EBITDA", Description: "Прибыль до процентов, налогов, амортизации и износа.", Category: "Финансы", Unit: "currency", ValueType: "currency", BetterDirection: "increase", Formula: "Операционная прибыль + амортизация", Interpretation: "Приближённо показывает операционную доходность до структуры финансирования.", Aliases: []string{"ебитда", "снижение расходов", "оптимизация расходов", "cost reduction"}},
 	{Key: "net_profit", Name: "Чистая прибыль", Description: "Финальный финансовый результат после всех расходов и налогов.", Category: "Финансы", Unit: "currency", ValueType: "currency", BetterDirection: "increase", Formula: "Доходы − все расходы − налоги", Interpretation: "Показывает итоговую прибыльность компании за период.", Aliases: []string{"net income"}},
-	{Key: "operating_cash_flow", Name: "Операционный денежный поток", Description: "Денежный поток от основной деятельности.", Category: "Финансы", Unit: "currency", ValueType: "currency", BetterDirection: "increase", Formula: "Денежные поступления от операций − операционные выплаты", Interpretation: "Показывает способность бизнеса самостоятельно генерировать деньги.", Aliases: []string{"OCF", "cash flow"}},
-	{Key: "burn_rate", Name: "Burn rate", Description: "Средний объём денежных средств, который компания расходует сверх поступлений.", Category: "Финансы", Unit: "currency/month", ValueType: "currency", BetterDirection: "decrease", Formula: "Уменьшение денежных средств за период ÷ число месяцев", Interpretation: "Используется для контроля скорости расходования денежного запаса.", Aliases: []string{"темп сжигания денег"}},
+	{Key: "operating_cash_flow", Name: "Операционный денежный поток", Description: "Денежный поток от основной деятельности.", Category: "Финансы", Unit: "currency", ValueType: "currency", BetterDirection: "increase", Formula: "Денежные поступления от операций − операционные выплаты", Interpretation: "Показывает способность бизнеса самостоятельно генерировать деньги.", Aliases: []string{"OCF", "cash flow", "контроль расходов", "снижение расходов", "cash control"}},
+	{Key: "burn_rate", Name: "Burn rate", Description: "Средний объём денежных средств, который компания расходует сверх поступлений.", Category: "Финансы", Unit: "currency/month", ValueType: "currency", BetterDirection: "decrease", Formula: "Уменьшение денежных средств за период ÷ число месяцев", Interpretation: "Используется для контроля скорости расходования денежного запаса.", Aliases: []string{"темп сжигания денег", "снижение расходов", "оптимизация расходов", "экономия", "cost reduction"}},
 	{Key: "runway", Name: "Финансовый runway", Description: "Количество месяцев до исчерпания денежных средств при текущем burn rate.", Category: "Финансы", Unit: "months", ValueType: "duration", BetterDirection: "increase", Formula: "Доступные денежные средства ÷ месячный burn rate", Interpretation: "Показывает время на достижение безубыточности или привлечение финансирования.", Aliases: []string{"cash runway"}},
 	{Key: "working_capital", Name: "Оборотный капитал", Description: "Ресурс для финансирования текущей операционной деятельности.", Category: "Финансы", Unit: "currency", ValueType: "currency", BetterDirection: "range", Formula: "Оборотные активы − краткосрочные обязательства", Interpretation: "Слишком низкое значение создаёт кассовые риски, слишком высокое может говорить о замороженных средствах.", Aliases: []string{"working capital"}},
 	{Key: "roic", Name: "ROIC", Description: "Доходность инвестированного в бизнес капитала.", Category: "Финансы", Unit: "%", ValueType: "percent", BetterDirection: "increase", Formula: "Операционная прибыль после налогов ÷ инвестированный капитал × 100%", Interpretation: "Показывает, насколько эффективно бизнес превращает капитал в прибыль.", Aliases: []string{"return on invested capital"}},
@@ -85,22 +85,47 @@ var standardCatalog = []Template{
 func Catalog(query string, category string) []Template {
 	query = strings.ToLower(strings.TrimSpace(query))
 	category = strings.TrimSpace(category)
-	result := make([]Template, 0, len(standardCatalog))
+	type scoredTemplate struct {
+		item  Template
+		score int
+	}
+	scored := make([]scoredTemplate, 0, len(standardCatalog))
+	hasExactMatch := false
 	for _, item := range standardCatalog {
 		if category != "" && item.Category != category {
 			continue
 		}
-		if query != "" && !catalogMatch(item, query) {
+		score := catalogMatchScore(item, query)
+		if query != "" && score == 0 {
 			continue
 		}
-		result = append(result, item)
-	}
-	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].Category == result[j].Category {
-			return result[i].Name < result[j].Name
+		scored = append(scored, scoredTemplate{item: item, score: score})
+		if score >= 100 {
+			hasExactMatch = true
 		}
-		return result[i].Category < result[j].Category
+	}
+	if hasExactMatch {
+		exact := scored[:0]
+		for _, item := range scored {
+			if item.score >= 100 {
+				exact = append(exact, item)
+			}
+		}
+		scored = exact
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		if scored[i].item.Category == scored[j].item.Category {
+			return scored[i].item.Name < scored[j].item.Name
+		}
+		return scored[i].item.Category < scored[j].item.Category
 	})
+	result := make([]Template, 0, len(scored))
+	for _, item := range scored {
+		result = append(result, item.item)
+	}
 	return result
 }
 
@@ -127,12 +152,49 @@ func Categories() []string {
 }
 
 func catalogMatch(item Template, query string) bool {
+	return catalogMatchScore(item, strings.ToLower(strings.TrimSpace(query))) > 0
+}
+
+func catalogMatchScore(item Template, query string) int {
+	if query == "" {
+		return 1
+	}
 	values := []string{item.Key, item.Name, item.Description, item.Formula}
 	values = append(values, item.Aliases...)
+	score := 0
 	for _, value := range values {
-		if strings.Contains(strings.ToLower(value), query) {
-			return true
+		value = strings.ToLower(value)
+		if strings.Contains(value, query) {
+			score += 100
+		}
+		for _, term := range catalogSearchTerms(query) {
+			if strings.Contains(value, term) {
+				score += 10
+			}
 		}
 	}
-	return false
+	return score
+}
+
+func catalogSearchTerms(query string) []string {
+	fields := strings.FieldsFunc(query, func(r rune) bool {
+		return (r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'а' || r > 'я') && r != 'ё'
+	})
+	seen := map[string]bool{}
+	result := make([]string, 0, len(fields))
+	for _, field := range fields {
+		runes := []rune(field)
+		if len(runes) < 4 {
+			continue
+		}
+		if len(runes) > 6 {
+			runes = runes[:len(runes)-2]
+		}
+		term := string(runes)
+		if !seen[term] {
+			seen[term] = true
+			result = append(result, term)
+		}
+	}
+	return result
 }

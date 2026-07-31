@@ -35,6 +35,22 @@ func TestCatalogSearchesAliasesAndFiltersCategory(t *testing.T) {
 	}
 }
 
+func TestCatalogRanksCanonicalExpenseMetricsForNaturalRussianQuery(t *testing.T) {
+	items := Catalog("метрики снижения расходов", "")
+	if len(items) < 4 {
+		t.Fatalf("expected canonical expense metrics, got %#v", items)
+	}
+	topKeys := map[string]bool{}
+	for _, item := range items[:4] {
+		topKeys[item.Key] = true
+	}
+	for _, key := range []string{"burn_rate", "ebitda", "operating_cash_flow", "operating_profit"} {
+		if !topKeys[key] {
+			t.Fatalf("expected %q among top results, got %#v", key, items[:4])
+		}
+	}
+}
+
 func TestValidTargetInput(t *testing.T) {
 	input := TargetInput{
 		TemplateKey: "revenue",
