@@ -75,7 +75,7 @@ const getPriorityView = tool<any, AgentRunContext, unknown>({
 
 const searchMetricCatalog = tool<any, AgentRunContext, unknown>({
   name: "search_metric_catalog",
-  description: "Find standard business metrics with definitions and formulas. Use before inventing a custom metric.",
+  description: "Search the canonical REUP.goals standard metric catalog. When the user asks for standard, canonical, catalog, or reference metrics, call this tool and use only metrics returned by it. Also use it before inventing a custom metric. Results include the exact metric name, definition, formula, unit, and preferred direction.",
   parameters: z.object({
     query: z.string().min(2).max(160),
     category: z.string().max(80).nullable(),
