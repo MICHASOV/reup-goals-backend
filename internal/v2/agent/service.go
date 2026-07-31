@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/v2/billing"
 	"reup-goals-backend/internal/v2/contextindex"
 	"reup-goals-backend/internal/v2/jobs"
@@ -97,6 +98,14 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	request.Message = strings.TrimSpace(request.Message)
 	if request.ThreadID <= 0 || request.Message == "" {
 		return Run{}, errors.New("invalid_agent_run")
+	}
+	if len([]rune(request.Message)) > 50000 || len(request.Attachments) > 24 {
+		return Run{}, errors.New("invalid_agent_input_size")
+	}
+	for _, attachment := range request.Attachments {
+		if !validAttachment(attachment) {
+			return Run{}, errors.New("invalid_agent_attachment")
+		}
 	}
 	workspace, membership, err := s.workspaces.GetOrCreateDefault(ctx, userID)
 	if err != nil {
@@ -288,7 +297,7 @@ func (s *Service) reconcileOrphanedRun(ctx context.Context, run Run) (Run, error
 	if time.Since(run.UpdatedAt) < 3*time.Second {
 		return run, nil
 	}
-	active, err := s.store.HasActiveJob(ctx, run)
+	active, err := s.store.HasActiveJob(ctx, run, s.jobs.Namespace())
 	if err != nil || active {
 		return run, err
 	}
@@ -352,7 +361,11 @@ func (s *Service) Decide(ctx context.Context, userID int, publicID string, reque
 			return Run{}, errors.New("agent_approval_not_pending")
 		}
 		if decision.Approved && item.ToolName == "propose_department" && role != "owner" && role != "admin" {
-			return Run{}, errors.New("agent_action_forbidden")
+			return Run{}, errors.New("agent_department_action_forbidden")
+		}
+		if decision.Approved && item.ToolName == "propose_strategy_review" &&
+			!s.canSubmitStrategy(ctx, workspace.ID, userID, role) {
+			return Run{}, errors.New("agent_strategy_action_forbidden")
 		}
 	}
 	if err := s.store.Decide(ctx, run.ID, userID, request.Decisions); err != nil {
@@ -455,9 +468,7 @@ func (s *Service) handleExecuteJob(ctx context.Context, job jobs.Job) error {
 		return nil
 	}
 	if run.Status == StatusRunning {
-		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
-		_ = s.billing.Settle(settleCtx, run.ReservationID, false, 0)
-		cancel()
+		s.settleReservation(ctx, run.ReservationID, false, 0)
 		if err := s.store.RequeueInterrupted(ctx, run.ID); err != nil {
 			return err
 		}
@@ -551,9 +562,7 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 		return nil
 	}
 	if run.Status == StatusRunning {
-		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
-		_ = s.billing.Settle(settleCtx, run.ReservationID, false, 0)
-		cancel()
+		s.settleReservation(ctx, run.ReservationID, false, 0)
 		if err := s.store.RequeueInterrupted(ctx, run.ID); err != nil {
 			return err
 		}
@@ -577,20 +586,14 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 		_ = s.store.SetFailed(ctx, run.ID, err.Error(), true)
 		return nil
 	}
-	reservationID, stop, err := s.startBillableRun(ctx, run)
-	if err != nil {
-		return s.failBeforeReservation(ctx, run, job, err)
-	}
-	if stop {
-		return nil
-	}
-	if err := s.store.SetRunning(ctx, run.ID, reservationID); err != nil {
-		_ = s.billing.Settle(context.WithoutCancel(ctx), reservationID, false, 0)
+	// Approval is a continuation of an already counted user message. It may
+	// invoke the provider again, but must not consume a second weekly allowance.
+	if err := s.store.SetRunning(ctx, run.ID, ""); err != nil {
 		return err
 	}
 	approvals, err := s.store.Approvals(ctx, run.ID)
 	if err != nil {
-		return s.failAttempt(ctx, run, reservationID, job, err)
+		return s.failAttempt(ctx, run, "", job, err)
 	}
 	decisions := make([]Decision, 0, len(approvals))
 	for _, item := range approvals {
@@ -598,7 +601,7 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 	}
 	runToken, err := signRunToken(s.secret, run, 6*time.Hour)
 	if err != nil {
-		return s.failAttempt(ctx, run, reservationID, job, err)
+		return s.failAttempt(ctx, run, "", job, err)
 	}
 	started := time.Now()
 	result, err := s.runtime.Resume(ctx, map[string]any{
@@ -607,9 +610,9 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 	})
 	if err != nil {
 		s.logCall(ctx, run, time.Since(started), RuntimeUsage{}, err)
-		return s.failAttempt(ctx, run, reservationID, job, err)
+		return s.failAttempt(ctx, run, "", job, err)
 	}
-	return s.finishRuntimeResult(ctx, run, reservationID, result, time.Since(started))
+	return s.finishRuntimeResult(ctx, run, "", result, time.Since(started))
 }
 
 func (s *Service) startBillableRun(ctx context.Context, run Run) (string, bool, error) {
@@ -634,9 +637,7 @@ func (s *Service) failAttempt(
 	job jobs.Job,
 	runErr error,
 ) error {
-	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
-	_ = s.billing.Settle(settleCtx, reservationID, false, 0)
-	cancel()
+	s.settleReservation(ctx, reservationID, false, 0)
 	terminal := job.Attempts >= job.MaxAttempts
 	_ = s.store.SetFailed(context.WithoutCancel(ctx), run.ID, runErr.Error(), terminal)
 	if terminal {
@@ -674,11 +675,13 @@ func (s *Service) finishRuntimeResult(
 	result RuntimeResult,
 	duration time.Duration,
 ) error {
-	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
-	settleErr := s.billing.Settle(settleCtx, reservationID, true, quotaTokenUsage(result.Usage))
-	cancel()
-	if settleErr != nil {
-		log.Printf("[ERROR] agent quota settlement failed run_id=%s: %v", run.PublicID, settleErr)
+	if reservationID != "" {
+		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+		settleErr := s.billing.Settle(settleCtx, reservationID, true, quotaTokenUsage(result.Usage))
+		cancel()
+		if settleErr != nil {
+			log.Printf("[ERROR] agent quota settlement failed run_id=%s: %v", run.PublicID, settleErr)
+		}
 	}
 	s.logCall(context.WithoutCancel(ctx), run, duration, result.Usage, nil)
 	count, _ := s.store.EventCount(ctx, run.ID)
@@ -731,6 +734,23 @@ func (s *Service) saveApprovalTurn(ctx context.Context, run Run, result RuntimeR
 	changes := draftChangesFromInterruptions(result.Interruptions)
 	if len(changes) != len(result.Interruptions) {
 		return errors.New("agent_proposal_not_applicable")
+	}
+	strategyReviews := 0
+	tacticsChanges := make([]tactics.TacticsDraftChange, 0, len(changes))
+	for _, change := range changes {
+		if change.EntityType == "strategy_review" {
+			strategyReviews++
+			continue
+		}
+		tacticsChanges = append(tacticsChanges, change)
+	}
+	if strategyReviews > 0 && len(changes) != 1 {
+		return errors.New("agent_strategy_review_must_be_separate")
+	}
+	if len(tacticsChanges) > 0 {
+		if err := tactics.ValidateDraftChangesForConfirmation(tacticsChanges); err != nil {
+			return fmt.Errorf("agent_proposal_not_applicable: %w", err)
+		}
 	}
 	hasTacticsChanges := false
 	for _, change := range changes {
@@ -814,6 +834,29 @@ func (s *Service) participantRole(ctx context.Context, workspaceID int, userID i
 	return role
 }
 
+func (s *Service) canSubmitStrategy(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	role string,
+) bool {
+	if role == "owner" || role == "admin" {
+		return true
+	}
+	var createdByUser bool
+	_ = s.dbx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM v2_strategies
+			WHERE workspace_id=$1
+				AND archived_at IS NULL
+				AND status IN ('draft', 'ready_for_review')
+				AND created_by=$2
+		)
+	`, workspaceID, userID).Scan(&createdByUser)
+	return createdByUser
+}
+
 func (s *Service) logCall(ctx context.Context, run Run, duration time.Duration, usage RuntimeUsage, callErr error) {
 	status := "success"
 	errorText := ""
@@ -821,6 +864,11 @@ func (s *Service) logCall(ctx context.Context, run Run, duration time.Duration, 
 		status = "failed"
 		errorText = callErr.Error()
 	}
+	costUsage := ai.Usage{
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens,
+	}
+	costUsage.InputTokenDetails.CachedTokens = usage.CachedInputTokens
+	estimatedCost := ai.EstimateCost(run.Model, costUsage)
 	_, _ = s.dbx.ExecContext(ctx, `
 		INSERT INTO v2_ai_call_logs (
 			workspace_id, user_id, ai_module, prompt_name, prompt_version, provider, model,
@@ -828,9 +876,21 @@ func (s *Service) logCall(ctx context.Context, run Run, duration time.Duration, 
 			cached_input_tokens, estimated_cost, request_id, response_id
 		)
 		VALUES ($1, $2, 'executive_advisor', 'executive_advisor', $3, 'openai', $4,
-			$5, $6, $7, $8, $9, $10, $11, 0, '', '')
+			$5, $6, $7, $8, $9, $10, $11, $12, '', '')
 	`, run.WorkspaceID, run.UserID, PromptVersion, run.Model, status, truncate(errorText, 4000),
-		duration.Milliseconds(), usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.CachedInputTokens)
+		duration.Milliseconds(), usage.InputTokens, usage.OutputTokens, usage.TotalTokens,
+		usage.CachedInputTokens, estimatedCost)
+}
+
+func (s *Service) settleReservation(ctx context.Context, reservationID string, success bool, tokens int) {
+	if reservationID == "" {
+		return
+	}
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+	defer cancel()
+	if err := s.billing.Settle(settleCtx, reservationID, success, tokens); err != nil {
+		log.Printf("[ERROR] agent quota settlement failed reservation_id=%s: %v", reservationID, err)
+	}
 }
 
 func quotaTokenUsage(usage RuntimeUsage) int {
@@ -859,6 +919,20 @@ func validScope(scope Scope) bool {
 		return scope.ID == 0
 	case "workstream", "project", "department", "document", "task":
 		return scope.ID > 0
+	default:
+		return false
+	}
+}
+
+func validAttachment(attachment Attachment) bool {
+	if strings.TrimSpace(attachment.Label) == "" || len([]rune(attachment.Label)) > 300 {
+		return false
+	}
+	switch strings.TrimSpace(attachment.Type) {
+	case "knowledge_document":
+		return strings.TrimSpace(attachment.Key) != ""
+	case "workspace_document", "workstream", "project", "uploaded_file":
+		return attachment.ID > 0
 	default:
 		return false
 	}
@@ -900,15 +974,16 @@ func (s *Service) businessBrief(ctx context.Context, workspaceID int, userID int
 			break
 		}
 		item := briefDirection{
-			ID: workstream.ID, Title: workstream.Title, Goal: workstream.Goal,
-			CKP: workstream.CKP, Status: workstream.Status, Projects: []briefProject{},
+			ID: workstream.ID, Title: truncateRunes(workstream.Title, 240), Goal: truncateRunes(workstream.Goal, 600),
+			CKP: truncateRunes(workstream.CKP, 600), Status: workstream.Status, Projects: []briefProject{},
 		}
 		for _, project := range workstream.Projects {
 			if len(item.Projects) >= 5 {
 				break
 			}
 			item.Projects = append(item.Projects, briefProject{
-				ID: project.ID, Title: project.Title, Status: project.Status, Metric: project.MetricName,
+				ID: project.ID, Title: truncateRunes(project.Title, 240), Status: project.Status,
+				Metric: truncateRunes(project.MetricName, 300),
 			})
 		}
 		directions = append(directions, item)
@@ -917,7 +992,7 @@ func (s *Service) businessBrief(ctx context.Context, workspaceID int, userID int
 	_ = s.dbx.QueryRowContext(ctx, `
 		SELECT COALESCE(jsonb_agg(item), '[]'::jsonb)
 		FROM (
-			SELECT task.id, task.title, task.status, task.project_id, task.workstream_id,
+			SELECT task.id, LEFT(task.title, 300) AS title, task.status, task.project_id, task.workstream_id,
 				COALESCE(evaluation.priority_score, 0) AS priority_score,
 				COALESCE(evaluation.priority_tier, '') AS priority_tier,
 				task.blocked, task.due_date
@@ -937,17 +1012,35 @@ func (s *Service) businessBrief(ctx context.Context, workspaceID int, userID int
 		"available_via_file_search": true,
 		"note":                      "The full company memory is available through document search.",
 	}
-	if len(memory) > 0 && len(memory) <= 8000 {
+	if len(memory) > 0 && len(memory) <= 6000 {
 		var parsed any
 		if json.Unmarshal(memory, &parsed) == nil {
 			memoryValue = parsed
 		}
 	}
+	strategy := current.Strategy
+	if strategy != nil {
+		compact := *strategy
+		compact.Title = truncateRunes(compact.Title, 300)
+		compact.Summary = truncateRunes(compact.Summary, 3000)
+		strategy = &compact
+	}
+	course := current.Course
+	if course != nil {
+		compact := *course
+		compact.Title = truncateRunes(compact.Title, 300)
+		compact.Direction = truncateRunes(compact.Direction, 800)
+		compact.StrategicGoal = truncateRunes(compact.StrategicGoal, 1000)
+		compact.Meaning = truncateRunes(compact.Meaning, 800)
+		compact.KeyMetric = truncateRunes(compact.KeyMetric, 500)
+		compact.SuccessCriterion = truncateRunes(compact.SuccessCriterion, 800)
+		course = &compact
+	}
 	payload := map[string]any{
 		"workspace":        map[string]any{"id": workspaceID, "name": workspaceName},
 		"strategic_memory": memoryValue,
-		"strategy":         current.Strategy,
-		"course":           current.Course,
+		"strategy":         strategy,
+		"course":           course,
 		"directions":       directions,
 		"top_tasks":        json.RawMessage(tasksRaw),
 	}
@@ -955,7 +1048,7 @@ func (s *Service) businessBrief(ctx context.Context, workspaceID int, userID int
 	if err != nil {
 		return "", err
 	}
-	if len(raw) <= 20000 {
+	if len(raw) <= 12000 {
 		return string(raw), nil
 	}
 	payload["directions"] = directions[:min(len(directions), 5)]

@@ -24,3 +24,17 @@ func TestInvokeHandlerConvertsPanicToError(t *testing.T) {
 		t.Fatalf("expected panic error, got %v", err)
 	}
 }
+
+func TestNormalizeNamespace(t *testing.T) {
+	cases := map[string]string{
+		"":              "default",
+		" Staging ":     "staging",
+		"prod/eu west!": "prodeuwest",
+		"***":           "default",
+	}
+	for input, want := range cases {
+		if got := normalizeNamespace(input); got != want {
+			t.Fatalf("normalizeNamespace(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

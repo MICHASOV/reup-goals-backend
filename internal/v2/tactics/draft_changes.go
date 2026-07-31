@@ -108,6 +108,22 @@ func normalizeTacticsDraftChanges(changes []TacticsDraftChange) []TacticsDraftCh
 	return result
 }
 
+func ValidateDraftChangesForConfirmation(changes []TacticsDraftChange) error {
+	if len(changes) == 0 || len(changes) > maxDraftChangesPerTurn {
+		return fmt.Errorf("invalid_tactics_action_count")
+	}
+	normalized := normalizeTacticsDraftChanges(changes)
+	if len(normalized) != len(changes) {
+		return fmt.Errorf("incomplete_tactics_action")
+	}
+	indices := make([]int, len(normalized))
+	for index := range normalized {
+		indices[index] = index
+	}
+	_, err := orderedTacticsActionIndices(normalized, indices)
+	return err
+}
+
 func tacticsDraftReadyForConfirmation(change TacticsDraftChange) bool {
 	switch change.EntityType {
 	case EntityWorkstream:
@@ -198,6 +214,13 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 	if err != nil {
 		return ApplyTacticsChangesResponse{}, err
 	}
+	selectedChanges := make([]TacticsDraftChange, 0, len(indices))
+	for _, index := range indices {
+		selectedChanges = append(selectedChanges, changes[index])
+	}
+	if err := ValidateDraftChangesForConfirmation(selectedChanges); err != nil {
+		return ApplyTacticsChangesResponse{}, err
+	}
 	createdByKey := map[string]int{}
 	response := ApplyTacticsChangesResponse{
 		WorkspaceID:    workspaceID,
@@ -219,6 +242,9 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 		}
 		if !confirmed {
 			if action.Status == aiactions.StatusApplied {
+				if change.DraftKey != "" && action.EntityID != nil {
+					createdByKey[change.DraftKey] = *action.EntityID
+				}
 				continue
 			}
 			return ApplyTacticsChangesResponse{}, fmt.Errorf("tactics_action_not_confirmable")
@@ -516,6 +542,7 @@ func (s *Store) applyWorkstreamDraft(ctx context.Context, workspaceID int, userI
 func (s *Store) applyProjectDraft(ctx context.Context, workspaceID int, userID int, plan TacticalPlan, parentID int, change TacticsDraftChange) (AppliedTacticsChange, bool) {
 	operation := change.Operation
 	entityID := pointerValue(change.EntityID)
+	var current Project
 	if operation == "create" {
 		if parentID <= 0 {
 			return AppliedTacticsChange{}, false
@@ -532,6 +559,16 @@ func (s *Store) applyProjectDraft(ctx context.Context, workspaceID int, userID i
 	if !draftMetricsParsable(change.Metrics) {
 		return AppliedTacticsChange{}, false
 	}
+	if operation == "update" {
+		var lookupErr error
+		current, lookupErr = s.projectByID(ctx, workspaceID, entityID)
+		if lookupErr != nil {
+			return AppliedTacticsChange{}, false
+		}
+		if parentID <= 0 {
+			parentID = current.WorkstreamID
+		}
+	}
 	input := ProjectInput{
 		WorkstreamID: parentID, Title: change.Title, Description: change.Description,
 		ExpectedResult: change.ExpectedResult, WhyNeeded: change.WhyNeeded, SuccessCriteria: change.SuccessCriteria,
@@ -546,11 +583,7 @@ func (s *Store) applyProjectDraft(ctx context.Context, workspaceID int, userID i
 		input.Status = ProjectStatusActive
 		item, err = s.createProject(ctx, workspaceID, userID, input, SourceAISuggestion)
 	} else {
-		current, lookupErr := s.projectByID(ctx, workspaceID, entityID)
-		if lookupErr != nil {
-			return AppliedTacticsChange{}, false
-		}
-		parent, parentErr := s.workstreamByID(ctx, workspaceID, current.WorkstreamID)
+		parent, parentErr := s.workstreamByID(ctx, workspaceID, parentID)
 		if parentErr != nil || parent.TacticalPlanID != plan.ID {
 			return AppliedTacticsChange{}, false
 		}
@@ -741,7 +774,11 @@ func (s *Store) applyDraftMetrics(
 		}
 		betterDirection := strings.ToLower(strings.TrimSpace(item.BetterDirection))
 		switch betterDirection {
-		case "increase", "decrease", "target":
+		case "increase", "decrease", "range":
+		case "target":
+			// Older agent drafts used "target" for a metric that should stay
+			// close to a chosen value. Preserve them as a target range.
+			betterDirection = "range"
 		default:
 			betterDirection = "increase"
 		}

@@ -125,7 +125,16 @@ func (s *Store) TouchAdvisorThread(ctx context.Context, workspaceID int, userID 
 	}
 	_, err := s.dbx.ExecContext(ctx, `
 		UPDATE v2_tactics_advisor_threads
-		SET title=CASE WHEN title='Новый разговор' THEN $4 ELSE title END,
+		SET title=CASE
+				WHEN title IN ('Новый разговор', 'Стратегическая сессия', 'Новое направление')
+					OR title LIKE 'Новый чат · %'
+					OR title LIKE 'Обсуждение · %'
+					OR title LIKE 'Новый проект · %'
+					OR title LIKE 'Новый риск · %'
+					OR title LIKE 'Новая гипотеза · %'
+				THEN $4
+				ELSE title
+			END,
 			updated_at=NOW()
 		WHERE id=$1 AND workspace_id=$2 AND user_id=$3 AND status='active' AND archived_at IS NULL
 	`, threadID, workspaceID, userID, autoTitle)

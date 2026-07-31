@@ -116,6 +116,7 @@ jobs:
           AI_MONTHLY_BUDGET_USD=0
           AI_JOB_WORKERS=6
           AI_AGENT_JOB_WORKERS=8
+          JOB_QUEUE_NAMESPACE=staging
           UNISENDER_API_KEY=
           UNISENDER_BASE_URL=https://api.unisender.com/ru/api
           UNISENDER_SENDER_EMAIL=noreply@reupgoals.pro
@@ -163,6 +164,11 @@ jobs:
             sed -i 's/^APP_ENV=.*/APP_ENV=staging/' /etc/reup-goals-staging/backend.env
           else
             printf '\nAPP_ENV=staging\n' >> /etc/reup-goals-staging/backend.env
+          fi
+          if grep -q '^JOB_QUEUE_NAMESPACE=' /etc/reup-goals-staging/backend.env; then
+            sed -i 's/^JOB_QUEUE_NAMESPACE=.*/JOB_QUEUE_NAMESPACE=staging/' /etc/reup-goals-staging/backend.env
+          else
+            printf '\nJOB_QUEUE_NAMESPACE=staging\n' >> /etc/reup-goals-staging/backend.env
           fi
           if grep -q '^OPENAI_AUDITOR_MODEL=' /etc/reup-goals-staging/backend.env; then
             sed -i 's/^OPENAI_AUDITOR_MODEL=.*/OPENAI_AUDITOR_MODEL=gpt-5.4/' /etc/reup-goals-staging/backend.env
@@ -355,6 +361,7 @@ jobs:
           if [ -x /opt/reup-goals-staging/backend/reup_goals_backend ]; then
             cp -p /opt/reup-goals-staging/backend/reup_goals_backend "$previous_binary"
           fi
+          previous_agent_release_id=$(grep '^AGENT_RELEASE_ID=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
           install -o reupgoals -g reupgoals -m 755 /tmp/reup_goals_backend /opt/reup-goals-staging/backend/reup_goals_backend
 
           runtime_secret=$(grep '^AGENT_RUNTIME_SECRET=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
@@ -373,6 +380,13 @@ jobs:
           set_backend_env AGENT_RUNTIME_SECRET "$runtime_secret"
           set_backend_env AGENT_RUNTIME_URL "http://127.0.0.1:8091"
           set_backend_env AGENT_RUNTIME_MAX_TURNS "12"
+          set_backend_env AGENT_RELEASE_ID "staging-${{ hashFiles('agent-runtime/src/**', 'agent-runtime/package-lock.json') }}"
+          restore_previous_backend_release() {
+            set_backend_env AGENT_RELEASE_ID "$previous_agent_release_id"
+            if [ -x "$previous_binary" ]; then
+              install -o reupgoals -g reupgoals -m 755 "$previous_binary" /opt/reup-goals-staging/backend/reup_goals_backend
+            fi
+          }
 
           openai_api_key=$(grep '^OPENAI_API_KEY=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
           openai_proxy_url=$(grep '^OPENAI_PROXY_URL=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
@@ -400,6 +414,7 @@ jobs:
             printf 'GO_INTERNAL_URL=http://127.0.0.1:8080\n'
             printf 'AGENT_RUNTIME_SECRET=%s\n' "$runtime_secret"
             printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
+            printf 'AGENT_COMPACT_THRESHOLD=60000\n'
             if [ -n "$openai_proxy_url" ]; then
               printf 'OPENAI_PROXY_URL=%s\n' "$openai_proxy_url"
             fi
@@ -459,6 +474,7 @@ jobs:
                 mv /opt/reup-goals-staging/agent.previous /opt/reup-goals-staging/agent
                 systemctl restart reup-goals-agent-staging.service || true
               fi
+              restore_previous_backend_release
               exit 1
             fi
             sleep 1
@@ -481,7 +497,17 @@ jobs:
               journalctl -u reup-goals-staging.service -n 100 --no-pager
               if [ -x "$previous_binary" ]; then
                 echo "New backend failed health check; restoring previous binary."
-                install -o reupgoals -g reupgoals -m 755 "$previous_binary" /opt/reup-goals-staging/backend/reup_goals_backend
+                restore_previous_backend_release
+                if [ -d /opt/reup-goals-staging/agent.previous ]; then
+                  echo "Restoring the matching previous agent runtime."
+                  systemctl stop reup-goals-agent-staging.service || true
+                  rm -rf /opt/reup-goals-staging/agent.failed
+                  if [ -d /opt/reup-goals-staging/agent ]; then
+                    mv /opt/reup-goals-staging/agent /opt/reup-goals-staging/agent.failed
+                  fi
+                  mv /opt/reup-goals-staging/agent.previous /opt/reup-goals-staging/agent
+                  systemctl restart reup-goals-agent-staging.service || true
+                fi
                 systemctl restart reup-goals-staging.service
                 for rollback_attempt in $(seq 1 30); do
                   if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then

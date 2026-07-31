@@ -94,6 +94,7 @@ const metricSchema = z.object({
   current: metricNumber.nullable(),
   target: metricNumber,
   unit: z.string().max(40).nullable(),
+  better_direction: z.enum(["increase", "decrease", "range"]),
   target_date: z.string().max(20).nullable(),
 });
 
@@ -112,6 +113,7 @@ const proposeDirection = proposalTool(
   "Prepare creation or an update of one strategic or tactical direction for explicit user confirmation. Use only when a direction has become sufficiently distinct and useful as a managed business entity.",
   z.object({
     existing_entity_id: z.number().int().positive().nullable(),
+    draft_key: z.string().min(1).max(80).nullable(),
     title: z.string().min(2).max(180),
     description: z.string().min(10).max(5000),
     expected_result: z.string().min(3).max(1600),
@@ -128,7 +130,9 @@ const proposeProject = proposalTool(
   "Prepare creation or an update of one project for explicit user confirmation. A project should have a distinct result and execution lifecycle, and normally belongs to a direction.",
   z.object({
     existing_entity_id: z.number().int().positive().nullable(),
-    direction_id: z.number().int().positive(),
+    draft_key: z.string().min(1).max(80).nullable(),
+    direction_id: z.number().int().positive().nullable().describe("Existing parent direction id. Use null only when parent_draft_key points to a direction proposed in this same package."),
+    parent_draft_key: z.string().min(1).max(80).nullable().describe("Draft key of a direction proposed in this same package. Use null when direction_id is present."),
     title: z.string().min(2).max(180),
     description: z.string().min(10).max(5000),
     expected_result: z.string().min(3).max(1600),
@@ -146,8 +150,9 @@ const proposeTask = proposalTool(
   "Prepare creation or an update of one executable task for explicit user confirmation. Use for a concrete human action, not for a broad project or an untested idea.",
   z.object({
     existing_entity_id: z.number().int().positive().nullable(),
-    project_id: z.number().int().positive().nullable(),
-    project_title: z.string().max(180).nullable(),
+    draft_key: z.string().min(1).max(80).nullable(),
+    project_id: z.number().int().positive().nullable().describe("Existing parent project id. Use null only when parent_draft_key points to a project proposed in this same package."),
+    parent_draft_key: z.string().min(1).max(80).nullable().describe("Draft key of a project proposed in this same package. Use null when project_id is present."),
     title: z.string().min(2).max(220),
     description: z.string().min(5).max(5000),
     expected_result: z.string().min(3).max(1600),

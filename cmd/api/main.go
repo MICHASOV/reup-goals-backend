@@ -91,7 +91,7 @@ func main() {
 		WithMaxOutputTokens(900).
 		WithGovernance(aiGovernance)
 	transcriptionAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITranscriptionModel, cfg.OpenAIProxyURL).WithGovernance(aiGovernance)
-	jobManager := jobs.NewManager(database)
+	jobManager := jobs.NewManagerWithNamespace(database, cfg.JobQueueNamespace)
 	strategicSourceRecorder := strategicmemory.NewSourceRecorder(database, jobManager)
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)

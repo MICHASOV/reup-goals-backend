@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +68,21 @@ func TestQuotaTokenUsageDiscountsCachedInput(t *testing.T) {
 	}
 }
 
+func TestValidAttachment(t *testing.T) {
+	if !validAttachment(Attachment{Type: "project", ID: 12, Label: "Проект"}) {
+		t.Fatal("valid project attachment was rejected")
+	}
+	if !validAttachment(Attachment{Type: "knowledge_document", Key: "finance", Label: "Финансы"}) {
+		t.Fatal("valid knowledge document attachment was rejected")
+	}
+	if validAttachment(Attachment{Type: "project", Label: "Без идентификатора"}) {
+		t.Fatal("project attachment without id must be rejected")
+	}
+	if validAttachment(Attachment{Type: "external_url", Key: "https://example.com", Label: "URL"}) {
+		t.Fatal("unknown attachment type must be rejected")
+	}
+}
+
 func TestDraftChangeSupportsCreateAndUpdate(t *testing.T) {
 	created, ok := draftChange("propose_project", map[string]any{
 		"direction_id":     22,
@@ -125,6 +142,87 @@ func TestDepartmentDraftKeepsPeopleAndKPIs(t *testing.T) {
 	}
 	if len(change.Metrics) != 1 || change.Metrics[0].Name != "Валовая прибыль" {
 		t.Fatalf("department KPI was lost: %#v", change.Metrics)
+	}
+}
+
+func TestIntSlicePreservesJSONNumbers(t *testing.T) {
+	got := intSlice([]any{json.Number("7"), float64(8), 9, "10", json.Number("-1"), "bad"})
+	want := []int{7, 8, 9, 10}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("intSlice() = %#v, want %#v", got, want)
+	}
+}
+
+func TestDraftPackageKeepsParentReferencesAndMetricDirection(t *testing.T) {
+	project, ok := draftChange("propose_project", map[string]any{
+		"draft_key": "project-growth", "parent_draft_key": "direction-growth",
+		"title": "Проверить канал", "description": "Проверить канал на ограниченном бюджете.",
+		"expected_result": "Подтверждённый канал", "why_needed": "Снять неопределённость",
+		"success_criteria": "CAC ниже 100", "failure_criteria": "CAC выше 150",
+		"expected_value": "Рост выручки", "department_id": 7,
+		"metric": map[string]any{
+			"name": "CAC", "target": "100", "unit": "USD", "better_direction": "decrease",
+		},
+	})
+	if !ok || project.DraftKey != "project-growth" || project.ParentDraftKey != "direction-growth" {
+		t.Fatalf("project package references were lost: %#v", project)
+	}
+	if len(project.Metrics) != 1 || project.Metrics[0].BetterDirection != "decrease" {
+		t.Fatalf("metric direction was lost: %#v", project.Metrics)
+	}
+
+	task, ok := draftChange("propose_task", map[string]any{
+		"draft_key": "task-sample", "parent_draft_key": "project-growth",
+		"title": "Собрать выборку", "description": "Собрать исходные данные.",
+		"expected_result": "Готовая выборка", "department_id": 7,
+		"owner_deferred": true, "due_date_deferred": true,
+	})
+	if !ok || task.ParentDraftKey != "project-growth" {
+		t.Fatalf("task parent reference was lost: %#v", task)
+	}
+}
+
+func TestDraftChangePreservesDirectionRiskAndHypothesisFields(t *testing.T) {
+	direction, ok := draftChange("propose_direction", map[string]any{
+		"draft_key": "direction-retention", "title": "Удержание клиентов",
+		"description": "Системно повышать повторные покупки и маржинальность клиентской базы.",
+		"expected_result": "Предсказуемая повторная выручка", "ckp": "Повторные покупки растут",
+		"rationale": "Это главный ограничитель прибыли", "lead_department_id": 7,
+		"participant_department_ids": []any{8.0, json.Number("9")},
+		"metrics": []any{map[string]any{
+			"name": "Repeat revenue share", "current": "18", "target": "30",
+			"unit": "%", "better_direction": "increase",
+		}},
+	})
+	if !ok || direction.EntityType != tactics.EntityWorkstream ||
+		direction.Goal == "" || direction.CKP == "" || direction.LeadDepartmentID != 7 {
+		t.Fatalf("direction fields were lost: %#v", direction)
+	}
+	if !reflect.DeepEqual(direction.ParticipantDepartmentIDs, []int{8, 9}) {
+		t.Fatalf("direction participants were lost: %#v", direction.ParticipantDepartmentIDs)
+	}
+
+	risk, ok := draftChange("propose_risk", map[string]any{
+		"existing_entity_id": 44, "entity_type": "project", "entity_id": 31,
+		"title": "Рост стоимости привлечения", "description": "CAC может выйти за предел экономики.",
+		"severity": "high", "probability": "medium", "leading_indicators": "CAC растёт две недели",
+		"mitigation_plan": "Остановить слабые сегменты", "contingency_plan": "Переключить бюджет",
+		"owner_user_id": 19,
+	})
+	if !ok || risk.Operation != "update" || risk.ParentEntityID == nil ||
+		*risk.ParentEntityID != 31 || risk.MitigationPlan == "" || risk.ContingencyPlan == "" {
+		t.Fatalf("risk fields were lost: %#v", risk)
+	}
+
+	hypothesis, ok := draftChange("propose_hypothesis", map[string]any{
+		"entity_type": "project", "entity_id": 31, "title": "Повторное предложение",
+		"statement": "Повторным клиентам нужен отдельный оффер.",
+		"expected_effect": "Рост повторной выручки", "test_method": "A/B тест на двух когортах",
+		"success_signal": "Repeat revenue share выше на 5 п.п.", "owner_user_id": 19,
+	})
+	if !ok || hypothesis.Statement == "" || hypothesis.ExpectedEffect == "" ||
+		!strings.Contains(hypothesis.TestMethod, "Критерий решения") {
+		t.Fatalf("hypothesis fields were lost: %#v", hypothesis)
 	}
 }
 

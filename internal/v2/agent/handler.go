@@ -150,9 +150,15 @@ func (h *Handler) InternalTools(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 2<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	decoder := json.NewDecoder(r.Body)
 	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_json")
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		api.WriteError(w, http.StatusBadRequest, "invalid_json")
 		return false
 	}

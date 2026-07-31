@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export type AgentScope = {
   type: "workspace" | "strategy" | "workstream" | "project" | "department" | "document" | "task";
   id: number;
@@ -84,3 +86,48 @@ export type AgentRuntimeResult = {
     total_tokens: number;
   };
 };
+
+const scopeSchema = z.object({
+  type: z.enum(["workspace", "strategy", "workstream", "project", "department", "document", "task"]),
+  id: z.number().int().nonnegative(),
+  label: z.string().max(300),
+}).strict().superRefine((scope, context) => {
+  const rootScope = scope.type === "workspace" || scope.type === "strategy";
+  if ((rootScope && scope.id !== 0) || (!rootScope && scope.id <= 0)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "scope id does not match scope type",
+      path: ["id"],
+    });
+  }
+});
+
+export const executeRunRequestSchema = z.object({
+  run_id: z.string().min(1).max(160),
+  workspace_id: z.number().int().positive(),
+  user_id: z.number().int().positive(),
+  participant_role: z.string().max(80).optional(),
+  scope: scopeSchema,
+  message: z.string().min(1).max(120_000),
+  business_brief: z.string().max(120_000).optional(),
+  model: z.string().min(1).max(160),
+  previous_response_id: z.string().max(300).optional(),
+  conversation_id: z.string().max(300).optional(),
+  continuity_context: z.string().max(120_000).optional(),
+  vector_store_id: z.string().max(300).optional(),
+  run_token: z.string().min(1).max(8192),
+  max_turns: z.number().int().min(1).max(64).optional(),
+}).strict();
+
+export const resumeRunRequestSchema = z.object({
+  run_id: z.string().min(1).max(160),
+  model: z.string().min(1).max(160),
+  vector_store_id: z.string().max(300).optional(),
+  state: z.string().min(1).max(1_900_000),
+  run_token: z.string().min(1).max(8192),
+  decisions: z.array(z.object({
+    call_id: z.string().min(1).max(300),
+    approved: z.boolean(),
+  }).strict()).min(1).max(64),
+  max_turns: z.number().int().min(1).max(64).optional(),
+}).strict();

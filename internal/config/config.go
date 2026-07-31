@@ -39,6 +39,7 @@ type Config struct {
 	AIMonthlyBudgetUSD            float64
 	AIJobWorkers                  int
 	AIAgentJobWorkers             int
+	JobQueueNamespace             string
 	AgentRuntimeEnabled           bool
 	AgentRuntimeURL               string
 	AgentRuntimeSecret            string
@@ -226,6 +227,7 @@ func Load() *Config {
 		AIMonthlyBudgetUSD:            parseFloatEnv("AI_MONTHLY_BUDGET_USD", 0),
 		AIJobWorkers:                  parseIntEnv("AI_JOB_WORKERS", 6),
 		AIAgentJobWorkers:             parseIntEnv("AI_AGENT_JOB_WORKERS", 8),
+		JobQueueNamespace:             strings.TrimSpace(os.Getenv("JOB_QUEUE_NAMESPACE")),
 		AgentRuntimeEnabled:           parseBoolEnv("AGENT_RUNTIME_ENABLED"),
 		AgentRuntimeURL:               agentRuntimeURL,
 		AgentRuntimeSecret:            strings.TrimSpace(os.Getenv("AGENT_RUNTIME_SECRET")),

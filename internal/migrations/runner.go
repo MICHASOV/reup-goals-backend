@@ -3712,6 +3712,22 @@ var migrations = []Migration{
 				CHECK (scope_type IN ('workspace', 'strategy', 'workstream', 'project', 'department'));
 		`,
 	},
+	{
+		ID: "20260731_070_isolate_background_job_queues",
+		SQL: `
+			ALTER TABLE v2_background_jobs
+				ADD COLUMN IF NOT EXISTS queue_name TEXT NOT NULL DEFAULT 'default';
+
+			DROP INDEX IF EXISTS idx_v2_background_jobs_active_dedupe;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_background_jobs_active_dedupe
+				ON v2_background_jobs (queue_name, job_type, workspace_id, dedupe_key)
+				WHERE dedupe_key <> '' AND status='queued';
+
+			DROP INDEX IF EXISTS idx_v2_background_jobs_priority_due;
+			CREATE INDEX IF NOT EXISTS idx_v2_background_jobs_priority_due
+				ON v2_background_jobs (queue_name, status, priority DESC, not_before, id);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

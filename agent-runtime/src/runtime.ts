@@ -54,6 +54,12 @@ ${message}
 type AdvisorAgent = Agent<AgentRunContext, any>;
 type AdvisorStream = StreamedRunResult<AgentRunContext, any>;
 
+export function compactionThreshold(raw = process.env.AGENT_COMPACT_THRESHOLD): number {
+  const parsed = Number.parseInt(raw || "", 10);
+  if (!Number.isFinite(parsed)) return 60_000;
+  return Math.min(200_000, Math.max(20_000, parsed));
+}
+
 function createAgent(model: string, vectorStoreId?: string): AdvisorAgent {
   const tools = [...functionTools()];
   if (vectorStoreId?.trim()) {
@@ -70,6 +76,12 @@ function createAgent(model: string, vectorStoreId?: string): AdvisorAgent {
       reasoning: { effort: "medium", summary: "auto" },
       text: { verbosity: "medium" },
       parallelToolCalls: true,
+      providerData: {
+        context_management: [{
+          type: "compaction",
+          compact_threshold: compactionThreshold(),
+        }],
+      },
     },
     tools,
   });
@@ -291,6 +303,17 @@ export async function resumeRun(request: ResumeRunRequest): Promise<AgentRuntime
     });
     const partialOutput = await consumeStream(request.run_id, stream, events);
     return await finalize(request.run_id, stream, partialOutput, events);
+  } catch (error) {
+    const failed: AgentRuntimeEvent = {
+      type: "run_failed",
+      stage: "failed",
+      title: "Не удалось завершить подтверждение",
+      detail: "Решение сохранено. Продолжение можно повторить после восстановления соединения.",
+      created_at: now(),
+    };
+    events.push(failed);
+    await publishEvent(request.run_id, failed);
+    throw error;
   } finally {
     clearRunAccess(request.run_id);
   }

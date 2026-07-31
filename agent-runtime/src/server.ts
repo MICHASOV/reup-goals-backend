@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { ZodError } from "zod";
 
 import { configureOpenAIProvider } from "./provider.js";
 import { executeRun, resumeRun } from "./runtime.js";
-import type { ExecuteRunRequest, ResumeRunRequest } from "./types.js";
+import { executeRunRequestSchema, resumeRunRequestSchema } from "./types.js";
 
 const port = Number(process.env.PORT || 8091);
 const secret = (process.env.AGENT_RUNTIME_SECRET || "").trim();
@@ -44,19 +45,24 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "POST" && request.url === "/v1/runs/execute") {
-      const input = await readJSON<ExecuteRunRequest>(request);
+      const input = executeRunRequestSchema.parse(await readJSON<unknown>(request));
       writeJSON(response, 200, await executeRun(input));
       return;
     }
     if (request.method === "POST" && request.url === "/v1/runs/resume") {
-      const input = await readJSON<ResumeRunRequest>(request);
+      const input = resumeRunRequestSchema.parse(await readJSON<unknown>(request));
       writeJSON(response, 200, await resumeRun(input));
       return;
     }
     writeJSON(response, 404, { error: "not_found" });
   } catch (error) {
     const message = error instanceof Error ? error.message : "agent_runtime_failed";
-    writeJSON(response, 500, { error: message.slice(0, 1000) });
+    const status = message === "request_too_large"
+      ? 413
+      : error instanceof SyntaxError || error instanceof ZodError
+        ? 400
+        : 500;
+    writeJSON(response, status, { error: message.slice(0, 1000) });
   }
 });
 

@@ -114,6 +114,16 @@ func TestOrderedTacticsActionIndicesRejectsNonApplicableChange(t *testing.T) {
 	}
 }
 
+func TestValidateDraftChangesForConfirmationRejectsIncompletePackage(t *testing.T) {
+	changes := []TacticsDraftChange{{
+		Apply: true, Operation: "create", EntityType: EntityProject,
+		Title: "Проект без родителя", Description: "Описание проекта",
+	}}
+	if err := ValidateDraftChangesForConfirmation(changes); err == nil {
+		t.Fatal("incomplete project package must be rejected before confirmation")
+	}
+}
+
 func TestParseDraftMetricNumberSupportsLegacyDisplayValues(t *testing.T) {
 	tests := map[string]float64{
 		"85000":               85000,

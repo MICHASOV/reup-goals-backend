@@ -96,6 +96,7 @@ func (s *Service) listEntities(ctx context.Context, workspaceID int, input map[s
 		args []any
 	}
 	var selected entityQuery
+	searchColumn := "title"
 	switch entityType {
 	case "strategy":
 		selected.sql = `SELECT jsonb_build_object('id', id, 'title', title, 'summary', summary, 'status', status, 'version', version)
@@ -111,6 +112,7 @@ func (s *Service) listEntities(ctx context.Context, workspaceID int, input map[s
 			selected.args = append(selected.args, parentID)
 		}
 	case "department":
+		searchColumn = "name"
 		selected.sql = `SELECT jsonb_build_object('id', id, 'name', name, 'description', description, 'responsibility', responsibility, 'manager_user_id', manager_user_id, 'status', status)
 			FROM v2_departments WHERE workspace_id=$1 AND archived_at IS NULL`
 	case "task":
@@ -173,7 +175,7 @@ func (s *Service) listEntities(ctx context.Context, workspaceID int, input map[s
 	}
 	selected.sql += `
 		AND ($2='' OR status=$2)
-		AND ($3='' OR lower(COALESCE(title, '')) LIKE '%' || $3 || '%')
+		AND ($3='' OR lower(COALESCE(` + searchColumn + `, '')) LIKE '%' || $3 || '%')
 		ORDER BY ` + orderColumn + ` DESC, id DESC
 		LIMIT ` + fmt.Sprintf("%d", limit)
 	items, err := queryJSONRows(ctx, s.dbx, selected.sql, args...)
@@ -197,7 +199,12 @@ func (s *Service) getEntity(ctx context.Context, workspaceID int, input map[stri
 		"task":       `SELECT to_jsonb(item) FROM (SELECT id, project_id, workstream_id, department_id, title, description, expected_result, why_now, status, blocked, owner_user_id, due_date, completion_result FROM v2_tasks WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
 		"risk":       `SELECT to_jsonb(item) FROM (SELECT id, entity_type, entity_id, title, description, severity, probability, probability_value, impact_score, mitigation_plan, status FROM v2_tactical_risks WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
 		"hypothesis": `SELECT to_jsonb(item) FROM (SELECT id, entity_type, entity_id, title, statement, expected_effect, test_method, status, confidence FROM v2_tactical_hypotheses WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
-		"document":   `SELECT to_jsonb(item) FROM (SELECT id, title, document_type, markdown, status, version, generated_at FROM strategic_documents WHERE workspace_id=$1 AND id=$2) item`,
+		"document": `SELECT to_jsonb(item) FROM (
+			SELECT id, title, document_type, LEFT(markdown, 12000) AS markdown,
+				(char_length(markdown) > 12000) AS markdown_truncated,
+				status, version, generated_at
+			FROM strategic_documents WHERE workspace_id=$1 AND id=$2
+		) item`,
 	}
 	query, ok := queries[entityType]
 	if !ok {
@@ -276,7 +283,141 @@ func (s *Service) priorityView(ctx context.Context, workspaceID int, input map[s
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"scope_type": scopeType, "scope_id": scopeID, "ranked_tasks": items}, nil
+	projects, err := s.priorityProjects(ctx, workspaceID, scopeType, scopeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	directions, err := s.priorityDirections(ctx, workspaceID, scopeType, scopeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"scope_type":        scopeType,
+		"scope_id":          scopeID,
+		"ranked_tasks":      items,
+		"ranked_projects":   projects,
+		"ranked_directions": directions,
+	}, nil
+}
+
+func (s *Service) priorityProjects(
+	ctx context.Context,
+	workspaceID int,
+	scopeType string,
+	scopeID int,
+	limit int,
+) ([]any, error) {
+	filter := ""
+	args := []any{workspaceID}
+	switch scopeType {
+	case "workspace", "strategy":
+	case "workstream":
+		filter = ` AND project.workstream_id=$2`
+		args = append(args, scopeID)
+	case "project":
+		filter = ` AND project.id=$2`
+		args = append(args, scopeID)
+	case "department":
+		filter = ` AND EXISTS (
+			SELECT 1 FROM v2_project_departments link
+			WHERE link.workspace_id=project.workspace_id
+				AND link.project_id=project.id AND link.department_id=$2
+		)`
+		args = append(args, scopeID)
+	case "task":
+		filter = ` AND project.id=(
+			SELECT task.project_id FROM v2_tasks task
+			WHERE task.workspace_id=project.workspace_id AND task.id=$2
+		)`
+		args = append(args, scopeID)
+	default:
+		return nil, errors.New("invalid_agent_scope")
+	}
+	return queryJSONRows(ctx, s.dbx, `
+		SELECT jsonb_build_object(
+			'id', project.id, 'title', project.title, 'status', project.status,
+			'workstream_id', project.workstream_id,
+			'priority_score', COALESCE(evaluation.priority_score, 0),
+			'priority_tier', COALESCE(evaluation.priority_tier, ''),
+			'priority_reason', COALESCE(evaluation.priority_reason, ''),
+			'strategic_relevance', COALESCE(evaluation.strategic_relevance, 0),
+			'expected_impact', COALESCE(evaluation.expected_impact, 0),
+			'confidence', COALESCE(evaluation.confidence, 0)
+		)
+		FROM v2_tactical_projects project
+		LEFT JOIN LATERAL (
+			SELECT priority_score, priority_tier, priority_reason,
+				strategic_relevance, expected_impact, confidence
+			FROM v2_tactical_entity_evaluations
+			WHERE workspace_id=project.workspace_id
+				AND entity_type='project' AND entity_id=project.id
+			ORDER BY created_at DESC, id DESC LIMIT 1
+		) evaluation ON TRUE
+		WHERE project.workspace_id=$1 AND project.archived_at IS NULL
+			AND project.status NOT IN ('completed', 'archived', 'canceled')`+filter+`
+		ORDER BY COALESCE(evaluation.priority_score, 0) DESC, project.updated_at DESC
+		LIMIT `+fmt.Sprintf("%d", limit), args...)
+}
+
+func (s *Service) priorityDirections(
+	ctx context.Context,
+	workspaceID int,
+	scopeType string,
+	scopeID int,
+	limit int,
+) ([]any, error) {
+	filter := ""
+	args := []any{workspaceID}
+	switch scopeType {
+	case "workspace", "strategy":
+	case "workstream":
+		filter = ` AND direction.id=$2`
+		args = append(args, scopeID)
+	case "project":
+		filter = ` AND direction.id=(
+			SELECT project.workstream_id FROM v2_tactical_projects project
+			WHERE project.workspace_id=direction.workspace_id AND project.id=$2
+		)`
+		args = append(args, scopeID)
+	case "department":
+		filter = ` AND EXISTS (
+			SELECT 1 FROM v2_workstream_departments link
+			WHERE link.workspace_id=direction.workspace_id
+				AND link.workstream_id=direction.id AND link.department_id=$2
+		)`
+		args = append(args, scopeID)
+	case "task":
+		filter = ` AND direction.id=(
+			SELECT task.workstream_id FROM v2_tasks task
+			WHERE task.workspace_id=direction.workspace_id AND task.id=$2
+		)`
+		args = append(args, scopeID)
+	default:
+		return nil, errors.New("invalid_agent_scope")
+	}
+	return queryJSONRows(ctx, s.dbx, `
+		SELECT jsonb_build_object(
+			'id', direction.id, 'title', direction.title, 'status', direction.status,
+			'priority_score', COALESCE(evaluation.priority_score, 0),
+			'priority_tier', COALESCE(evaluation.priority_tier, ''),
+			'priority_reason', COALESCE(evaluation.priority_reason, ''),
+			'strategic_relevance', COALESCE(evaluation.strategic_relevance, 0),
+			'expected_impact', COALESCE(evaluation.expected_impact, 0),
+			'confidence', COALESCE(evaluation.confidence, 0)
+		)
+		FROM v2_tactical_workstreams direction
+		LEFT JOIN LATERAL (
+			SELECT priority_score, priority_tier, priority_reason,
+				strategic_relevance, expected_impact, confidence
+			FROM v2_tactical_entity_evaluations
+			WHERE workspace_id=direction.workspace_id
+				AND entity_type='workstream' AND entity_id=direction.id
+			ORDER BY created_at DESC, id DESC LIMIT 1
+		) evaluation ON TRUE
+		WHERE direction.workspace_id=$1 AND direction.archived_at IS NULL
+			AND direction.status NOT IN ('completed', 'archived', 'canceled')`+filter+`
+		ORDER BY COALESCE(evaluation.priority_score, 0) DESC, direction.updated_at DESC
+		LIMIT `+fmt.Sprintf("%d", limit), args...)
 }
 
 func queryJSONRows(ctx context.Context, dbx *sql.DB, query string, args ...any) ([]any, error) {
@@ -332,7 +473,7 @@ func draftChangesFromApprovals(items []Approval) []tactics.TacticsDraftChange {
 func draftChange(toolName string, input map[string]any) (tactics.TacticsDraftChange, bool) {
 	change := tactics.TacticsDraftChange{
 		Apply: true, Operation: "create", Title: stringValue(input, "title"),
-		Description: stringValue(input, "description"),
+		Description: stringValue(input, "description"), DraftKey: stringValue(input, "draft_key"),
 	}
 	if entityID := intValue(input, "existing_entity_id"); entityID > 0 {
 		change.Operation = "update"
@@ -352,6 +493,7 @@ func draftChange(toolName string, input map[string]any) (tactics.TacticsDraftCha
 		change.EntityType = tactics.EntityProject
 		change.ParentEntityType = tactics.EntityWorkstream
 		change.ParentEntityID = intPointer(intValue(input, "direction_id"))
+		change.ParentDraftKey = stringValue(input, "parent_draft_key")
 		change.WorkstreamID = change.ParentEntityID
 		change.ExpectedResult = stringValue(input, "expected_result")
 		change.WhyNeeded = stringValue(input, "why_needed")
@@ -368,6 +510,7 @@ func draftChange(toolName string, input map[string]any) (tactics.TacticsDraftCha
 		change.EntityType = tactics.EntityTask
 		change.ParentEntityType = tactics.EntityProject
 		change.ParentEntityID = intPointer(intValue(input, "project_id"))
+		change.ParentDraftKey = stringValue(input, "parent_draft_key")
 		change.ProjectID = change.ParentEntityID
 		change.ExpectedResult = stringValue(input, "expected_result")
 		change.DepartmentID = intPointer(intValue(input, "department_id"))
@@ -438,7 +581,8 @@ func tacticMetrics(value any) []tactics.TacticMetric {
 		metric := tactics.TacticMetric{
 			Name: stringValue(item, "name"), Current: stringValue(item, "current"),
 			Target: stringValue(item, "target"), Unit: stringValue(item, "unit"),
-			TargetDate: stringValue(item, "target_date"),
+			BetterDirection: stringValue(item, "better_direction"),
+			TargetDate:      stringValue(item, "target_date"),
 		}
 		if metric.Name != "" && metric.Target != "" {
 			result = append(result, metric)
@@ -479,6 +623,14 @@ func intSlice(value any) []int {
 		case int:
 			if value > 0 {
 				result = append(result, value)
+			}
+		case json.Number:
+			if parsed, err := value.Int64(); err == nil && parsed > 0 {
+				result = append(result, int(parsed))
+			}
+		case string:
+			if parsed := intValue(map[string]any{"value": value}, "value"); parsed > 0 {
+				result = append(result, parsed)
 			}
 		}
 	}

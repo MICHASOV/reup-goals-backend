@@ -31,36 +31,63 @@ export async function callBusinessTool(
   input: Record<string, unknown>,
 ): Promise<unknown> {
   const access = accessFor(runId);
-  const response = await fetch(`${access.internalBaseURL}/internal/agent/tools/${encodeURIComponent(toolName)}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${access.token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      run_id: runId,
-      tool_call_id: callId,
-      input,
-    }),
+  const url = `${access.internalBaseURL}/internal/agent/tools/${encodeURIComponent(toolName)}`;
+  const body = JSON.stringify({
+    run_id: runId,
+    tool_call_id: callId,
+    input,
   });
-  const raw = await response.text();
-  if (!response.ok) {
-    throw new Error(`business_tool_failed:${response.status}:${raw.slice(0, 500)}`);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${access.token}`,
+          "Content-Type": "application/json",
+        },
+        body,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt === 2) throw error;
+      await retryPause(attempt);
+      continue;
+    }
+    const raw = await response.text();
+    if (response.ok) {
+      return raw ? JSON.parse(raw) : { ok: true };
+    }
+    const error = new Error(`business_tool_failed:${response.status}:${raw.slice(0, 500)}`);
+    if (response.status !== 429 && response.status < 500) throw error;
+    lastError = error;
+    if (attempt === 2) throw error;
+    await retryPause(attempt);
   }
-  return raw ? JSON.parse(raw) : { ok: true };
+  throw lastError instanceof Error ? lastError : new Error("business_tool_failed");
+}
+
+function retryPause(attempt: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 250 : 750));
 }
 
 export async function publishEvent(runId: string, event: AgentRuntimeEvent): Promise<void> {
   const access = accessFor(runId);
   try {
-    await fetch(`${access.internalBaseURL}/internal/agent/runs/${encodeURIComponent(runId)}/events`, {
+    const response = await fetch(`${access.internalBaseURL}/internal/agent/runs/${encodeURIComponent(runId)}/events`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${access.token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(event),
+      signal: AbortSignal.timeout(5_000),
     });
+    if (!response.ok) {
+      throw new Error(`event_publish_failed:${response.status}`);
+    }
   } catch {
     // Event delivery is best effort. The completed runtime response also carries the event list.
   }
