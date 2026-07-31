@@ -91,11 +91,15 @@ const metricNumber = z.string()
 
 const metricSchema = z.object({
   name: z.string().min(1).max(160),
-  current: metricNumber.nullable(),
-  target: metricNumber,
-  unit: z.string().max(40).nullable(),
+  current: metricNumber.nullable()
+    .describe("The verified current baseline. Use null when no actual baseline was supplied or retrieved; never invent zero."),
+  target: metricNumber
+    .describe("The numeric target or numeric change magnitude."),
+  unit: z.string().max(40).nullable()
+    .describe("The target unit. It may clarify a relative change, for example '% reduction from verified baseline'."),
   better_direction: z.enum(["increase", "decrease", "range"]),
-  target_date: z.string().max(20).nullable(),
+  target_date: z.string().max(20).nullable()
+    .describe("An exact ISO calendar date only when explicitly supplied or reliably known. Otherwise use null; never infer a date from an entity title."),
 });
 
 function proposalTool(name: string, description: string, parameters: AnyZodObject) {
