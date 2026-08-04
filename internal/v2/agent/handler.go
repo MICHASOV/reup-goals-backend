@@ -174,7 +174,8 @@ func writeServiceError(w http.ResponseWriter, err error, fallback string) {
 	case strings.Contains(err.Error(), "invalid_"):
 		api.WriteError(w, http.StatusBadRequest, err.Error())
 	case strings.Contains(err.Error(), "not_waiting"), strings.Contains(err.Error(), "not_pending"),
-		strings.Contains(err.Error(), "decision_incomplete"), strings.Contains(err.Error(), "already_active"):
+		strings.Contains(err.Error(), "decision_incomplete"), strings.Contains(err.Error(), "already_active"),
+		strings.Contains(err.Error(), "version_conflict"), strings.Contains(err.Error(), "task_must_be_in_progress"):
 		api.WriteError(w, http.StatusConflict, err.Error())
 	default:
 		api.WriteError(w, http.StatusInternalServerError, fallback)

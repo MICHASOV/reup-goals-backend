@@ -21,10 +21,11 @@ type Handler struct {
 	store      *Store
 	workspaces *workspaces.Store
 	recorder   *strategicmemory.SourceRecorder
+	hub        *documentHub
 }
 
 func NewHandler(dbx *sql.DB, recorders ...*strategicmemory.SourceRecorder) *Handler {
-	handler := &Handler{store: NewStore(dbx), workspaces: workspaces.NewStore(dbx)}
+	handler := &Handler{store: NewStore(dbx), workspaces: workspaces.NewStore(dbx), hub: newDocumentHub()}
 	if len(recorders) > 0 {
 		handler.recorder = recorders[0]
 	}
@@ -62,6 +63,10 @@ func (h *Handler) Documents(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if documentID, stream := documentEventIDSuffix(r.URL.Path); stream {
+		h.streamDocument(w, r, workspace.ID, documentID)
+		return
+	}
 
 	documentID, ok := documentIDSuffix(r.URL.Path)
 	if !ok {
@@ -91,6 +96,7 @@ func (h *Handler) Documents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.captureDocument(r.Context(), workspace.ID, membership.UserID, document)
+		h.hub.publish(documentStreamKey{workspaceID: workspace.ID, documentID: documentID}, document)
 		api.WriteJSON(w, http.StatusOK, map[string]any{"document": document})
 	case http.MethodDelete:
 		if membership.Role != workspaces.MembershipRoleOwner {
@@ -102,10 +108,23 @@ func (h *Handler) Documents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.captureDocument(r.Context(), workspace.ID, membership.UserID, document)
+		h.hub.publish(documentStreamKey{workspaceID: workspace.ID, documentID: documentID}, document)
 		api.WriteJSON(w, http.StatusOK, map[string]any{"document": document})
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}
+}
+
+func documentEventIDSuffix(path string) (int64, bool) {
+	const prefix = "/api/v2/workspace-documents/"
+	const suffix = "/events"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(strings.TrimSuffix(path, "/"), suffix) {
+		return 0, false
+	}
+	value := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSuffix(path, "/"), prefix), suffix)
+	value = strings.Trim(value, "/")
+	id, err := strconv.ParseInt(value, 10, 64)
+	return id, err == nil && id > 0
 }
 
 func (h *Handler) captureDocument(ctx context.Context, workspaceID int, userID int, document Document) {

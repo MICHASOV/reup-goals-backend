@@ -23,6 +23,7 @@ var (
 	ErrDependencyCycle          = errors.New("task_dependency_cycle")
 	ErrCompletionResultRequired = errors.New("task_completion_result_required")
 	ErrInvalidCompletionFile    = errors.New("invalid_task_completion_file")
+	ErrLowPriorityTask          = errors.New("task_recommended_for_removal")
 )
 
 type Store struct {
@@ -259,9 +260,11 @@ func (s *Store) Get(ctx context.Context, workspaceID int, taskID int) (Task, err
 
 func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input TaskInput) (Task, error) {
 	input.normalize()
-	if input.WorkstreamID <= 0 || input.ProjectID == nil || *input.ProjectID <= 0 ||
-		input.Title == nil || strings.TrimSpace(*input.Title) == "" ||
+	if input.Title == nil || strings.TrimSpace(*input.Title) == "" ||
 		input.Description == nil || strings.TrimSpace(*input.Description) == "" {
+		return Task{}, ErrInvalidInput
+	}
+	if input.WorkstreamID <= 0 && (input.DepartmentID == nil || *input.DepartmentID <= 0) {
 		return Task{}, ErrInvalidInput
 	}
 	status := StatusFree
@@ -291,9 +294,19 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 		return Task{}, ErrForbidden
 	}
 
-	workstream, err := s.workstreamByID(ctx, workspaceID, input.WorkstreamID)
-	if err != nil {
-		return Task{}, ErrForbidden
+	var workstream workstreamRef
+	var err error
+	if input.WorkstreamID > 0 {
+		workstream, err = s.workstreamByID(ctx, workspaceID, input.WorkstreamID)
+		if err != nil {
+			return Task{}, ErrForbidden
+		}
+	} else {
+		workstream, err = s.ensureDirectionWorkstream(ctx, workspaceID, userID, *input.DepartmentID, 0)
+		if err != nil {
+			return Task{}, err
+		}
+		input.WorkstreamID = workstream.ID
 	}
 	plan, err := s.planSummaryByID(ctx, workspaceID, workstream.TacticalPlanID)
 	if err != nil || workstream.TacticalPlanID != plan.ID {
@@ -368,6 +381,11 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 	}
 	if err := s.replaceTaskDependencies(ctx, workspaceID, task.ID, input.BlockingTaskIDs); err != nil {
 		return Task{}, err
+	}
+	if input.AttachmentFileIDs != nil {
+		if err := s.ReplaceTaskAttachments(ctx, workspaceID, task.ID, *input.AttachmentFileIDs); err != nil {
+			return Task{}, err
+		}
 	}
 	items, err := s.decorateTasks(ctx, workspaceID, []Task{task})
 	if err != nil {
@@ -444,6 +462,9 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 	if status == StatusDone && completionResult == "" {
 		return Task{}, ErrCompletionResultRequired
 	}
+	if status != current.Status && (status == StatusInProgress || status == StatusDone) && isRemovalPriority(current) {
+		return Task{}, ErrLowPriorityTask
+	}
 	blocked := current.Blocked
 	if input.Blocked != nil {
 		blocked = *input.Blocked
@@ -457,11 +478,11 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 	}
 	projectID := current.ProjectID
 	if input.ClearProject {
-		return Task{}, ErrInvalidInput
+		projectID = nil
 	} else if input.ProjectID != nil {
 		projectID = input.ProjectID
 	}
-	if projectID == nil || *projectID <= 0 {
+	if projectID != nil && *projectID <= 0 {
 		return Task{}, ErrInvalidInput
 	}
 	departmentID := current.DepartmentID
@@ -487,6 +508,14 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 	workstreamID := current.WorkstreamID
 	if input.WorkstreamID > 0 {
 		workstreamID = input.WorkstreamID
+	} else if input.DepartmentID != nil && departmentID != current.DepartmentID {
+		compatibilityWorkstream, compatibilityErr := s.ensureDirectionWorkstream(
+			ctx, workspaceID, userID, departmentID, current.TacticalPlanID,
+		)
+		if compatibilityErr != nil {
+			return Task{}, compatibilityErr
+		}
+		workstreamID = compatibilityWorkstream.ID
 	}
 	workstream, err := s.workstreamByID(ctx, workspaceID, workstreamID)
 	if err != nil {
@@ -576,6 +605,11 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 	}
 	if input.BlockingTaskIDs != nil {
 		if err := s.replaceTaskDependencies(ctx, workspaceID, task.ID, blockingTaskIDs); err != nil {
+			return Task{}, err
+		}
+	}
+	if input.AttachmentFileIDs != nil {
+		if err := s.ReplaceTaskAttachments(ctx, workspaceID, task.ID, *input.AttachmentFileIDs); err != nil {
 			return Task{}, err
 		}
 	}
@@ -734,6 +768,9 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 	}
 	if status == StatusDone && strings.TrimSpace(current.CompletionResult) == "" {
 		return Task{}, ErrCompletionResultRequired
+	}
+	if status != current.Status && (status == StatusInProgress || status == StatusDone) && isRemovalPriority(current) {
+		return Task{}, ErrLowPriorityTask
 	}
 
 	tx, err := s.dbx.BeginTx(ctx, nil)
@@ -897,6 +934,167 @@ func (s *Store) workstreams(ctx context.Context, workspaceID int, planID int) ([
 type workstreamRef struct {
 	ID             int
 	TacticalPlanID int
+}
+
+// ensureDirectionWorkstream keeps the old relational requirements behind the
+// API boundary. Users work with directions and tasks; this technical record is
+// only needed by existing evaluation and reporting tables.
+func (s *Store) ensureDirectionWorkstream(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	departmentID int,
+	preferredPlanID int,
+) (workstreamRef, error) {
+	if departmentID <= 0 {
+		return workstreamRef{}, ErrInvalidInput
+	}
+
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return workstreamRef{}, err
+	}
+	defer tx.Rollback()
+
+	lockKey := int64(workspaceID)*1000000 + int64(departmentID)
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey); err != nil {
+		return workstreamRef{}, err
+	}
+
+	var departmentName string
+	var departmentDescription string
+	var departmentResponsibility string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT name, description, responsibility
+		FROM v2_departments
+		WHERE id=$1 AND workspace_id=$2 AND status='active' AND archived_at IS NULL
+	`, departmentID, workspaceID).Scan(&departmentName, &departmentDescription, &departmentResponsibility); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return workstreamRef{}, ErrForbidden
+		}
+		return workstreamRef{}, err
+	}
+
+	var existing workstreamRef
+	err = tx.QueryRowContext(ctx, `
+		SELECT workstream.id, workstream.tactical_plan_id
+		FROM v2_tactical_workstreams workstream
+		JOIN v2_workstream_departments link
+			ON link.workspace_id=workstream.workspace_id AND link.workstream_id=workstream.id
+		WHERE workstream.workspace_id=$1
+			AND link.department_id=$2
+			AND link.role='lead'
+			AND workstream.source=$3
+			AND workstream.archived_at IS NULL
+			AND ($4::INTEGER = 0 OR workstream.tactical_plan_id=$4)
+		ORDER BY workstream.updated_at DESC, workstream.id DESC
+		LIMIT 1
+	`, workspaceID, departmentID, SourceDirectionCompatibility, preferredPlanID).Scan(
+		&existing.ID, &existing.TacticalPlanID,
+	)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return workstreamRef{}, err
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return workstreamRef{}, err
+	}
+
+	var plan TacticalPlanSummary
+	if preferredPlanID > 0 {
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, strategy_id, course_id
+			FROM v2_tactical_plans
+			WHERE id=$1 AND workspace_id=$2 AND archived_at IS NULL
+		`, preferredPlanID, workspaceID).Scan(&plan.ID, &plan.StrategyID, &plan.CourseID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return workstreamRef{}, ErrForbidden
+			}
+			return workstreamRef{}, err
+		}
+	} else {
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, strategy_id, course_id
+			FROM v2_tactical_plans
+			WHERE workspace_id=$1 AND archived_at IS NULL
+			ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, updated_at DESC, id DESC
+			LIMIT 1
+		`, workspaceID).Scan(&plan.ID, &plan.StrategyID, &plan.CourseID)
+		if errors.Is(err, sql.ErrNoRows) {
+			var strategyID int
+			err = tx.QueryRowContext(ctx, `
+				SELECT id
+				FROM v2_strategies
+				WHERE workspace_id=$1 AND status IN ('active', 'ready_for_review', 'draft') AND archived_at IS NULL
+				ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'ready_for_review' THEN 1 ELSE 2 END, version DESC, id DESC
+				LIMIT 1
+			`, workspaceID).Scan(&strategyID)
+			if errors.Is(err, sql.ErrNoRows) {
+				err = tx.QueryRowContext(ctx, `
+					INSERT INTO v2_strategies (workspace_id, status, version, title, summary, source_type, created_by)
+					VALUES ($1, 'draft', COALESCE((SELECT MAX(version)+1 FROM v2_strategies WHERE workspace_id=$1), 1),
+						'Рабочая цель', '', 'direction_compat', $2)
+					RETURNING id
+				`, workspaceID, userID).Scan(&strategyID)
+			}
+			if err != nil {
+				return workstreamRef{}, err
+			}
+
+			err = tx.QueryRowContext(ctx, `
+				INSERT INTO v2_tactical_plans (workspace_id, strategy_id, course_id, status, title, summary, source, created_by)
+				VALUES ($1, $2, NULL, 'draft', 'Технический контекст задач', '', 'direction_compat', $3)
+				ON CONFLICT (workspace_id, strategy_id) DO UPDATE SET updated_at=v2_tactical_plans.updated_at
+				RETURNING id, strategy_id, course_id
+			`, workspaceID, strategyID, userID).Scan(&plan.ID, &plan.StrategyID, &plan.CourseID)
+		}
+		if err != nil {
+			return workstreamRef{}, err
+		}
+	}
+
+	var workstreamID int
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO v2_tactical_workstreams (
+			workspace_id, tactical_plan_id, strategy_id, course_id, title, description, goal, ckp,
+			reason, closes_risk, metric_name, metric_current, metric_target, metrics_json,
+			status, health_status, contribution_type, source, sort_order, created_by
+		)
+		VALUES (
+			$1, $2, $3, $4, $5, $6, $7, '', '', '', '', '', '', '[]'::jsonb,
+			'active', 'В работе', '', $8,
+			COALESCE((SELECT MAX(sort_order)+1 FROM v2_tactical_workstreams WHERE workspace_id=$1 AND tactical_plan_id=$2), 0),
+			$9
+		)
+		RETURNING id
+	`, workspaceID, plan.ID, plan.StrategyID, nullableInt(plan.CourseID), departmentName,
+		departmentDescription, departmentResponsibility, SourceDirectionCompatibility, userID).Scan(&workstreamID)
+	if err != nil {
+		return workstreamRef{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM v2_workstream_departments
+		WHERE workspace_id=$1 AND workstream_id=$2
+	`, workspaceID, workstreamID); err != nil {
+		return workstreamRef{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO v2_workstream_departments (workspace_id, workstream_id, department_id, role)
+		VALUES ($1, $2, $3, 'lead')
+	`, workspaceID, workstreamID, departmentID); err != nil {
+		return workstreamRef{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return workstreamRef{}, err
+	}
+	return workstreamRef{ID: workstreamID, TacticalPlanID: plan.ID}, nil
+}
+
+func isRemovalPriority(task Task) bool {
+	return task.EvaluationStatus == EvaluationReady && task.EffectivePriorityScore < 300
 }
 
 func (s *Store) workstreamByID(ctx context.Context, workspaceID int, workstreamID int) (workstreamRef, error) {
@@ -1327,6 +1525,7 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		secondaryByTask              map[int][]int
 		dependenciesByTask           map[int][]BlockingTask
 		completionFilesByTask        map[int][]TaskCompletionFile
+		attachmentsByTask            map[int][]TaskAttachment
 		completionEvaluations        map[int]TaskCompletionEvaluation
 		completionEvaluationStatuses map[int]string
 		evaluations                  map[int]TaskEvaluation
@@ -1334,12 +1533,13 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		secondaryErr                 error
 		dependenciesErr              error
 		completionFilesErr           error
+		attachmentsErr               error
 		completionEvaluationsErr     error
 		evaluationsErr               error
 		jobStatusesErr               error
 		wait                         sync.WaitGroup
 	)
-	wait.Add(6)
+	wait.Add(7)
 	go func() {
 		defer wait.Done()
 		secondaryByTask, secondaryErr = s.taskSecondaryWorkstreams(ctx, workspaceID, taskIDs)
@@ -1351,6 +1551,10 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 	go func() {
 		defer wait.Done()
 		completionFilesByTask, completionFilesErr = s.taskCompletionFiles(ctx, workspaceID, taskIDs)
+	}()
+	go func() {
+		defer wait.Done()
+		attachmentsByTask, attachmentsErr = s.taskAttachments(ctx, workspaceID, taskIDs)
 	}()
 	go func() {
 		defer wait.Done()
@@ -1369,6 +1573,7 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		secondaryErr,
 		dependenciesErr,
 		completionFilesErr,
+		attachmentsErr,
 		completionEvaluationsErr,
 		evaluationsErr,
 		jobStatusesErr,
@@ -1382,6 +1587,10 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		tasks[i].CompletionFiles = completionFilesByTask[tasks[i].ID]
 		if tasks[i].CompletionFiles == nil {
 			tasks[i].CompletionFiles = []TaskCompletionFile{}
+		}
+		tasks[i].Attachments = attachmentsByTask[tasks[i].ID]
+		if tasks[i].Attachments == nil {
+			tasks[i].Attachments = []TaskAttachment{}
 		}
 		if evaluation, ok := completionEvaluations[tasks[i].ID]; ok {
 			tasks[i].CompletionEvaluation = &evaluation

@@ -28,6 +28,9 @@ const toolTitles: Record<string, { started: string; completed: string; type: Age
   list_workspace_members: { started: "Проверяю команду и роли", completed: "Участники workspace проверены", type: "tool_started" },
   get_priority_view: { started: "Сопоставляю текущие приоритеты", completed: "Приоритеты сопоставлены", type: "tool_started" },
   search_metric_catalog: { started: "Ищу подходящие измеримые метрики", completed: "Метрики найдены", type: "tool_started" },
+  propose_document: { started: "Собираю новый документ", completed: "Документ подготовлен", type: "tool_started" },
+  update_document: { started: "Обновляю содержание документа", completed: "Изменения документа подготовлены", type: "tool_started" },
+  complete_task: { started: "Фиксирую фактический результат", completed: "Результат задачи подготовлен", type: "tool_started" },
 };
 
 function now(): string {

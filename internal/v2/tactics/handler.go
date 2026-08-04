@@ -596,6 +596,10 @@ func (h *Handler) Workstreams(w http.ResponseWriter, r *http.Request) {
 		writeEntity(w, err, "workstream", workstream, "workstream_create_failed")
 		return
 	}
+	if workstreamID, participants := workstreamParticipantsPath(r.URL.Path); participants {
+		h.workstreamParticipants(w, r, workspace.ID, workstreamID)
+		return
+	}
 
 	workstreamID, ok := numericSuffix(r.URL.Path, "/api/v2/tactics/workstreams/")
 	if !ok {
@@ -628,6 +632,56 @@ func (h *Handler) Workstreams(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeEntity(w, err, "workstream", workstream, "workstream_update_failed")
+}
+
+func (h *Handler) workstreamParticipants(w http.ResponseWriter, r *http.Request, workspaceID int, workstreamID int) {
+	switch r.Method {
+	case http.MethodGet:
+		participants, err := h.store.WorkstreamParticipants(r.Context(), workspaceID, workstreamID)
+		if errors.Is(err, sql.ErrNoRows) {
+			api.WriteError(w, http.StatusNotFound, "workstream_not_found")
+			return
+		}
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "workstream_participants_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, participants)
+	case http.MethodPut:
+		var input WorkstreamParticipants
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			api.WriteError(w, http.StatusBadRequest, "invalid_json")
+			return
+		}
+		participants, err := h.store.SetWorkstreamParticipants(r.Context(), workspaceID, workstreamID, input)
+		if errors.Is(err, ErrInvalidDirectionParticipants) {
+			api.WriteError(w, http.StatusUnprocessableEntity, ErrInvalidDirectionParticipants.Error())
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			api.WriteError(w, http.StatusNotFound, "workstream_not_found")
+			return
+		}
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "workstream_participants_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, participants)
+	default:
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	}
+}
+
+func workstreamParticipantsPath(path string) (int, bool) {
+	const prefix = "/api/v2/tactics/workstreams/"
+	const suffix = "/participants"
+	trimmed := strings.TrimSuffix(path, "/")
+	if !strings.HasPrefix(trimmed, prefix) || !strings.HasSuffix(trimmed, suffix) {
+		return 0, false
+	}
+	value := strings.Trim(strings.TrimSuffix(strings.TrimPrefix(trimmed, prefix), suffix), "/")
+	id, err := strconv.Atoi(value)
+	return id, err == nil && id > 0
 }
 
 func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {

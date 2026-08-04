@@ -70,6 +70,20 @@ func TestNormalizeTacticsDraftChangesRejectsIncompleteCreate(t *testing.T) {
 	}
 }
 
+func TestTaskDraftRequiresDirectionButNotLegacyProject(t *testing.T) {
+	directionID := 7
+	ownerID := 11
+	changes := normalizeTacticsDraftChanges([]TacticsDraftChange{{
+		Apply: true, Operation: "create", EntityType: EntityTask,
+		Title: "Собрать выборку", Description: "Собрать данные для принятия решения.",
+		WhyNow: "Без фактов нельзя принять решение", ExpectedResult: "Проверенная выборка",
+		DepartmentID: &directionID, OwnerUserID: &ownerID, DueDate: "2026-08-10",
+	}})
+	if len(changes) != 1 {
+		t.Fatalf("direction task must be confirmable without a legacy project: %#v", changes)
+	}
+}
+
 func TestWorkstreamInputUsesFirstMetricForLegacyFields(t *testing.T) {
 	input := WorkstreamInput{Metrics: []TacticMetric{
 		{Name: " Revenue ", Current: " 10 ", Target: " 20 "},

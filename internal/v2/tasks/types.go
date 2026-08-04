@@ -20,6 +20,9 @@ const (
 	SourceHypothesis   = "hypothesis"
 	SourceOpportunity  = "opportunity"
 	SourceAISuggestion = "ai_suggestion"
+	// Internal bridge for the direction -> task product model. The current UI
+	// must not expose this record as an independent workstream.
+	SourceDirectionCompatibility = "direction_compat"
 
 	EvaluationQueued  = "queued"
 	EvaluationRunning = "running"
@@ -163,6 +166,7 @@ type Task struct {
 	HypothesisOutcome          string                    `json:"hypothesis_outcome"`
 	NextStep                   string                    `json:"next_step"`
 	CompletionFiles            []TaskCompletionFile      `json:"completion_files"`
+	Attachments                []TaskAttachment          `json:"attachments"`
 	CompletionEvaluation       *TaskCompletionEvaluation `json:"completion_evaluation,omitempty"`
 	CompletionEvaluationStatus string                    `json:"completion_evaluation_status"`
 	Evaluation                 *TaskEvaluation           `json:"evaluation,omitempty"`
@@ -180,6 +184,15 @@ type TaskCompletionFile struct {
 	ContentType string    `json:"content_type"`
 	SizeBytes   int64     `json:"size_bytes"`
 	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type TaskAttachment struct {
+	ID          int64     `json:"id"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"content_type"`
+	SizeBytes   int64     `json:"size_bytes"`
+	DownloadURL string    `json:"download_url"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -250,33 +263,34 @@ type WorkstreamResponse struct {
 }
 
 type TaskInput struct {
-	WorkstreamID           int     `json:"workstream_id"`
-	DepartmentID           *int    `json:"department_id"`
-	ProjectID              *int    `json:"project_id"`
-	ClearProject           bool    `json:"clear_project"`
-	RiskID                 *int    `json:"risk_id"`
-	OpportunityID          *int    `json:"opportunity_id"`
-	Title                  *string `json:"title"`
-	Description            *string `json:"description"`
-	ExpectedResult         *string `json:"expected_result"`
-	SuccessCriteria        *string `json:"success_criteria"`
-	WhyNow                 *string `json:"why_now"`
-	Status                 *string `json:"status"`
-	Blocked                *bool   `json:"blocked"`
-	BlockingTaskIDs        []int   `json:"blocking_task_ids"`
-	BacklogCategory        *string `json:"backlog_category"`
-	SecondaryWorkstreamIDs []int   `json:"secondary_workstream_ids"`
-	PriorityOrder          *int    `json:"priority_order"`
-	OwnerUserID            *int    `json:"owner_user_id"`
-	ClearOwner             bool    `json:"clear_owner"`
-	DueDate                *string `json:"due_date"`
-	SourceType             *string `json:"source_type"`
-	SourceID               *int    `json:"source_id"`
-	CompletionResult       *string `json:"completion_result"`
-	CompletionEvidence     *string `json:"completion_evidence"`
-	CompletionLearning     *string `json:"completion_learning"`
-	HypothesisOutcome      *string `json:"hypothesis_outcome"`
-	NextStep               *string `json:"next_step"`
+	WorkstreamID           int      `json:"workstream_id"`
+	DepartmentID           *int     `json:"department_id"`
+	ProjectID              *int     `json:"project_id"`
+	ClearProject           bool     `json:"clear_project"`
+	RiskID                 *int     `json:"risk_id"`
+	OpportunityID          *int     `json:"opportunity_id"`
+	Title                  *string  `json:"title"`
+	Description            *string  `json:"description"`
+	ExpectedResult         *string  `json:"expected_result"`
+	SuccessCriteria        *string  `json:"success_criteria"`
+	WhyNow                 *string  `json:"why_now"`
+	Status                 *string  `json:"status"`
+	Blocked                *bool    `json:"blocked"`
+	BlockingTaskIDs        []int    `json:"blocking_task_ids"`
+	BacklogCategory        *string  `json:"backlog_category"`
+	SecondaryWorkstreamIDs []int    `json:"secondary_workstream_ids"`
+	PriorityOrder          *int     `json:"priority_order"`
+	OwnerUserID            *int     `json:"owner_user_id"`
+	ClearOwner             bool     `json:"clear_owner"`
+	DueDate                *string  `json:"due_date"`
+	SourceType             *string  `json:"source_type"`
+	SourceID               *int     `json:"source_id"`
+	CompletionResult       *string  `json:"completion_result"`
+	CompletionEvidence     *string  `json:"completion_evidence"`
+	CompletionLearning     *string  `json:"completion_learning"`
+	HypothesisOutcome      *string  `json:"hypothesis_outcome"`
+	NextStep               *string  `json:"next_step"`
+	AttachmentFileIDs      *[]int64 `json:"attachment_file_ids"`
 }
 
 type BrainstormMessage struct {

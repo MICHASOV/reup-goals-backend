@@ -69,14 +69,17 @@ func TestQuotaTokenUsageDiscountsCachedInput(t *testing.T) {
 }
 
 func TestValidAttachment(t *testing.T) {
-	if !validAttachment(Attachment{Type: "project", ID: 12, Label: "Проект"}) {
-		t.Fatal("valid project attachment was rejected")
+	if !validAttachment(Attachment{Type: "department", ID: 12, Label: "Продажи"}) {
+		t.Fatal("valid direction attachment was rejected")
 	}
 	if !validAttachment(Attachment{Type: "knowledge_document", Key: "finance", Label: "Финансы"}) {
 		t.Fatal("valid knowledge document attachment was rejected")
 	}
-	if validAttachment(Attachment{Type: "project", Label: "Без идентификатора"}) {
-		t.Fatal("project attachment without id must be rejected")
+	if validAttachment(Attachment{Type: "department", Label: "Без идентификатора"}) {
+		t.Fatal("direction attachment without id must be rejected")
+	}
+	if validAttachment(Attachment{Type: "project", ID: 12, Label: "Старый проект"}) {
+		t.Fatal("legacy project attachments must not enter new runs")
 	}
 	if validAttachment(Attachment{Type: "external_url", Key: "https://example.com", Label: "URL"}) {
 		t.Fatal("unknown attachment type must be rejected")
@@ -110,11 +113,11 @@ func TestDraftChangeSupportsCreateAndUpdate(t *testing.T) {
 
 	updated, ok := draftChange("propose_task", map[string]any{
 		"existing_entity_id": 91,
-		"project_id":         31,
+		"direction_id":       7,
 		"title":              "Подготовить выборку",
 		"description":        "Собрать данные для принятия решения.",
+		"why_now":            "Решение по каналу нельзя принять без фактов",
 		"expected_result":    "Проверенная выборка",
-		"department_id":      7,
 		"owner_deferred":     true,
 		"due_date_deferred":  true,
 	})
@@ -172,12 +175,12 @@ func TestDraftPackageKeepsParentReferencesAndMetricDirection(t *testing.T) {
 	}
 
 	task, ok := draftChange("propose_task", map[string]any{
-		"draft_key": "task-sample", "parent_draft_key": "project-growth",
+		"draft_key": "task-sample", "direction_draft_key": "direction-growth",
 		"title": "Собрать выборку", "description": "Собрать исходные данные.",
-		"expected_result": "Готовая выборка", "department_id": 7,
+		"why_now": "Нужны факты для решения", "expected_result": "Готовая выборка",
 		"owner_deferred": true, "due_date_deferred": true,
 	})
-	if !ok || task.ParentDraftKey != "project-growth" {
+	if !ok || task.ParentDraftKey != "direction-growth" || task.ParentEntityType != tactics.EntityDepartment {
 		t.Fatalf("task parent reference was lost: %#v", task)
 	}
 }
@@ -245,6 +248,26 @@ func TestStrategyReviewDraftKeepsCompleteStrategy(t *testing.T) {
 	}
 	if change.KeyMetric != "Contribution margin" || change.DeliberateNonPriorities == "" {
 		t.Fatalf("strategy decision fields were lost: %#v", change)
+	}
+}
+
+func TestDocumentAndCompletionDraftsUseTheSharedApprovalFlow(t *testing.T) {
+	document, ok := draftChange("update_document", map[string]any{
+		"document_id": 18, "base_version": 4, "title": "Регламент продаж", "content": "# Регламент\n\nНовая версия.",
+	})
+	if !ok || document.EntityType != "workspace_document" || document.Operation != "update" ||
+		document.EntityID == nil || *document.EntityID != 18 {
+		t.Fatalf("unexpected document draft: %#v", document)
+	}
+	completion, ok := draftChange("complete_task", map[string]any{
+		"task_id": 33, "task_title": "Проверить воронку", "result": "Проверено 120 лидов; конверсия выросла до 14%.",
+	})
+	if !ok || completion.EntityType != "task_completion" || completion.Operation != "complete" ||
+		completion.EntityID == nil || *completion.EntityID != 33 {
+		t.Fatalf("unexpected task completion draft: %#v", completion)
+	}
+	if !isApprovalTool("update_document") || !isApprovalTool("complete_task") {
+		t.Fatal("non-prefixed durable tools must use stored approval results")
 	}
 }
 

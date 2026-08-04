@@ -74,14 +74,18 @@ func (s *TaskCompletionService) Complete(ctx context.Context, workspaceID int, u
 	if resultText == "" || len([]rune(resultText)) > 20000 {
 		return Task{}, ErrCompletionResultRequired
 	}
-	if _, err := s.store.Get(ctx, workspaceID, taskID); err != nil {
+	current, err := s.store.Get(ctx, workspaceID, taskID)
+	if err != nil {
 		return Task{}, err
+	}
+	if current.Status != StatusInProgress {
+		return Task{}, fmt.Errorf("task_must_be_in_progress")
 	}
 	if err := s.store.ReplaceCompletionFiles(ctx, workspaceID, taskID, request.FileIDs); err != nil {
 		return Task{}, err
 	}
 
-	status := StatusDone
+	status := StatusInProgress
 	updated, err := s.store.Update(ctx, workspaceID, userID, taskID, TaskInput{
 		Status: &status, CompletionResult: &resultText,
 	})
@@ -130,20 +134,57 @@ func (s *TaskCompletionService) Complete(ctx context.Context, workspaceID int, u
 	if generateErr != nil {
 		_ = s.store.SaveCompletionEvaluationFailure(ctx, workspaceID, taskID, s.ai.ModelName(), generateErr.Error(), duration)
 		s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_completion_evaluator", s.ai.ModelName(), taskCompletionPromptVersion, duration, 0, 0, "failed", generateErr.Error())
-		return s.completedTask(ctx, workspaceID, userID, taskID)
+		return s.store.Get(ctx, workspaceID, taskID)
 	}
 
 	output, parseErr := parseTaskCompletionOutput(generated.Text)
 	if parseErr != nil {
 		_ = s.store.SaveCompletionEvaluationFailure(ctx, workspaceID, taskID, s.ai.ModelName(), parseErr.Error(), duration)
 		s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_completion_evaluator", s.ai.ModelName(), taskCompletionPromptVersion, duration, generated.Usage.InputTokens, generated.Usage.OutputTokens, "failed", parseErr.Error())
-		return s.completedTask(ctx, workspaceID, userID, taskID)
+		return s.store.Get(ctx, workspaceID, taskID)
 	}
 	if err := s.store.SaveCompletionEvaluation(ctx, workspaceID, taskID, s.ai.ModelName(), output, generated.Usage.InputTokens, generated.Usage.OutputTokens, duration); err != nil {
 		_, _ = s.completedTask(ctx, workspaceID, userID, taskID)
 		return Task{}, err
 	}
 	s.memory.LogAIRunWithUsage(ctx, workspaceID, "task_completion_evaluator", s.ai.ModelName(), taskCompletionPromptVersion, duration, generated.Usage.InputTokens, generated.Usage.OutputTokens, "success", "")
+	if !output.Sufficient {
+		return s.store.Get(ctx, workspaceID, taskID)
+	}
+	status = StatusDone
+	if _, err := s.store.Update(ctx, workspaceID, userID, taskID, TaskInput{Status: &status}); err != nil {
+		return Task{}, err
+	}
+	return s.completedTask(ctx, workspaceID, userID, taskID)
+}
+
+// CompleteValidated records a result that the unified advisor has already
+// checked in conversation. It avoids paying for a second AI evaluation while
+// keeping the same task and strategic-memory write path.
+func (s *TaskCompletionService) CompleteValidated(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	taskID int,
+	result string,
+) (Task, error) {
+	result = strings.TrimSpace(result)
+	if result == "" || len([]rune(result)) > 20000 {
+		return Task{}, ErrCompletionResultRequired
+	}
+	current, err := s.store.Get(ctx, workspaceID, taskID)
+	if err != nil {
+		return Task{}, err
+	}
+	if current.Status != StatusInProgress {
+		return Task{}, fmt.Errorf("task_must_be_in_progress")
+	}
+	status := StatusDone
+	if _, err := s.store.Update(ctx, workspaceID, userID, taskID, TaskInput{
+		Status: &status, CompletionResult: &result,
+	}); err != nil {
+		return Task{}, err
+	}
 	return s.completedTask(ctx, workspaceID, userID, taskID)
 }
 

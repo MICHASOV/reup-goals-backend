@@ -147,20 +147,22 @@ func (s *TaskEvaluatorService) buildEvaluationInput(ctx context.Context, workspa
 	if err != nil {
 		return nil, "", err
 	}
-	if state.Workstream == nil || state.TacticalPlan == nil || task.ProjectID == nil {
+	if state.Workstream == nil || state.TacticalPlan == nil {
 		return nil, "", ErrInvalidInput
 	}
 
 	var project *Project
-	for index := range state.Projects {
-		if state.Projects[index].ID == *task.ProjectID {
-			copy := state.Projects[index]
-			project = &copy
-			break
+	if task.ProjectID != nil {
+		for index := range state.Projects {
+			if state.Projects[index].ID == *task.ProjectID {
+				copy := state.Projects[index]
+				project = &copy
+				break
+			}
 		}
-	}
-	if project == nil {
-		return nil, "", ErrForbidden
+		if project == nil {
+			return nil, "", ErrForbidden
+		}
 	}
 
 	var strategyTitle string
@@ -195,7 +197,13 @@ func (s *TaskEvaluatorService) buildEvaluationInput(ctx context.Context, workspa
 
 	siblings := make([]taskContextItem, 0, 20)
 	for _, candidate := range state.Tasks {
-		if candidate.ID == task.ID || candidate.ProjectID == nil || *candidate.ProjectID != *task.ProjectID {
+		if candidate.ID == task.ID {
+			continue
+		}
+		if task.ProjectID != nil && (candidate.ProjectID == nil || *candidate.ProjectID != *task.ProjectID) {
+			continue
+		}
+		if task.ProjectID == nil && candidate.WorkstreamID != task.WorkstreamID {
 			continue
 		}
 		siblings = append(siblings, taskContextItem{

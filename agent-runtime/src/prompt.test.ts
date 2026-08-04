@@ -17,7 +17,7 @@ test("dynamic instructions include scope and compact brief without runtime secre
   assert.doesNotMatch(instructions, /run_test/);
 });
 
-test("strategy scope keeps the same advisor and enables confirmed strategy review", () => {
+test("instructions stay compact and let tools define execution contracts", () => {
   const instructions = buildInstructions({
     runId: "run_strategy",
     workspaceId: 10,
@@ -27,8 +27,8 @@ test("strategy scope keeps the same advisor and enables confirmed strategy revie
     businessBrief: "Компания проверяет устойчивость прибыльного ядра.",
   });
 
-  assert.match(instructions, /same business advisor/i);
-  assert.match(instructions, /propose_strategy_review/);
-  assert.match(instructions, /explicitly confirms/i);
-  assert.match(instructions, /directions, projects, departments, tasks/i);
+  assert.match(instructions, /самостоятельно выбирай доступные инструменты/i);
+  assert.match(instructions, /готовое к подтверждению изменение/i);
+  assert.equal(instructions.split(/\n\s*\n/).length, 1);
+  assert.ok(instructions.length < 1800);
 });

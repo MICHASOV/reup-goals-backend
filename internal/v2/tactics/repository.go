@@ -97,6 +97,9 @@ func (s *Store) Current(ctx context.Context, workspaceID int, userID int) (Curre
 	}
 
 	hydrateWorkstreams(workstreams, risks, opportunities, hypotheses)
+	if err := s.hydrateWorkstreamParticipants(ctx, workspaceID, workstreams); err != nil {
+		return CurrentResponse{}, err
+	}
 	type enrichmentPart struct {
 		coverage *Uncovered
 		err      error
@@ -187,6 +190,9 @@ func (s *Store) WorkstreamDetail(ctx context.Context, workspaceID int, workstrea
 	}
 	items := []Workstream{item}
 	hydrateWorkstreams(items, risks, opportunities, hypotheses)
+	if err := s.hydrateWorkstreamParticipants(ctx, workspaceID, items); err != nil {
+		return Workstream{}, err
+	}
 	if err := s.hydrateEntityEvaluations(ctx, workspaceID, items); err != nil {
 		return Workstream{}, err
 	}

@@ -4,8 +4,8 @@ import { z, type AnyZodObject } from "zod";
 import { callBusinessTool } from "./toolClient.js";
 import type { AgentRunContext } from "./types.js";
 
-const entityType = z.enum(["strategy", "workstream", "project", "department", "task", "risk", "hypothesis", "document"]);
-const scopedEntityType = z.enum(["workspace", "strategy", "workstream", "project", "department", "task"]);
+const entityType = z.enum(["strategy", "department", "task", "document", "workspace_document"]);
+const scopedEntityType = z.enum(["workspace", "strategy", "department", "task"]);
 
 function executeTool(toolName: string) {
   return async (input: unknown, context?: RunContext<AgentRunContext>, details?: { toolCall: { callId: string } }) => {
@@ -64,7 +64,7 @@ const listWorkspaceMembers = tool<any, AgentRunContext, unknown>({
 
 const getPriorityView = tool<any, AgentRunContext, unknown>({
   name: "get_priority_view",
-  description: "Read the current ranked tasks, projects, strategic alignment, blockers, and the strongest available next actions. Use when deciding what should be done next.",
+  description: "Read the current ranked tasks, strategic alignment, blockers, and the strongest available next actions. Use when deciding what should be done next.",
   parameters: z.object({
     scope_type: scopedEntityType,
     scope_id: z.number().int().nonnegative(),
@@ -151,20 +151,18 @@ const proposeProject = proposalTool(
 
 const proposeTask = proposalTool(
   "propose_task",
-  "Prepare creation or an update of one executable task for explicit user confirmation. Use for a concrete human action, not for a broad project or an untested idea.",
+  "Prepare creation or an update of one executable task inside a business direction for explicit user confirmation.",
   z.object({
     existing_entity_id: z.number().int().positive().nullable(),
     draft_key: z.string().min(1).max(80).nullable(),
-    project_id: z.number().int().positive().nullable().describe("Existing parent project id. Use null only when parent_draft_key points to a project proposed in this same package."),
-    parent_draft_key: z.string().min(1).max(80).nullable().describe("Draft key of a project proposed in this same package. Use null when project_id is present."),
+    direction_id: z.number().int().positive().nullable().describe("Existing business direction id. Use null only when direction_draft_key points to a direction proposed in this same package."),
+    direction_draft_key: z.string().min(1).max(80).nullable().describe("Draft key of a business direction proposed in this same package. Use null when direction_id is present."),
     title: z.string().min(2).max(220),
     description: z.string().min(5).max(5000),
+    why_now: z.string().min(3).max(1600),
     expected_result: z.string().min(3).max(1600),
-    department_id: z.number().int().positive(),
-    owner_user_id: z.number().int().positive().nullable(),
-    owner_deferred: z.boolean().default(false),
-    due_date: z.string().max(20).nullable(),
-    due_date_deferred: z.boolean().default(false),
+    owner_user_id: z.number().int().positive(),
+    due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Exact due date in ISO YYYY-MM-DD format."),
     blocker_task_ids: z.array(z.number().int().positive()).max(20).nullable(),
   }),
 );
@@ -205,15 +203,16 @@ const proposeHypothesis = proposalTool(
 
 const proposeDepartment = proposalTool(
   "propose_department",
-  "Prepare creation or an update of one organizational department for explicit user confirmation. Use only when a durable responsibility boundary improves ownership and clarity.",
+  "Prepare creation or an update of one business direction for explicit user confirmation. A direction is a durable responsibility boundary with a clear value, owner, team, and a small set of metrics.",
   z.object({
     existing_entity_id: z.number().int().positive().nullable(),
+    draft_key: z.string().min(1).max(80).nullable(),
     name: z.string().min(2).max(120),
     description: z.string().min(3).max(3000),
     responsibility: z.string().min(3).max(2000),
-    manager_user_id: z.number().int().positive().nullable(),
+    manager_user_id: z.number().int().positive(),
     member_user_ids: z.array(z.number().int().positive()).max(100).nullable(),
-    kpis: z.array(metricSchema).max(3).nullable(),
+    kpis: z.array(metricSchema).min(1).max(3),
   }),
 );
 
@@ -232,6 +231,39 @@ const proposeStrategyReview = proposalTool(
   }),
 );
 
+const proposeDocument = proposalTool(
+  "propose_document",
+  "Prepare a new editable workspace knowledge-base document for explicit user confirmation. Produce a complete, readable Markdown document rather than notes about what should be written.",
+  z.object({
+    title: z.string().min(2).max(240),
+    content: z.string().min(1).max(200_000).describe("The complete document body in readable Markdown."),
+    parent_document_id: z.number().int().positive().nullable(),
+    linked_department_ids: z.array(z.number().int().positive()).max(30).nullable()
+      .describe("IDs of business directions linked to this document. Public directions are stored as department records."),
+  }),
+);
+
+const updateDocument = proposalTool(
+  "update_document",
+  "Prepare a full update of an existing editable workspace knowledge-base document for explicit user confirmation. Read the current document first, preserve useful content, and return the complete revised Markdown body.",
+  z.object({
+    document_id: z.number().int().positive(),
+    base_version: z.number().int().positive().describe("The version returned by get_entity for this workspace document."),
+    title: z.string().min(2).max(240),
+    content: z.string().min(1).max(200_000).describe("The complete revised document body in readable Markdown."),
+  }),
+);
+
+const completeTask = proposalTool(
+  "complete_task",
+  "Prepare completion of an in-progress task for explicit user confirmation. Use only after the user has described a concrete observable result clearly enough to be useful to the business; otherwise ask only for the material missing result information.",
+  z.object({
+    task_id: z.number().int().positive(),
+    task_title: z.string().min(2).max(220),
+    result: z.string().min(3).max(20_000).describe("A concise factual record of what was actually produced, changed, learned, or decided."),
+  }),
+);
+
 export function functionTools(): FunctionTool<AgentRunContext, any, any>[] {
   return [
     getBusinessBrief,
@@ -240,12 +272,13 @@ export function functionTools(): FunctionTool<AgentRunContext, any, any>[] {
     listWorkspaceMembers,
     getPriorityView,
     searchMetricCatalog,
-    proposeDirection,
-    proposeProject,
+    // Legacy workstream/project/risk/hypothesis proposal tools intentionally
+    // stay defined above for old run decoding, but are not exposed to new runs.
     proposeTask,
-    proposeRisk,
-    proposeHypothesis,
     proposeDepartment,
     proposeStrategyReview,
+    proposeDocument,
+    updateDocument,
+    completeTask,
   ] as FunctionTool<AgentRunContext, any, any>[];
 }

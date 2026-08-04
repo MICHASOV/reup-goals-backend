@@ -1,9 +1,12 @@
 package tasks
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,7 +28,10 @@ type Handler struct {
 	completion *TaskCompletionService
 }
 
-const maxTaskCompletionFileBytes = 25 << 20
+const (
+	maxTaskCompletionFileBytes = 25 << 20
+	maxTaskUploadRequestBytes  = maxTaskCompletionFileBytes + (2 << 20)
+)
 
 func (h *Handler) WithContextIndex(index *contextindex.Service) *Handler {
 	h.brainstorm.SetContextIndex(index)
@@ -54,6 +60,16 @@ func NewHandler(
 	}
 }
 
+func (h *Handler) CompleteAgentTask(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	taskID int,
+	result string,
+) (any, error) {
+	return h.completion.CompleteValidated(ctx, workspaceID, userID, taskID, result)
+}
+
 func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 	workspace, userID, ok := h.currentWorkspace(w, r)
 	if !ok {
@@ -75,6 +91,10 @@ func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 		h.applyBrainstormActions(w, r, workspace.ID, userID)
 	case r.URL.Path == "/api/v2/tasks/completion-files":
 		h.completionFile(w, r, workspace.ID, userID)
+	case r.URL.Path == "/api/v2/tasks/files":
+		h.taskAttachmentFile(w, r, workspace.ID, userID)
+	case strings.HasPrefix(r.URL.Path, "/api/v2/tasks/files/"):
+		h.taskAttachmentDownload(w, r, workspace.ID)
 	case strings.HasPrefix(r.URL.Path, "/api/v2/tasks/workstreams/"):
 		h.workstream(w, r, workspace.ID)
 	case strings.HasPrefix(r.URL.Path, "/api/v2/tasks/"):
@@ -82,6 +102,78 @@ func (h *Handler) Tasks(w http.ResponseWriter, r *http.Request) {
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) taskAttachmentFile(w http.ResponseWriter, r *http.Request, workspaceID int, userID int) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxTaskUploadRequestBytes)
+	// #nosec G120 -- MaxBytesReader above enforces a hard request limit.
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_multipart")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest, "file_required")
+		return
+	}
+	defer file.Close()
+	content, contentType, err := security.InspectBusinessDocument(header.Filename, header.Size, maxTaskCompletionFileBytes, file)
+	if err != nil {
+		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	contentBytes, err := io.ReadAll(content)
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid_file")
+		return
+	}
+	attachment, err := h.store.CreateTaskAttachment(
+		r.Context(), workspaceID, userID, security.SafeFilename(header.Filename), contentType, contentBytes,
+	)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "task_attachment_upload_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusCreated, map[string]any{"file": attachment})
+}
+
+func (h *Handler) taskAttachmentDownload(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	if r.Method != http.MethodGet {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	const prefix = "/api/v2/tasks/files/"
+	const suffix = "/download"
+	trimmed := strings.TrimSuffix(r.URL.Path, "/")
+	if !strings.HasPrefix(trimmed, prefix) || !strings.HasSuffix(trimmed, suffix) {
+		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	value := strings.Trim(strings.TrimSuffix(strings.TrimPrefix(trimmed, prefix), suffix), "/")
+	attachmentID, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || attachmentID <= 0 {
+		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	attachment, content, err := h.store.TaskAttachmentContent(r.Context(), workspaceID, attachmentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusNotFound, "task_attachment_not_found")
+		return
+	}
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "task_attachment_download_failed")
+		return
+	}
+	w.Header().Set("Content-Type", attachment.ContentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(attachment.SizeBytes, 10))
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": attachment.Filename}))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
 }
 
 func (h *Handler) focus(w http.ResponseWriter, r *http.Request, workspaceID int) {
@@ -114,7 +206,7 @@ func (h *Handler) completionFile(w http.ResponseWriter, r *http.Request, workspa
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxTaskCompletionFileBytes+(2<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, maxTaskUploadRequestBytes)
 	// #nosec G120 -- MaxBytesReader above enforces a hard request limit.
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "invalid_multipart")
@@ -414,6 +506,7 @@ func taskEvaluationInputChanged(before Task, after Task) bool {
 	return before.Title != after.Title ||
 		before.Description != after.Description ||
 		before.ExpectedResult != after.ExpectedResult ||
+		before.WhyNow != after.WhyNow ||
 		before.WorkstreamID != after.WorkstreamID ||
 		!sameOptionalInt(before.ProjectID, after.ProjectID) ||
 		!sameIntSet(blockingTaskIDs(before.BlockingTasks), blockingTaskIDs(after.BlockingTasks))
@@ -550,6 +643,14 @@ func writeTask(w http.ResponseWriter, task Task, err error, fallback string) {
 	}
 	if errors.Is(err, ErrCompletionResultRequired) || errors.Is(err, ErrInvalidCompletionFile) {
 		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if errors.Is(err, ErrLowPriorityTask) {
+		api.WriteError(w, http.StatusConflict, ErrLowPriorityTask.Error())
+		return
+	}
+	if err != nil && err.Error() == "task_must_be_in_progress" {
+		api.WriteError(w, http.StatusConflict, err.Error())
 		return
 	}
 	if err != nil {

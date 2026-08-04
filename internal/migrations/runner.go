@@ -3763,7 +3763,57 @@ var migrations = []Migration{
 								COALESCE(message.metadata_json->'draft_changes', '[]'::jsonb)
 							)>0
 					);
-			`,
+		`,
+	},
+	{
+		ID: "20260803_072_workstream_participants",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_workstream_participants (
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				workstream_id INTEGER NOT NULL REFERENCES v2_tactical_workstreams(id) ON DELETE CASCADE,
+				user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				role TEXT NOT NULL CHECK (role IN ('owner', 'team')),
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (workspace_id, workstream_id, user_id, role)
+			);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_workstream_participants_owner
+				ON v2_workstream_participants (workspace_id, workstream_id)
+				WHERE role='owner';
+
+			CREATE INDEX IF NOT EXISTS idx_v2_workstream_participants_user
+				ON v2_workstream_participants (workspace_id, user_id);
+		`,
+	},
+	{
+		ID: "20260804_073_task_attachments",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS v2_task_attachments (
+				id BIGSERIAL PRIMARY KEY,
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				uploaded_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				filename TEXT NOT NULL,
+				content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+				size_bytes BIGINT NOT NULL DEFAULT 0,
+				content BYTEA NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_task_attachments_workspace
+				ON v2_task_attachments (workspace_id, created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS v2_task_attachment_links (
+				workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+				task_id INTEGER NOT NULL REFERENCES v2_tasks(id) ON DELETE CASCADE,
+				attachment_id BIGINT NOT NULL REFERENCES v2_task_attachments(id) ON DELETE CASCADE,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				PRIMARY KEY (task_id, attachment_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_v2_task_attachment_links_workspace_task
+				ON v2_task_attachment_links (workspace_id, task_id);
+		`,
 	},
 }
 

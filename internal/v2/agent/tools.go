@@ -113,15 +113,18 @@ func (s *Service) listEntities(ctx context.Context, workspaceID int, input map[s
 		}
 	case "department":
 		searchColumn = "name"
-		selected.sql = `SELECT jsonb_build_object('id', id, 'name', name, 'description', description, 'responsibility', responsibility, 'manager_user_id', manager_user_id, 'status', status)
+		selected.sql = `SELECT jsonb_build_object('id', id, 'name', name, 'description', description, 'responsibility', responsibility, 'manager_user_id', manager_user_id, 'kpis', kpis_json, 'status', status)
 			FROM v2_departments WHERE workspace_id=$1 AND archived_at IS NULL`
 	case "task":
-		selected.sql = `SELECT jsonb_build_object('id', task.id, 'project_id', task.project_id, 'workstream_id', task.workstream_id,
-				'department_id', task.department_id, 'title', task.title, 'description', task.description,
+		selected.sql = `SELECT jsonb_build_object('id', task.id,
+				'department_id', task.department_id, 'direction_name', COALESCE(direction.name, ''),
+				'title', task.title, 'description', task.description,
 				'expected_result', task.expected_result, 'status', task.status, 'blocked', task.blocked,
 				'owner_user_id', task.owner_user_id, 'due_date', task.due_date,
 				'priority_score', COALESCE(evaluation.priority_score, 0), 'priority_tier', COALESCE(evaluation.priority_tier, ''))
 			FROM v2_tasks task
+			LEFT JOIN v2_departments direction
+				ON direction.workspace_id=task.workspace_id AND direction.id=task.department_id
 			LEFT JOIN LATERAL (
 				SELECT priority_score, priority_tier FROM v2_task_evaluations
 				WHERE workspace_id=task.workspace_id AND task_id=task.id
@@ -164,6 +167,13 @@ func (s *Service) listEntities(ctx context.Context, workspaceID int, input map[s
 	case "document":
 		selected.sql = `SELECT jsonb_build_object('id', id, 'title', title, 'document_type', document_type, 'status', status, 'version', version)
 			FROM strategic_documents WHERE workspace_id=$1`
+	case "workspace_document":
+		selected.sql = `SELECT jsonb_build_object(
+				'id', id, 'parent_id', parent_id, 'title', title, 'status', status,
+				'version', version, 'favorite', favorite,
+				'linked_direction_ids', linked_department_ids
+			)
+			FROM workspace_documents WHERE workspace_id=$1 AND archived_at IS NULL`
 	default:
 		return nil, errors.New("invalid_agent_entity_type")
 	}
@@ -196,7 +206,15 @@ func (s *Service) getEntity(ctx context.Context, workspaceID int, input map[stri
 		"workstream": `SELECT to_jsonb(item) FROM (SELECT id, title, description, goal, ckp, reason, status, health_status, metric_name, metric_current, metric_target FROM v2_tactical_workstreams WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
 		"project":    `SELECT to_jsonb(item) FROM (SELECT id, workstream_id, title, description, expected_result, why_needed, success_criteria, failure_criteria, metric_name, expected_value, status FROM v2_tactical_projects WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
 		"department": `SELECT to_jsonb(item) FROM (SELECT id, name, description, responsibility, manager_user_id, kpis_json, status FROM v2_departments WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
-		"task":       `SELECT to_jsonb(item) FROM (SELECT id, project_id, workstream_id, department_id, title, description, expected_result, why_now, status, blocked, owner_user_id, due_date, completion_result FROM v2_tasks WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
+		"task": `SELECT to_jsonb(item) FROM (
+			SELECT task.id, task.department_id, COALESCE(direction.name, '') AS direction_name,
+				task.title, task.description, task.expected_result, task.why_now, task.status,
+				task.blocked, task.owner_user_id, task.due_date, task.completion_result
+			FROM v2_tasks task
+			LEFT JOIN v2_departments direction
+				ON direction.workspace_id=task.workspace_id AND direction.id=task.department_id
+			WHERE task.workspace_id=$1 AND task.id=$2 AND task.archived_at IS NULL
+		) item`,
 		"risk":       `SELECT to_jsonb(item) FROM (SELECT id, entity_type, entity_id, title, description, severity, probability, probability_value, impact_score, mitigation_plan, status FROM v2_tactical_risks WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
 		"hypothesis": `SELECT to_jsonb(item) FROM (SELECT id, entity_type, entity_id, title, statement, expected_effect, test_method, status, confidence FROM v2_tactical_hypotheses WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL) item`,
 		"document": `SELECT to_jsonb(item) FROM (
@@ -204,6 +222,14 @@ func (s *Service) getEntity(ctx context.Context, workspaceID int, input map[stri
 				(char_length(markdown) > 12000) AS markdown_truncated,
 				status, version, generated_at
 			FROM strategic_documents WHERE workspace_id=$1 AND id=$2
+		) item`,
+		"workspace_document": `SELECT to_jsonb(item) FROM (
+			SELECT id, parent_id, title, LEFT(content, 20000) AS content,
+				(char_length(content) > 20000) AS content_truncated,
+				status, favorite, linked_department_ids AS linked_direction_ids,
+				version, created_by, updated_by, updated_at
+			FROM workspace_documents
+			WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL
 		) item`,
 	}
 	query, ok := queries[entityType]
@@ -262,13 +288,15 @@ func (s *Service) priorityView(ctx context.Context, workspaceID int, input map[s
 	query := `
 		SELECT jsonb_build_object(
 			'id', task.id, 'title', task.title, 'status', task.status, 'blocked', task.blocked,
-			'project_id', task.project_id, 'workstream_id', task.workstream_id,
+			'department_id', task.department_id, 'direction_name', COALESCE(direction.name, ''),
 			'owner_user_id', task.owner_user_id, 'due_date', task.due_date,
 			'priority_score', COALESCE(evaluation.priority_score, 0),
 			'priority_tier', COALESCE(evaluation.priority_tier, ''),
 			'priority_reason', COALESCE(evaluation.priority_reason, '')
 		)
 		FROM v2_tasks task
+		LEFT JOIN v2_departments direction
+			ON direction.workspace_id=task.workspace_id AND direction.id=task.department_id
 		LEFT JOIN LATERAL (
 			SELECT priority_score, priority_tier, priority_reason
 			FROM v2_task_evaluations
@@ -283,11 +311,7 @@ func (s *Service) priorityView(ctx context.Context, workspaceID int, input map[s
 	if err != nil {
 		return nil, err
 	}
-	projects, err := s.priorityProjects(ctx, workspaceID, scopeType, scopeID, limit)
-	if err != nil {
-		return nil, err
-	}
-	directions, err := s.priorityDirections(ctx, workspaceID, scopeType, scopeID, limit)
+	directions, err := s.priorityDepartments(ctx, workspaceID, scopeType, scopeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -295,11 +319,89 @@ func (s *Service) priorityView(ctx context.Context, workspaceID int, input map[s
 		"scope_type":        scopeType,
 		"scope_id":          scopeID,
 		"ranked_tasks":      items,
-		"ranked_projects":   projects,
 		"ranked_directions": directions,
 	}, nil
 }
 
+func (s *Service) priorityDepartments(
+	ctx context.Context,
+	workspaceID int,
+	scopeType string,
+	scopeID int,
+	limit int,
+) ([]any, error) {
+	filter := ""
+	args := []any{workspaceID}
+	switch scopeType {
+	case "workspace", "strategy":
+	case "department":
+		filter = ` AND direction.id=$2`
+		args = append(args, scopeID)
+	case "task":
+		filter = ` AND direction.id=(
+			SELECT task.department_id FROM v2_tasks task
+			WHERE task.workspace_id=direction.workspace_id AND task.id=$2
+		)`
+		args = append(args, scopeID)
+	case "workstream":
+		// Compatibility for runs created before departments became the public direction model.
+		filter = ` AND EXISTS (
+			SELECT 1 FROM v2_workstream_departments link
+			WHERE link.workspace_id=direction.workspace_id
+				AND link.department_id=direction.id AND link.workstream_id=$2
+		)`
+		args = append(args, scopeID)
+	case "project":
+		// Compatibility for runs created before projects were removed from the public model.
+		filter = ` AND EXISTS (
+			SELECT 1 FROM v2_project_departments link
+			WHERE link.workspace_id=direction.workspace_id
+				AND link.department_id=direction.id AND link.project_id=$2
+		)`
+		args = append(args, scopeID)
+	default:
+		return nil, errors.New("invalid_agent_scope")
+	}
+	return queryJSONRows(ctx, s.dbx, `
+		SELECT jsonb_build_object(
+			'id', direction.id,
+			'title', direction.name,
+			'main_value', direction.responsibility,
+			'description', direction.description,
+			'manager_user_id', direction.manager_user_id,
+			'kpis', direction.kpis_json,
+			'status', direction.status,
+			'priority_score', COALESCE(task_stats.priority_score, 0),
+			'active_tasks', COALESCE(task_stats.active_tasks, 0),
+			'blocked_tasks', COALESCE(task_stats.blocked_tasks, 0)
+		)
+		FROM v2_departments direction
+		LEFT JOIN LATERAL (
+			SELECT
+				COALESCE(MAX(COALESCE(evaluation.priority_score, 0)), 0) AS priority_score,
+				COUNT(*) AS active_tasks,
+				COUNT(*) FILTER (WHERE task.blocked) AS blocked_tasks
+			FROM v2_tasks task
+			LEFT JOIN LATERAL (
+				SELECT priority_score
+				FROM v2_task_evaluations
+				WHERE workspace_id=task.workspace_id AND task_id=task.id
+				ORDER BY created_at DESC, id DESC LIMIT 1
+			) evaluation ON TRUE
+			WHERE task.workspace_id=direction.workspace_id
+				AND task.department_id=direction.id
+				AND task.archived_at IS NULL
+				AND task.status IN ('free', 'in_progress')
+		) task_stats ON TRUE
+		WHERE direction.workspace_id=$1 AND direction.archived_at IS NULL`+filter+`
+		ORDER BY COALESCE(task_stats.priority_score, 0) DESC,
+			COALESCE(task_stats.active_tasks, 0) DESC,
+			direction.sort_order ASC, direction.updated_at DESC
+		LIMIT `+fmt.Sprintf("%d", limit), args...)
+}
+
+// Legacy project ranking remains available only for old persisted runs. New tool schemas
+// never request projects and priorityView intentionally excludes this data.
 func (s *Service) priorityProjects(
 	ctx context.Context,
 	workspaceID int,
@@ -359,6 +461,8 @@ func (s *Service) priorityProjects(
 		LIMIT `+fmt.Sprintf("%d", limit), args...)
 }
 
+// Legacy tactical-workstream ranking remains isolated for old persisted runs. Public
+// directions are departments and are ranked by priorityDepartments above.
 func (s *Service) priorityDirections(
 	ctx context.Context,
 	workspaceID int,
@@ -508,12 +612,12 @@ func draftChange(toolName string, input map[string]any) (tactics.TacticsDraftCha
 		}
 	case "propose_task":
 		change.EntityType = tactics.EntityTask
-		change.ParentEntityType = tactics.EntityProject
-		change.ParentEntityID = intPointer(intValue(input, "project_id"))
-		change.ParentDraftKey = stringValue(input, "parent_draft_key")
-		change.ProjectID = change.ParentEntityID
+		change.ParentEntityType = tactics.EntityDepartment
+		change.ParentEntityID = intPointer(intValue(input, "direction_id"))
+		change.ParentDraftKey = stringValue(input, "direction_draft_key")
+		change.DepartmentID = change.ParentEntityID
 		change.ExpectedResult = stringValue(input, "expected_result")
-		change.DepartmentID = intPointer(intValue(input, "department_id"))
+		change.WhyNow = stringValue(input, "why_now")
 		change.OwnerUserID = intPointer(intValue(input, "owner_user_id"))
 		change.OwnerDeferred = boolValue(input, "owner_deferred")
 		change.DueDate = stringValue(input, "due_date")
@@ -561,10 +665,28 @@ func draftChange(toolName string, input map[string]any) (tactics.TacticsDraftCha
 		change.StrategicLogic = stringValue(input, "strategic_logic")
 		change.DeliberateNonPriorities = stringValue(input, "deliberate_non_priorities")
 		change.RisksAndAssumptions = stringValue(input, "risks_and_assumptions")
+	case "propose_document":
+		change.EntityType = "workspace_document"
+		change.Description = stringValue(input, "content")
+	case "update_document":
+		change.Operation = "update"
+		change.EntityType = "workspace_document"
+		change.EntityID = intPointer(intValue(input, "document_id"))
+		change.Description = stringValue(input, "content")
+	case "complete_task":
+		change.Operation = "complete"
+		change.EntityType = "task_completion"
+		change.EntityID = intPointer(intValue(input, "task_id"))
+		change.Title = stringValue(input, "task_title")
+		change.Description = stringValue(input, "result")
 	default:
 		return tactics.TacticsDraftChange{}, false
 	}
 	return change, change.Title != ""
+}
+
+func isApprovalTool(toolName string) bool {
+	return strings.HasPrefix(toolName, "propose_") || toolName == "update_document" || toolName == "complete_task"
 }
 
 func tacticMetrics(value any) []tactics.TacticMetric {

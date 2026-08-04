@@ -125,6 +125,8 @@ type Workstream struct {
 	SortOrder        int                       `json:"sort_order"`
 	CreatedAt        time.Time                 `json:"created_at"`
 	UpdatedAt        time.Time                 `json:"updated_at"`
+	OwnerUserID      *int                      `json:"owner_user_id,omitempty"`
+	TeamUserIDs      []int                     `json:"team_user_ids"`
 	EvaluationStatus string                    `json:"evaluation_status"`
 	Evaluation       *TacticalEntityEvaluation `json:"evaluation,omitempty"`
 	Projects         []Project                 `json:"projects"`

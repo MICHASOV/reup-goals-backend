@@ -13,6 +13,7 @@ import (
 	"reup-goals-backend/internal/ai"
 	"reup-goals-backend/internal/v2/billing"
 	"reup-goals-backend/internal/v2/contextindex"
+	"reup-goals-backend/internal/v2/departments"
 	"reup-goals-backend/internal/v2/jobs"
 	"reup-goals-backend/internal/v2/tactics"
 	"reup-goals-backend/internal/v2/workspaces"
@@ -29,6 +30,8 @@ type Service struct {
 	tactics      *tactics.Store
 	tacticsApply *tactics.Handler
 	strategy     StrategyBridge
+	documents    DocumentBridge
+	taskResults  TaskCompletionBridge
 	workspaces   *workspaces.Store
 	contextIndex *contextindex.Service
 	runtime      *RuntimeClient
@@ -40,6 +43,14 @@ type StrategyBridge interface {
 	RecordAgentUserMessage(ctx context.Context, workspaceID int, userID int, content string, metadata map[string]any) error
 	RecordAgentAssistantMessage(ctx context.Context, workspaceID int, content string, metadata map[string]any) error
 	SubmitAgentStrategyForReview(ctx context.Context, workspaceID int, userID int, input map[string]any) (tactics.AppliedTacticsChange, error)
+}
+
+type DocumentBridge interface {
+	ApplyAgentDocument(ctx context.Context, workspaceID int, userID int, toolName string, input map[string]any) (any, error)
+}
+
+type TaskCompletionBridge interface {
+	CompleteAgentTask(ctx context.Context, workspaceID int, userID int, taskID int, result string) (any, error)
 }
 
 type ServiceConfig struct {
@@ -65,6 +76,8 @@ func NewService(
 	contextIndex *contextindex.Service,
 	tacticsHandler *tactics.Handler,
 	strategyBridge StrategyBridge,
+	documentBridge DocumentBridge,
+	taskCompletionBridge TaskCompletionBridge,
 ) *Service {
 	service := &Service{
 		enabled: cfg.Enabled, model: cfg.Model, releaseID: strings.TrimSpace(cfg.ReleaseID),
@@ -72,6 +85,8 @@ func NewService(
 		dbx: dbx, store: NewStore(dbx), tactics: tactics.NewStore(dbx),
 		tacticsApply: tacticsHandler, workspaces: workspaces.NewStore(dbx),
 		strategy:     strategyBridge,
+		documents:    documentBridge,
+		taskResults:  taskCompletionBridge,
 		contextIndex: contextIndex, runtime: runtime, jobs: jobManager, billing: quota,
 	}
 	if service.maxTurns <= 0 {
@@ -437,7 +452,7 @@ func (s *Service) Decide(ctx context.Context, userID int, publicID string, reque
 		return Run{}, err
 	}
 	approvedIndices := make([]int, 0)
-	strategyApplied := make(map[int]bool)
+	speciallyApplied := make(map[int]bool)
 	for _, item := range approvals {
 		if item.Status != "approved" {
 			continue
@@ -455,7 +470,53 @@ func (s *Service) Decide(ctx context.Context, userID int, publicID string, reque
 							ctx, run.ID, item.ActionIndex,
 							map[string]any{"ok": true, "entity": applied}, nil,
 						)
-						strategyApplied[item.ActionIndex] = err == nil
+						speciallyApplied[item.ActionIndex] = err == nil
+					}
+				}
+			}
+			if err != nil {
+				_ = s.store.SetApprovalResult(ctx, run.ID, item.ActionIndex, map[string]any{}, err)
+				_ = s.store.SetFailed(ctx, run.ID, err.Error(), true)
+				return Run{}, err
+			}
+			continue
+		}
+		if item.ToolName == "propose_document" || item.ToolName == "update_document" {
+			if s.documents == nil {
+				err = errors.New("agent_document_bridge_unavailable")
+			} else {
+				var input map[string]any
+				if err = json.Unmarshal(item.Arguments, &input); err == nil {
+					var applied any
+					applied, err = s.documents.ApplyAgentDocument(
+						ctx, workspace.ID, userID, item.ToolName, input,
+					)
+					if err == nil {
+						err = s.store.SetApprovalResult(ctx, run.ID, item.ActionIndex, applied, nil)
+						speciallyApplied[item.ActionIndex] = err == nil
+					}
+				}
+			}
+			if err != nil {
+				_ = s.store.SetApprovalResult(ctx, run.ID, item.ActionIndex, map[string]any{}, err)
+				_ = s.store.SetFailed(ctx, run.ID, err.Error(), true)
+				return Run{}, err
+			}
+			continue
+		}
+		if item.ToolName == "complete_task" {
+			if s.taskResults == nil {
+				err = errors.New("agent_task_completion_bridge_unavailable")
+			} else {
+				var input map[string]any
+				if err = json.Unmarshal(item.Arguments, &input); err == nil {
+					var applied any
+					applied, err = s.taskResults.CompleteAgentTask(
+						ctx, workspace.ID, userID, intValue(input, "task_id"), stringValue(input, "result"),
+					)
+					if err == nil {
+						err = s.store.SetApprovalResult(ctx, run.ID, item.ActionIndex, applied, nil)
+						speciallyApplied[item.ActionIndex] = err == nil
 					}
 				}
 			}
@@ -488,7 +549,7 @@ func (s *Service) Decide(ctx context.Context, userID int, publicID string, reque
 		}
 	}
 	for _, item := range approvals {
-		if item.Status != "approved" || strategyApplied[item.ActionIndex] {
+		if item.Status != "approved" || speciallyApplied[item.ActionIndex] {
 			continue
 		}
 		result := map[string]any{"ok": true}
@@ -797,29 +858,32 @@ func (s *Service) saveApprovalTurn(ctx context.Context, run Run, result RuntimeR
 		return errors.New("agent_proposal_not_applicable")
 	}
 	strategyReviews := 0
+	specialChanges := 0
 	tacticsChanges := make([]tactics.TacticsDraftChange, 0, len(changes))
 	for _, change := range changes {
-		if change.EntityType == "strategy_review" {
+		switch change.EntityType {
+		case "strategy_review":
 			strategyReviews++
-			continue
+		case "workspace_document", "task_completion":
+			// These changes share the approval UI but are applied through their
+			// own source-of-truth services after confirmation.
+			specialChanges++
+		default:
+			tacticsChanges = append(tacticsChanges, change)
 		}
-		tacticsChanges = append(tacticsChanges, change)
 	}
 	if strategyReviews > 0 && len(changes) != 1 {
 		return errors.New("agent_strategy_review_must_be_separate")
+	}
+	if specialChanges > 0 && len(changes) != 1 {
+		return errors.New("agent_special_action_must_be_separate")
 	}
 	if len(tacticsChanges) > 0 {
 		if err := tactics.ValidateDraftChangesForConfirmation(tacticsChanges); err != nil {
 			return fmt.Errorf("agent_proposal_not_applicable: %w", err)
 		}
 	}
-	hasTacticsChanges := false
-	for _, change := range changes {
-		if change.EntityType != "strategy_review" {
-			hasTacticsChanges = true
-			break
-		}
-	}
+	hasTacticsChanges := len(tacticsChanges) > 0
 	var state tactics.CurrentResponse
 	var err error
 	if hasTacticsChanges {
@@ -992,7 +1056,7 @@ func validAttachment(attachment Attachment) bool {
 	switch strings.TrimSpace(attachment.Type) {
 	case "knowledge_document":
 		return strings.TrimSpace(attachment.Key) != ""
-	case "workspace_document", "workstream", "project", "uploaded_file":
+	case "workspace_document", "department", "uploaded_file":
 		return attachment.ID > 0
 	default:
 		return false
@@ -1015,49 +1079,45 @@ func (s *Service) businessBrief(ctx context.Context, workspaceID int, userID int
 	if err != nil {
 		return "", err
 	}
-	type briefProject struct {
-		ID     int    `json:"id"`
-		Title  string `json:"title"`
-		Status string `json:"status"`
-		Metric string `json:"metric,omitempty"`
-	}
 	type briefDirection struct {
-		ID       int            `json:"id"`
-		Title    string         `json:"title"`
-		Goal     string         `json:"goal"`
-		CKP      string         `json:"ckp"`
-		Status   string         `json:"status"`
-		Projects []briefProject `json:"projects"`
+		ID              int               `json:"id"`
+		Title           string            `json:"title"`
+		MainValue       string            `json:"main_value"`
+		Description     string            `json:"description"`
+		ManagerUserID   *int              `json:"manager_user_id,omitempty"`
+		KPIs            []departments.KPI `json:"kpis"`
+		Status          string            `json:"status"`
+		ActiveTaskCount int               `json:"active_task_count"`
 	}
-	directions := make([]briefDirection, 0, min(len(current.Workstreams), 10))
-	for _, workstream := range current.Workstreams {
+	departmentItems, err := departments.NewStore(s.dbx).List(ctx, workspaceID, false)
+	if err != nil {
+		return "", err
+	}
+	directions := make([]briefDirection, 0, min(len(departmentItems), 10))
+	for _, department := range departmentItems {
 		if len(directions) >= 10 {
 			break
 		}
-		item := briefDirection{
-			ID: workstream.ID, Title: truncateRunes(workstream.Title, 240), Goal: truncateRunes(workstream.Goal, 600),
-			CKP: truncateRunes(workstream.CKP, 600), Status: workstream.Status, Projects: []briefProject{},
-		}
-		for _, project := range workstream.Projects {
-			if len(item.Projects) >= 5 {
-				break
-			}
-			item.Projects = append(item.Projects, briefProject{
-				ID: project.ID, Title: truncateRunes(project.Title, 240), Status: project.Status,
-				Metric: truncateRunes(project.MetricName, 300),
-			})
-		}
-		directions = append(directions, item)
+		directions = append(directions, briefDirection{
+			ID: department.ID, Title: truncateRunes(department.Name, 240),
+			MainValue:     truncateRunes(department.Responsibility, 800),
+			Description:   truncateRunes(department.Description, 1400),
+			ManagerUserID: department.ManagerUserID, KPIs: department.KPIs,
+			Status: department.Status, ActiveTaskCount: department.ActiveTaskCount,
+		})
 	}
 	var tasksRaw json.RawMessage
 	_ = s.dbx.QueryRowContext(ctx, `
 		SELECT COALESCE(jsonb_agg(item), '[]'::jsonb)
 		FROM (
-			SELECT task.id, LEFT(task.title, 300) AS title, task.status, task.project_id, task.workstream_id,
+			SELECT task.id, LEFT(task.title, 300) AS title, task.status, task.department_id,
+				LEFT(COALESCE(direction.name, ''), 240) AS direction_name,
 				COALESCE(evaluation.priority_score, 0) AS priority_score,
 				COALESCE(evaluation.priority_tier, '') AS priority_tier,
 				task.blocked, task.due_date
 			FROM v2_tasks task
+			LEFT JOIN v2_departments direction
+				ON direction.workspace_id=task.workspace_id AND direction.id=task.department_id
 			LEFT JOIN LATERAL (
 				SELECT priority_score, priority_tier
 				FROM v2_task_evaluations
@@ -1168,7 +1228,7 @@ func (s *Service) ExecuteTool(
 	if request.ToolCallID == "" {
 		return nil, errors.New("agent_tool_call_id_required")
 	}
-	if strings.HasPrefix(toolName, "propose_") {
+	if isApprovalTool(toolName) {
 		return s.approvedToolResult(ctx, run, toolName, request.ToolCallID)
 	}
 	return s.readTool(ctx, run, toolName, request.Input)

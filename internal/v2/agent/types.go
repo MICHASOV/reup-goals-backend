@@ -18,8 +18,8 @@ const (
 	JobTypeExecute = "executive_agent.execute"
 	JobTypeResume  = "executive_agent.resume"
 
-	PromptVersion  = "executive_advisor_v3"
-	DefaultRelease = "executive_advisor_2026_07_31_v3"
+	PromptVersion  = "executive_advisor_v4"
+	DefaultRelease = "executive_advisor_2026_08_04_v4"
 )
 
 type Scope struct {

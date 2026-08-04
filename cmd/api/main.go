@@ -111,6 +111,7 @@ func main() {
 	strategicMemoryHandler := strategicmemory.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
 	strategyHandler := strategy.NewHandler(database, auditorAIClient, cfg.OpenAIAuditorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
 	tacticsHandler := tactics.NewHandler(database, advisorAIClient, taskEvaluatorAIClient, cfg.OpenAIAdvisorCompactThreshold, jobManager).WithContextIndex(workspaceContextIndex)
+	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, taskEvaluatorAIClient, cfg.OpenAIAuditorCompactThreshold, strategicSourceRecorder).WithContextIndex(workspaceContextIndex)
 	agentService := agentapi.NewService(
 		database,
 		agentapi.ServiceConfig{
@@ -120,9 +121,9 @@ func main() {
 		},
 		agentapi.NewRuntimeClient(cfg.AgentRuntimeURL, cfg.AgentRuntimeSecret),
 		jobManager, billingService, workspaceContextIndex, tacticsHandler, strategyHandler,
+		workspaceDocumentsHandler, tasksV2Handler,
 	)
 	agentHandler := agentapi.NewHandler(agentService)
-	tasksV2Handler := tasksv2.NewHandler(database, auditorAIClient, taskEvaluatorAIClient, cfg.OpenAIAuditorCompactThreshold, strategicSourceRecorder).WithContextIndex(workspaceContextIndex)
 	operationsHandler := operations.NewHandler(database, jobManager)
 	privacyHandler := privacy.NewHandler(database)
 	profileHandler := profile.NewHandler(database, cfg, emailService, cloudPayments, billingService)

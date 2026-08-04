@@ -136,20 +136,21 @@ func tacticsDraftReadyForConfirmation(change TacticsDraftChange) bool {
 			change.ExpectedValue != "" && change.LeadDepartmentID > 0 &&
 			completeDraftMetrics(change.Metrics)
 	case EntityTask:
-		hasProject := pointerValue(change.ProjectID) > 0 ||
-			(change.ParentEntityType == EntityProject &&
+		hasDirection := pointerValue(change.DepartmentID) > 0 ||
+			(change.ParentEntityType == EntityDepartment &&
 				(pointerValue(change.ParentEntityID) > 0 || change.ParentDraftKey != ""))
-		hasOwnerDecision := pointerValue(change.OwnerUserID) > 0 || change.OwnerDeferred
-		hasDueDateDecision := change.DueDate != "" || change.DueDateDeferred
+		hasOwnerDecision := pointerValue(change.OwnerUserID) > 0
+		hasDueDateDecision := change.DueDate != ""
 		if change.DueDate != "" {
 			if _, err := time.Parse("2006-01-02", change.DueDate); err != nil {
 				return false
 			}
 		}
-		return hasProject && change.Description != "" && change.ExpectedResult != "" &&
-			pointerValue(change.DepartmentID) > 0 && hasOwnerDecision && hasDueDateDecision
+		return hasDirection && change.Description != "" && change.WhyNow != "" &&
+			change.ExpectedResult != "" && hasOwnerDecision && hasDueDateDecision
 	case EntityDepartment:
-		return change.Description != "" && change.ExpectedResult != ""
+		return change.Description != "" && change.ExpectedResult != "" &&
+			pointerValue(change.OwnerUserID) > 0 && completeDraftMetrics(change.Metrics)
 	default:
 		return true
 	}
@@ -664,24 +665,17 @@ func (s *Store) applyTaskDraft(
 		return appliedChange(operation, EntityTask, item.ID, item.Title, change), true
 	}
 
-	projectID := pointerValue(change.ProjectID)
-	if projectID <= 0 && change.ParentEntityType == EntityProject {
-		projectID = parentID
+	departmentID := pointerValue(change.DepartmentID)
+	if departmentID <= 0 && change.ParentEntityType == EntityDepartment {
+		departmentID = parentID
 	}
-	workstreamID, valid := s.taskDraftProjectWorkstream(ctx, workspaceID, plan.ID, projectID)
-	if !valid {
-		return AppliedTacticsChange{}, false
-	}
-	if change.WorkstreamID != nil && *change.WorkstreamID != workstreamID {
+	if departmentID <= 0 {
 		return AppliedTacticsChange{}, false
 	}
 
 	source := tasks.SourceAISuggestion
-	projectIDValue := projectID
 	input := tasks.TaskInput{
-		WorkstreamID:    workstreamID,
-		ProjectID:       &projectIDValue,
-		DepartmentID:    change.DepartmentID,
+		DepartmentID:    &departmentID,
 		Title:           &change.Title,
 		Description:     &change.Description,
 		ExpectedResult:  &change.ExpectedResult,
