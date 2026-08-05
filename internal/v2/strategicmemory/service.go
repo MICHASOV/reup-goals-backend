@@ -567,7 +567,7 @@ func (s *Service) CleanupExternalResources(ctx context.Context, workspaceID int)
 	if err != nil {
 		return err
 	}
-	session, err := s.store.OpenAISession(ctx, workspaceID, s.compactThreshold)
+	vectorStoreID, err := s.store.ExistingOpenAIVectorStoreID(ctx, workspaceID)
 	if err != nil {
 		return err
 	}
@@ -590,7 +590,7 @@ func (s *Service) CleanupExternalResources(ctx context.Context, workspaceID int)
 			fileIDs[id] = struct{}{}
 		}
 	}
-	if id := strings.TrimSpace(session.VectorStoreID); id != "" {
+	if id := strings.TrimSpace(vectorStoreID); id != "" {
 		vectorStoreIDs[id] = struct{}{}
 	}
 	if len(fileIDs) == 0 && len(vectorStoreIDs) == 0 && len(conversationIDs) == 0 {

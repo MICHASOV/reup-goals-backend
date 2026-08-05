@@ -1205,17 +1205,60 @@ func (s *Store) Payments(ctx context.Context, workspaceID int) ([]Payment, error
 }
 
 func (s *Store) DeleteWorkspace(ctx context.Context, workspaceID, userID int) error {
-	result, err := s.dbx.ExecContext(ctx, `
-		DELETE FROM workspaces WHERE id=$1 AND owner_user_id=$2
-	`, workspaceID, userID)
+	var deletedCount int
+	var resetUserCount int
+	err := s.dbx.QueryRowContext(ctx, `
+		WITH affected_users AS MATERIALIZED (
+			SELECT user_id
+			FROM workspace_memberships
+			WHERE workspace_id=$1
+			UNION
+			SELECT owner_user_id
+			FROM workspaces
+			WHERE id=$1 AND owner_user_id=$2
+		), deleted_workspace AS (
+			DELETE FROM workspaces
+			WHERE id=$1 AND owner_user_id=$2
+			RETURNING id
+		), reset_users AS (
+			UPDATE users target
+			SET workspace_onboarding_mode=CASE
+					WHEN EXISTS (
+						SELECT 1
+						FROM workspace_memberships membership
+						JOIN workspaces workspace ON workspace.id=membership.workspace_id
+						WHERE membership.user_id=target.id
+							AND membership.workspace_id<>$1
+							AND membership.status='active'
+							AND workspace.status='active'
+					) THEN 'complete'
+					ELSE 'create'
+				END,
+				company_role=CASE
+					WHEN EXISTS (
+						SELECT 1
+						FROM workspace_memberships membership
+						JOIN workspaces workspace ON workspace.id=membership.workspace_id
+						WHERE membership.user_id=target.id
+							AND membership.workspace_id<>$1
+							AND membership.status='active'
+							AND workspace.status='active'
+					) THEN target.company_role
+					ELSE ''
+				END,
+				auth_version=auth_version+1
+			WHERE target.id IN (SELECT user_id FROM affected_users)
+				AND EXISTS (SELECT 1 FROM deleted_workspace)
+			RETURNING target.id
+		)
+		SELECT
+			(SELECT COUNT(*) FROM deleted_workspace),
+			(SELECT COUNT(*) FROM reset_users)
+	`, workspaceID, userID).Scan(&deletedCount, &resetUserCount)
 	if err != nil {
 		return err
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count == 0 {
+	if deletedCount == 0 || resetUserCount == 0 {
 		return sql.ErrNoRows
 	}
 	return nil

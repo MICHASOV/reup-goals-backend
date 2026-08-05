@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -107,6 +108,19 @@ func (s *Store) OpenAISession(ctx context.Context, workspaceID int, compactThres
 		&item.UpdatedAt,
 	)
 	return item, err
+}
+
+func (s *Store) ExistingOpenAIVectorStoreID(ctx context.Context, workspaceID int) (string, error) {
+	var vectorStoreID string
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT vector_store_id
+		FROM strategic_openai_sessions
+		WHERE workspace_id=$1
+	`, workspaceID).Scan(&vectorStoreID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return strings.TrimSpace(vectorStoreID), err
 }
 
 func (s *Store) UpdateOpenAIConversationID(ctx context.Context, workspaceID int, conversationID string) error {

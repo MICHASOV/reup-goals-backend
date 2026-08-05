@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,11 @@ type Handler struct {
 	emailService *auth.EmailService
 	payments     *subscriptions.CloudPaymentsClient
 	quotaService *billing.Service
+	dataCleaner  WorkspaceDataCleaner
+}
+
+type WorkspaceDataCleaner interface {
+	CleanupWorkspaceData(context.Context, int) error
 }
 
 func NewHandler(
@@ -44,6 +50,11 @@ func NewHandler(
 		result.quotaService = billingServices[0]
 	}
 	return result
+}
+
+func (h *Handler) WithWorkspaceDataCleaner(cleaner WorkspaceDataCleaner) *Handler {
+	h.dataCleaner = cleaner
+	return h
 }
 
 func (h *Handler) InvitationPreview(w http.ResponseWriter, r *http.Request) {
@@ -305,11 +316,20 @@ func (h *Handler) workspace(w http.ResponseWriter, r *http.Request, userID int, 
 			api.WriteError(w, http.StatusUnprocessableEntity, "workspace_confirmation_mismatch")
 			return
 		}
+		if h.dataCleaner != nil {
+			if err := h.dataCleaner.CleanupWorkspaceData(r.Context(), overview.Workspace.ID); err != nil {
+				api.WriteError(w, http.StatusBadGateway, "workspace_external_cleanup_failed")
+				return
+			}
+		}
 		if err := h.store.DeleteWorkspace(r.Context(), overview.Workspace.ID, userID); err != nil {
 			api.WriteError(w, http.StatusInternalServerError, "workspace_delete_failed")
 			return
 		}
-		api.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+		secureCookies := h.cfg != nil && h.cfg.SecureCookies
+		auth.ClearSessionCookie(w, secureCookies)
+		w.Header().Set("Cache-Control", "no-store")
+		api.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "session_terminated": true})
 	default:
 		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	}

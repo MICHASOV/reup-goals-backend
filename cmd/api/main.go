@@ -126,7 +126,8 @@ func main() {
 	agentHandler := agentapi.NewHandler(agentService)
 	operationsHandler := operations.NewHandler(database, jobManager)
 	privacyHandler := privacy.NewHandler(database)
-	profileHandler := profile.NewHandler(database, cfg, emailService, cloudPayments, billingService)
+	profileHandler := profile.NewHandler(database, cfg, emailService, cloudPayments, billingService).
+		WithWorkspaceDataCleaner(strategicMemoryHandler)
 	operationsCollector := operations.NewCollector(database, jwtSecret)
 	operationsCollector.Start(rootCtx)
 	defer operationsCollector.Stop()

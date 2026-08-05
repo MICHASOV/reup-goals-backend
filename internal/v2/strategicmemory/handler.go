@@ -44,6 +44,10 @@ func (h *Handler) CleanupUserData(ctx context.Context, userID int) error {
 	return h.service.CleanupUserData(ctx, userID)
 }
 
+func (h *Handler) CleanupWorkspaceData(ctx context.Context, workspaceID int) error {
+	return h.service.CleanupExternalResources(ctx, workspaceID)
+}
+
 func (h *Handler) StrategicDirector(w http.ResponseWriter, r *http.Request) {
 	workspace, ok := h.currentWorkspace(w, r)
 	if !ok {
