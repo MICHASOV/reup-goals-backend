@@ -11,6 +11,8 @@ import (
 	"log"
 	"math"
 	"time"
+
+	"reup-goals-backend/internal/v2/workspaces"
 )
 
 var ErrQuotaExceeded = errors.New("ai_weekly_limit_reached")
@@ -168,19 +170,7 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 // As soon as the knowledge pipeline is ready (or a strategy already exists),
 // regular subscription enforcement applies to the same AI module.
 func (s *Service) onboardingPending(ctx context.Context, workspaceID int) (bool, error) {
-	var pending bool
-	err := s.dbx.QueryRowContext(ctx, `
-		SELECT
-			COALESCE((
-				SELECT ready_revision = 0
-				FROM workspace_knowledge_pipeline
-				WHERE workspace_id=$1
-			), TRUE)
-			AND NOT EXISTS (
-				SELECT 1 FROM strategies WHERE workspace_id=$1 AND status='active'
-			)
-	`, workspaceID).Scan(&pending)
-	return pending, err
+	return workspaces.OnboardingPending(ctx, s.dbx, workspaceID)
 }
 
 func (s *Service) hasAIEntitlement(ctx context.Context, workspaceID int, now time.Time) (bool, error) {

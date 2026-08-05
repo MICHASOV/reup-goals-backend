@@ -43,7 +43,7 @@ func requireWorkspaceAccess(dbx *sql.DB, allowPendingOnboarding bool, next http.
 			return
 		}
 		if !allowed && allowPendingOnboarding {
-			allowed, err = workspaceOnboardingPending(r.Context(), dbx, workspace.ID)
+			allowed, err = workspaces.OnboardingPending(r.Context(), dbx, workspace.ID)
 			if err != nil {
 				WriteError(w, http.StatusInternalServerError, "onboarding_access_failed")
 				return
@@ -55,22 +55,6 @@ func requireWorkspaceAccess(dbx *sql.DB, allowPendingOnboarding bool, next http.
 		}
 		next(w, r)
 	}
-}
-
-func workspaceOnboardingPending(ctx context.Context, dbx *sql.DB, workspaceID int) (bool, error) {
-	var pending bool
-	err := dbx.QueryRowContext(ctx, `
-		SELECT
-			COALESCE((
-				SELECT ready_revision = 0
-				FROM workspace_knowledge_pipeline
-				WHERE workspace_id=$1
-			), TRUE)
-			AND NOT EXISTS (
-				SELECT 1 FROM strategies WHERE workspace_id=$1 AND status='active'
-			)
-	`, workspaceID).Scan(&pending)
-	return pending, err
 }
 
 func WorkspaceHasProductAccess(ctx context.Context, dbx *sql.DB, workspaceID, ownerUserID int, now time.Time) (bool, error) {

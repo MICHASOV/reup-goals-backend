@@ -16,6 +16,25 @@ func NewStore(dbx *sql.DB) *Store {
 	return &Store{dbx: dbx}
 }
 
+// OnboardingPending reports whether the initial company-context interview is
+// still available before subscription activation. A missing pipeline row is a
+// fresh workspace and therefore still pending.
+func OnboardingPending(ctx context.Context, dbx *sql.DB, workspaceID int) (bool, error) {
+	var pending bool
+	err := dbx.QueryRowContext(ctx, `
+		SELECT
+			COALESCE((
+				SELECT ready_revision = 0
+				FROM strategic_knowledge_pipeline_state
+				WHERE workspace_id=$1
+			), TRUE)
+			AND NOT EXISTS (
+				SELECT 1 FROM strategies WHERE workspace_id=$1 AND status='active'
+			)
+	`, workspaceID).Scan(&pending)
+	return pending, err
+}
+
 func (s *Store) GetOrCreateDefault(ctx context.Context, userID int) (Workspace, Membership, error) {
 	if workspace, membership, err := s.current(ctx, s.dbx, userID); err == nil {
 		return workspace, membership, nil
