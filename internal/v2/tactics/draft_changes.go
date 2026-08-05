@@ -296,6 +296,10 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 		if plan.ID > 0 {
 			item.ID = s.store.recordAppliedTacticsChange(ctx, workspaceID, plan.ID, request.MessageID, userID, item)
 		}
+		if err := s.store.CompleteTacticsActionApplication(ctx, workspaceID, request.MessageID, index, item.EntityID); err != nil {
+			_ = s.store.FailTacticsActionApplication(ctx, workspaceID, request.MessageID, index, err.Error())
+			return ApplyTacticsChangesResponse{}, err
+		}
 		if err := s.store.aiActions.MarkApplied(
 			ctx,
 			workspaceID,
@@ -305,11 +309,7 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 			change.EntityType,
 			item.EntityID,
 		); err != nil {
-			return ApplyTacticsChangesResponse{}, err
-		}
-		if err := s.store.CompleteTacticsActionApplication(ctx, workspaceID, request.MessageID, index, item.EntityID); err != nil {
-			_ = s.store.FailTacticsActionApplication(ctx, workspaceID, request.MessageID, index, err.Error())
-			return ApplyTacticsChangesResponse{}, err
+			log.Printf("[WARN] mark applied AI action workspace_id=%d message_id=%d action_index=%d: %v", workspaceID, request.MessageID, index, err)
 		}
 		response.AppliedIndices = append(response.AppliedIndices, index)
 		response.AppliedChanges = append(response.AppliedChanges, item)
@@ -678,7 +678,7 @@ func (s *Store) applyTaskDraft(
 			return AppliedTacticsChange{}, false
 		}
 		if err := taskStore.QueueTaskEvaluation(ctx, workspaceID, userID, item.ID, true); err != nil {
-			return AppliedTacticsChange{}, false
+			log.Printf("[WARN] queue task evaluation after agent update workspace_id=%d task_id=%d: %v", workspaceID, item.ID, err)
 		}
 		return appliedChange(operation, EntityTask, item.ID, item.Title, change), true
 	}
@@ -710,7 +710,7 @@ func (s *Store) applyTaskDraft(
 		return AppliedTacticsChange{}, false
 	}
 	if err := taskStore.QueueTaskEvaluation(ctx, workspaceID, userID, item.ID, true); err != nil {
-		return AppliedTacticsChange{}, false
+		log.Printf("[WARN] queue task evaluation after agent create workspace_id=%d task_id=%d: %v", workspaceID, item.ID, err)
 	}
 	return appliedChange(operation, EntityTask, item.ID, item.Title, change), true
 }
