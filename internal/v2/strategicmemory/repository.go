@@ -277,7 +277,9 @@ func (s *Store) ConfirmKnowledgeContext(ctx context.Context, workspaceID int, us
 			&document.Markdown, &document.SourceClaimIDs, &document.Status, &document.Version,
 			&document.GeneratedAt,
 		); err != nil {
-			rows.Close()
+			if closeErr := rows.Close(); closeErr != nil {
+				return KnowledgePipelineState{}, fmt.Errorf("scan strategic document: %w (close rows: %v)", err, closeErr)
+			}
 			return KnowledgePipelineState{}, err
 		}
 		documents = append(documents, document)
