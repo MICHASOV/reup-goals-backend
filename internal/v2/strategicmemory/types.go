@@ -24,9 +24,10 @@ const (
 	SourceTypeHypothesis       = "tactical_hypothesis"
 	SourceTypeResearchResult   = "strategy_research_result"
 
-	ConversationStateCollectingContext = "collecting_context"
-	ConversationStateProcessingContext = "processing_context"
-	ConversationStateReadyForStrategy  = "ready_for_strategy"
+	ConversationStateCollectingContext    = "collecting_context"
+	ConversationStateProcessingContext    = "processing_context"
+	ConversationStateAwaitingConfirmation = "awaiting_confirmation"
+	ConversationStateReadyForStrategy     = "ready_for_strategy"
 
 	KnowledgePipelineCollecting       = "collecting"
 	KnowledgePipelineAuditCandidate   = "audit_candidate"
@@ -169,6 +170,8 @@ type KnowledgePipelineState struct {
 	AuditFeedback             json.RawMessage `json:"audit_feedback_json,omitempty"`
 	CandidateReport           json.RawMessage `json:"-"`
 	FeedbackDeliveredRevision int             `json:"feedback_delivered_revision"`
+	OnboardingConfirmedBy     *int            `json:"onboarding_confirmed_by,omitempty"`
+	OnboardingConfirmedAt     *time.Time      `json:"onboarding_confirmed_at,omitempty"`
 	UpdatedAt                 time.Time       `json:"updated_at"`
 }
 

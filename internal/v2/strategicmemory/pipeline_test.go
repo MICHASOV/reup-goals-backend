@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPipelineCanStartCandidate(t *testing.T) {
@@ -192,14 +193,18 @@ func TestPipelineConversationState(t *testing.T) {
 		KnowledgePipelineReviewing, KnowledgePipelineCompiling,
 	}
 	for _, status := range processing {
-		if got := pipelineConversationState(status); got != ConversationStateProcessingContext {
+		if got := pipelineConversationState(KnowledgePipelineState{Status: status}); got != ConversationStateProcessingContext {
 			t.Fatalf("status %q mapped to %q", status, got)
 		}
 	}
-	if got := pipelineConversationState(KnowledgePipelineReady); got != ConversationStateReadyForStrategy {
-		t.Fatalf("ready mapped to %q", got)
+	if got := pipelineConversationState(KnowledgePipelineState{Status: KnowledgePipelineReady}); got != ConversationStateAwaitingConfirmation {
+		t.Fatalf("unconfirmed ready state mapped to %q", got)
 	}
-	if got := pipelineConversationState(KnowledgePipelineNeedsMoreContext); got != ConversationStateCollectingContext {
+	now := time.Now()
+	if got := pipelineConversationState(KnowledgePipelineState{Status: KnowledgePipelineReady, OnboardingConfirmedAt: &now}); got != ConversationStateReadyForStrategy {
+		t.Fatalf("confirmed ready state mapped to %q", got)
+	}
+	if got := pipelineConversationState(KnowledgePipelineState{Status: KnowledgePipelineNeedsMoreContext}); got != ConversationStateCollectingContext {
 		t.Fatalf("needs-more-context mapped to %q", got)
 	}
 }

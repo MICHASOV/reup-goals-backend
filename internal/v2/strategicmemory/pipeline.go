@@ -524,11 +524,14 @@ func validDocumentClaimIDs(candidate []int, valid map[int]bool) []int {
 	return result
 }
 
-func pipelineConversationState(status string) string {
-	switch status {
+func pipelineConversationState(state KnowledgePipelineState) string {
+	switch state.Status {
 	case KnowledgePipelineAuditCandidate, KnowledgePipelineExtracting, KnowledgePipelineReviewing, KnowledgePipelineCompiling:
 		return ConversationStateProcessingContext
 	case KnowledgePipelineReady:
+		if state.OnboardingConfirmedAt == nil {
+			return ConversationStateAwaitingConfirmation
+		}
 		return ConversationStateReadyForStrategy
 	default:
 		return ConversationStateCollectingContext

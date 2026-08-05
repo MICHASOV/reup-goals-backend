@@ -351,7 +351,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	return MessageResponse{
 		WorkspaceID:          workspaceID,
 		AssistantMessage:     assistantMessage,
-		ConversationState:    pipelineConversationState(finalState.Pipeline.Status),
+		ConversationState:    pipelineConversationState(finalState.Pipeline),
 		MemoryUpdates:        MemoryUpdates{},
 		Snapshot:             finalState.Snapshot,
 		Documents:            documents,
@@ -495,7 +495,7 @@ func (s *Service) fallbackMessageResponse(ctx context.Context, workspaceID int, 
 	return MessageResponse{
 		WorkspaceID:          workspaceID,
 		AssistantMessage:     assistantMessage,
-		ConversationState:    pipelineConversationState(state.Pipeline.Status),
+		ConversationState:    pipelineConversationState(state.Pipeline),
 		MemoryUpdates:        MemoryUpdates{},
 		Snapshot:             state.Snapshot,
 		Documents:            state.Documents,

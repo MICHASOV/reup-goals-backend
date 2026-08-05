@@ -3846,6 +3846,22 @@ var migrations = []Migration{
 				CHECK (billing_period IN ('monthly', 'quarterly', 'annual'));
 		`,
 	},
+	{
+		ID: "20260805_076_onboarding_context_confirmation",
+		SQL: `
+			ALTER TABLE strategic_knowledge_pipeline_state
+				ADD COLUMN IF NOT EXISTS onboarding_confirmed_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+				ADD COLUMN IF NOT EXISTS onboarding_confirmed_at TIMESTAMPTZ NULL;
+
+			UPDATE strategic_knowledge_pipeline_state pipeline
+			SET status='collecting', ready_revision=0, compiled_revision=0, updated_at=NOW()
+			WHERE pipeline.status='ready'
+				AND NOT EXISTS (
+					SELECT 1 FROM strategic_documents document
+					WHERE document.workspace_id=pipeline.workspace_id AND BTRIM(document.markdown) <> ''
+				);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

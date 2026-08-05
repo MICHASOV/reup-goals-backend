@@ -220,6 +220,7 @@ func main() {
 	mux.Handle("/api/v2/operations/warnings", v2api.RequireAuth(database, jwtSecret, operationsHandler.Warnings))
 	mux.Handle("/api/v2/strategic-director/messages", onboardingOrPaid(strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/state", onboardingOrPaid(strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/strategic-director/confirm", onboardingOrPaid(strategicMemoryHandler.StrategicDirector))
 	mux.Handle("/api/v2/strategic-director/files", onboardingOrPaid(strategicMemoryHandler.StrategicDirector))
 	if cfg.EnableAIBenchmark {
 		mux.Handle("/api/v2/strategic-director/model-benchmark", paidProduct(strategicMemoryHandler.ModelBenchmark))

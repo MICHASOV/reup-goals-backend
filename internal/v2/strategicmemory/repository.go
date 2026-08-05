@@ -170,12 +170,14 @@ func (s *Store) KnowledgePipelineState(ctx context.Context, workspaceID int) (Kn
 		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
 			last_extracted_source_id, last_audited_source_id, candidate_revision,
 			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
-			audit_feedback_json, candidate_report_json, feedback_delivered_revision, updated_at
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision,
+			onboarding_confirmed_by, onboarding_confirmed_at, updated_at
 	`, workspaceID).Scan(
 		&item.WorkspaceID, &item.Status, &item.ConversationRevision, &item.LastUserSourceID,
 		&item.LastExtractedSourceID, &item.LastAuditedSourceID, &item.CandidateRevision,
 		&item.CandidateSourceID, &item.ReadyRevision, &item.CompiledRevision,
 		&item.CandidateReason, &item.AuditFeedback, &item.CandidateReport, &item.FeedbackDeliveredRevision,
+		&item.OnboardingConfirmedBy, &item.OnboardingConfirmedAt,
 		&item.UpdatedAt,
 	)
 	return item, err
@@ -198,12 +200,14 @@ func (s *Store) RecordKnowledgeUserTurn(ctx context.Context, workspaceID int, so
 		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
 			last_extracted_source_id, last_audited_source_id, candidate_revision,
 			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
-			audit_feedback_json, candidate_report_json, feedback_delivered_revision, updated_at
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision,
+			onboarding_confirmed_by, onboarding_confirmed_at, updated_at
 	`, workspaceID, sourceID).Scan(
 		&item.WorkspaceID, &item.Status, &item.ConversationRevision, &item.LastUserSourceID,
 		&item.LastExtractedSourceID, &item.LastAuditedSourceID, &item.CandidateRevision,
 		&item.CandidateSourceID, &item.ReadyRevision, &item.CompiledRevision,
 		&item.CandidateReason, &item.AuditFeedback, &item.CandidateReport, &item.FeedbackDeliveredRevision,
+		&item.OnboardingConfirmedBy, &item.OnboardingConfirmedAt,
 		&item.UpdatedAt,
 	)
 	return item, err
@@ -222,13 +226,42 @@ func (s *Store) RecordDeferredKnowledgeSource(ctx context.Context, workspaceID i
 		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
 			last_extracted_source_id, last_audited_source_id, candidate_revision,
 			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
-			audit_feedback_json, candidate_report_json, feedback_delivered_revision, updated_at
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision,
+			onboarding_confirmed_by, onboarding_confirmed_at, updated_at
 	`, workspaceID, sourceID).Scan(
 		&item.WorkspaceID, &item.Status, &item.ConversationRevision, &item.LastUserSourceID,
 		&item.LastExtractedSourceID, &item.LastAuditedSourceID, &item.CandidateRevision,
 		&item.CandidateSourceID, &item.ReadyRevision, &item.CompiledRevision,
 		&item.CandidateReason, &item.AuditFeedback, &item.CandidateReport, &item.FeedbackDeliveredRevision,
+		&item.OnboardingConfirmedBy, &item.OnboardingConfirmedAt,
 		&item.UpdatedAt,
+	)
+	return item, err
+}
+
+func (s *Store) ConfirmKnowledgeContext(ctx context.Context, workspaceID int, userID int) (KnowledgePipelineState, error) {
+	var item KnowledgePipelineState
+	err := s.dbx.QueryRowContext(ctx, `
+		UPDATE strategic_knowledge_pipeline_state
+		SET onboarding_confirmed_by=$2, onboarding_confirmed_at=NOW(), updated_at=NOW()
+		WHERE workspace_id=$1
+			AND status='ready'
+			AND ready_revision > 0
+			AND EXISTS (
+				SELECT 1 FROM strategic_documents
+				WHERE workspace_id=$1 AND BTRIM(markdown) <> ''
+			)
+		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
+			last_extracted_source_id, last_audited_source_id, candidate_revision,
+			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision,
+			onboarding_confirmed_by, onboarding_confirmed_at, updated_at
+	`, workspaceID, userID).Scan(
+		&item.WorkspaceID, &item.Status, &item.ConversationRevision, &item.LastUserSourceID,
+		&item.LastExtractedSourceID, &item.LastAuditedSourceID, &item.CandidateRevision,
+		&item.CandidateSourceID, &item.ReadyRevision, &item.CompiledRevision,
+		&item.CandidateReason, &item.AuditFeedback, &item.CandidateReport, &item.FeedbackDeliveredRevision,
+		&item.OnboardingConfirmedBy, &item.OnboardingConfirmedAt, &item.UpdatedAt,
 	)
 	return item, err
 }

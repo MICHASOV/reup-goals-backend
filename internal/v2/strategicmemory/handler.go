@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -76,11 +77,35 @@ func (h *Handler) StrategicDirector(w http.ResponseWriter, r *http.Request) {
 		h.messages(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/strategic-director/state":
 		h.state(w, r, workspace.ID)
+	case r.URL.Path == "/api/v2/strategic-director/confirm":
+		h.confirmContext(w, r, workspace.ID)
 	case r.URL.Path == "/api/v2/strategic-director/files":
 		h.files(w, r, workspace.ID)
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) confirmContext(w http.ResponseWriter, r *http.Request, workspaceID int) {
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		api.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	state, err := h.store.ConfirmKnowledgeContext(r.Context(), workspaceID, userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			api.WriteError(w, http.StatusConflict, "knowledge_context_not_ready_for_confirmation")
+			return
+		}
+		api.WriteError(w, http.StatusInternalServerError, "knowledge_context_confirmation_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{"context_ready": true, "pipeline": state})
 }
 
 func (h *Handler) StrategicMemory(w http.ResponseWriter, r *http.Request) {

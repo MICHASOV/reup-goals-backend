@@ -208,12 +208,8 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 			loadResults <- loadResult{"navigation_context_failed", pipelineErr}
 			return
 		}
-		quality, qualityErr := store.LatestQualityReport(r.Context(), currentWorkspace.ID)
-		if qualityErr == nil {
-			result.ContextReady = pipeline.ReadyRevision > 0 ||
-				(quality != nil && quality.StrategyGate.CanStartStrategy)
-		}
-		loadResults <- loadResult{"navigation_quality_failed", qualityErr}
+		result.ContextReady = pipeline.OnboardingConfirmedAt != nil
+		loadResults <- loadResult{"navigation_context_failed", nil}
 	}()
 
 	for range 8 {

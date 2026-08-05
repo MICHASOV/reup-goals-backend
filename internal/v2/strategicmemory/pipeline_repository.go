@@ -40,7 +40,8 @@ func (s *Store) TryStartKnowledgeCandidate(
 		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
 			last_extracted_source_id, last_audited_source_id, candidate_revision,
 			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
-			audit_feedback_json, candidate_report_json, feedback_delivered_revision, updated_at
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision,
+			onboarding_confirmed_by, onboarding_confirmed_at, updated_at
 	`, workspaceID, state.Status, revision, throughSourceID, state.CandidateReason).Scan(pipelineStateDestinations(&state)...)
 	if err != nil {
 		return KnowledgePipelineState{}, false, err
@@ -102,7 +103,8 @@ func (s *Store) AcceptKnowledgeInterviewerDecision(
 		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
 			last_extracted_source_id, last_audited_source_id, candidate_revision,
 			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
-			audit_feedback_json, candidate_report_json, feedback_delivered_revision, updated_at
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision,
+			onboarding_confirmed_by, onboarding_confirmed_at, updated_at
 	`, workspaceID, revision, throughSourceID, strings.TrimSpace(reason)).Scan(pipelineStateDestinations(&state)...)
 	if err != nil {
 		return KnowledgePipelineState{}, false, err
@@ -331,7 +333,8 @@ func pipelineStateForUpdate(ctx context.Context, tx *sql.Tx, workspaceID int) (K
 		SELECT workspace_id, status, conversation_revision, last_user_source_id,
 			last_extracted_source_id, last_audited_source_id, candidate_revision,
 			candidate_source_id, ready_revision, compiled_revision, candidate_reason,
-			audit_feedback_json, candidate_report_json, feedback_delivered_revision, updated_at
+			audit_feedback_json, candidate_report_json, feedback_delivered_revision,
+			onboarding_confirmed_by, onboarding_confirmed_at, updated_at
 		FROM strategic_knowledge_pipeline_state
 		WHERE workspace_id=$1
 		FOR UPDATE
@@ -345,6 +348,7 @@ func pipelineStateDestinations(state *KnowledgePipelineState) []any {
 		&state.LastExtractedSourceID, &state.LastAuditedSourceID, &state.CandidateRevision,
 		&state.CandidateSourceID, &state.ReadyRevision, &state.CompiledRevision,
 		&state.CandidateReason, &state.AuditFeedback, &state.CandidateReport, &state.FeedbackDeliveredRevision,
+		&state.OnboardingConfirmedBy, &state.OnboardingConfirmedAt,
 		&state.UpdatedAt,
 	}
 }

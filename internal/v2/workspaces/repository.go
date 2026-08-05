@@ -24,7 +24,7 @@ func OnboardingPending(ctx context.Context, dbx *sql.DB, workspaceID int) (bool,
 	err := dbx.QueryRowContext(ctx, `
 		SELECT
 			COALESCE((
-				SELECT ready_revision = 0
+				SELECT onboarding_confirmed_at IS NULL
 				FROM strategic_knowledge_pipeline_state
 				WHERE workspace_id=$1
 			), TRUE)
