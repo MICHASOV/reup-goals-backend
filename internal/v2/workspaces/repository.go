@@ -29,7 +29,7 @@ func OnboardingPending(ctx context.Context, dbx *sql.DB, workspaceID int) (bool,
 				WHERE workspace_id=$1
 			), TRUE)
 			AND NOT EXISTS (
-				SELECT 1 FROM strategies WHERE workspace_id=$1 AND status='active'
+				SELECT 1 FROM v2_strategies WHERE workspace_id=$1 AND status='active'
 			)
 	`, workspaceID).Scan(&pending)
 	return pending, err
