@@ -235,3 +235,26 @@ func TestParseAuditorTurnRejectsSerializedReply(t *testing.T) {
 		t.Fatal("serialized JSON must not reach the knowledge chat")
 	}
 }
+
+func TestParseAuditorTurnUnwrapsNestedContractFromVisibleReply(t *testing.T) {
+	nestedReply := "**Советник**\n**Копировать**\n```json\n{\n\"reply\":\"Ответьте по пунктам.\",\n\"context_ready\":false,\n\"readiness_reason\":\"\"\n}\n```"
+	raw, err := json.Marshal(map[string]any{
+		"reply":            nestedReply,
+		"context_ready":    false,
+		"readiness_reason": "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	turn, err := parseAuditorTurn(string(raw))
+	if err != nil {
+		t.Fatalf("nested auditor contract should be recovered: %v", err)
+	}
+	if turn.Reply != "Ответьте по пунктам." {
+		t.Fatalf("unexpected visible reply: %q", turn.Reply)
+	}
+	if got := cleanAssistantMessage(nestedReply); got != "Ответьте по пунктам." {
+		t.Fatalf("stored assistant message was not cleaned: %q", got)
+	}
+}

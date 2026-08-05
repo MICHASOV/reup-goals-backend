@@ -12,6 +12,13 @@ func cleanText(value string) string {
 
 func cleanAssistantMessage(value string) string {
 	value = strings.TrimSpace(value)
+	for range 3 {
+		nested, ok := embeddedAuditorTurn(value)
+		if !ok {
+			break
+		}
+		value = strings.TrimSpace(nested.Reply)
+	}
 	replacer := strings.NewReplacer(
 		"【】", "",
 		"【 】", "",
@@ -27,6 +34,25 @@ func cleanAssistantMessage(value string) string {
 	)
 	value = replacer.Replace(value)
 	return stripInternalAssistantSections(value)
+}
+
+// embeddedAuditorTurn recovers a structured auditor response accidentally
+// serialized inside the user-visible reply, including Markdown/UI wrappers.
+func embeddedAuditorTurn(value string) (auditorTurnOutput, bool) {
+	start := strings.Index(value, "{")
+	end := strings.LastIndex(value, "}")
+	if start < 0 || end <= start {
+		return auditorTurnOutput{}, false
+	}
+	candidate := value[start : end+1]
+	if !strings.Contains(candidate, `"reply"`) || !strings.Contains(candidate, `"context_ready"`) {
+		return auditorTurnOutput{}, false
+	}
+	var nested auditorTurnOutput
+	if err := json.Unmarshal([]byte(candidate), &nested); err != nil || strings.TrimSpace(nested.Reply) == "" {
+		return auditorTurnOutput{}, false
+	}
+	return nested, true
 }
 
 func stripInternalAssistantSections(value string) string {

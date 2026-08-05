@@ -47,7 +47,7 @@ const (
 	DefaultDetailLevel             = "normal"
 	DefaultStructurePreference     = "free_dialogue"
 	DefaultFrustrationSensitivity  = "medium"
-	StrategicMemoryPromptVersion   = "business_auditor_openai_native_v0_6_0"
+	StrategicMemoryPromptVersion   = "business_auditor_openai_native_v0_6_1"
 	DefaultStrategicDocumentStatus = "draft"
 )
 

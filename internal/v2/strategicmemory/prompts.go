@@ -70,7 +70,9 @@ Return valid JSON only:
   "reply": "the complete visible response for the user, in the user's language; Markdown is allowed when useful",
   "context_ready": false,
   "readiness_reason": "short internal reason in English; empty when false"
-}`
+}
+
+The reply field must contain only the message intended for the user. Never put JSON, the output object, schema keys, code fences around JSON, or UI labels such as "Советник" or "Копировать" inside reply. Even when the user asks for all questions at once, put only the readable questions in reply and keep the process fields solely at the top level.`
 
 const businessDocumentCollaboratorPrompt = `You are an AI business auditor working with the user on one specific document in the REUP.goals knowledge base.
 

@@ -370,6 +370,17 @@ func parseAuditorTurn(raw string) (auditorTurnOutput, error) {
 		return auditorTurnOutput{}, fmt.Errorf("business auditor response decode failed: %w", err)
 	}
 	turn.Reply = strings.TrimSpace(turn.Reply)
+	for range 3 {
+		nested, ok := embeddedAuditorTurn(turn.Reply)
+		if !ok {
+			break
+		}
+		turn.Reply = strings.TrimSpace(nested.Reply)
+		turn.ContextReady = nested.ContextReady
+		turn.ReadinessReason = strings.TrimSpace(nested.ReadinessReason)
+		turn.LegacyAuditCandidate = nested.LegacyAuditCandidate
+		turn.LegacyCandidateReason = strings.TrimSpace(nested.LegacyCandidateReason)
+	}
 	if turn.Reply == "" {
 		return auditorTurnOutput{}, fmt.Errorf("business auditor response has empty reply")
 	}

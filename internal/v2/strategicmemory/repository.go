@@ -293,6 +293,9 @@ func (s *Store) RecentMessages(ctx context.Context, workspaceID int, limit int) 
 		if err := rows.Scan(&item.ID, &item.Role, &item.Content, &item.CreatedAt); err != nil {
 			return nil, err
 		}
+		if item.Role == "assistant" {
+			item.Content = cleanAssistantMessage(item.Content)
+		}
 		messages = append(messages, item)
 	}
 	reverseMessages(messages)
@@ -335,6 +338,9 @@ func (s *Store) RelevantMessages(ctx context.Context, workspaceID int, query str
 		var item ConversationMessage
 		if err := rows.Scan(&item.ID, &item.Role, &item.Content, &item.CreatedAt); err != nil {
 			return nil, err
+		}
+		if item.Role == "assistant" {
+			item.Content = cleanAssistantMessage(item.Content)
 		}
 		messages = append(messages, item)
 	}
