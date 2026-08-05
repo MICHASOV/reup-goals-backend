@@ -602,6 +602,39 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 		api.WriteError(w, http.StatusServiceUnavailable, "checkout_not_configured")
 		return
 	}
+	if !overview.Capabilities.ManageSubscription {
+		api.WriteError(w, http.StatusForbidden, "subscription_management_forbidden")
+		return
+	}
+	if overview.Subscription.Access {
+		api.WriteError(w, http.StatusConflict, "checkout_requires_inactive_subscription")
+		return
+	}
+	request := CheckoutRequest{PlanCode: overview.Subscription.PlanCode, BillingPeriod: overview.Subscription.BillingPeriod}
+	if r.ContentLength != 0 && !decodeJSON(w, r, &request) {
+		return
+	}
+	plan, err := billing.PlanByCode(request.PlanCode)
+	if err != nil {
+		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	request.BillingPeriod = strings.ToLower(strings.TrimSpace(request.BillingPeriod))
+	amount, err := billing.Price(plan, request.BillingPeriod)
+	if err != nil {
+		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if err := h.store.PrepareCheckout(r.Context(), overview.Workspace.ID, overview.Account.ID, plan, request.BillingPeriod, amount); err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "checkout_prepare_failed")
+		return
+	}
+	periodMonths := 1
+	if request.BillingPeriod == billing.PeriodQuarterly {
+		periodMonths = 3
+	} else if request.BillingPeriod == billing.PeriodAnnual {
+		periodMonths = 12
+	}
 	if h.cfg.TopPaymentsCheckoutURL != "" {
 		checkoutURL, err := url.Parse(h.cfg.TopPaymentsCheckoutURL)
 		if err != nil || checkoutURL.Scheme != "https" {
@@ -610,8 +643,10 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 		}
 		query := checkoutURL.Query()
 		query.Set("workspace_id", strconv.Itoa(overview.Workspace.ID))
-		query.Set("amount", strconv.FormatFloat(overview.Subscription.Amount, 'f', 2, 64))
-		query.Set("currency", overview.Subscription.Currency)
+		query.Set("amount", strconv.FormatFloat(amount, 'f', 2, 64))
+		query.Set("currency", plan.Currency)
+		query.Set("plan_code", plan.Code)
+		query.Set("billing_period", request.BillingPeriod)
 		query.Set("success_url", h.cfg.FrontendBaseURL+"/account?section=subscription&payment=success")
 		query.Set("cancel_url", h.cfg.FrontendBaseURL+"/account?section=subscription&payment=cancelled")
 		checkoutURL.RawQuery = query.Encode()
@@ -630,11 +665,11 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 		"provider": "cloudpayments",
 		"mode":     "widget",
 		"config": map[string]any{
-			"public_id": h.payments.PublicID(), "description": h.payments.PlanName(),
-			"first_payment_amount": h.payments.FirstPaymentAmount(), "amount": h.payments.Amount(),
-			"currency": h.payments.Currency(), "account_id": "reup_user_" + strconv.Itoa(overview.Account.ID),
+			"public_id": h.payments.PublicID(), "description": "REUP.goals · " + plan.Name,
+			"first_payment_amount": amount, "amount": amount,
+			"currency": plan.Currency, "account_id": "reup_user_" + strconv.Itoa(overview.Account.ID),
 			"email": overview.Account.Email, "trial_days": h.payments.TrialDays(),
-			"start_date": startDate.Format(time.RFC3339),
+			"start_date": startDate.Format(time.RFC3339), "period_months": periodMonths,
 		},
 	})
 }

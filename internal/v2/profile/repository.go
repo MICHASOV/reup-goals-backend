@@ -179,6 +179,27 @@ func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, 
 	return result, nil
 }
 
+func (s *Store) PrepareCheckout(ctx context.Context, workspaceID, userID int, plan billing.Plan, period string, amount float64) error {
+	_, err := s.dbx.ExecContext(ctx, `
+		INSERT INTO subscriptions (
+			user_id, workspace_id, status, plan_name, plan_code, billing_period,
+			amount, currency, member_limit, payment_method, payment_provider
+		) VALUES ($1,$2,'inactive',$3,$4,$5,$6,$7,$8,'card','cloudpayments')
+		ON CONFLICT (user_id) DO UPDATE SET
+			workspace_id=EXCLUDED.workspace_id,
+			plan_name=EXCLUDED.plan_name,
+			plan_code=EXCLUDED.plan_code,
+			billing_period=EXCLUDED.billing_period,
+			amount=EXCLUDED.amount,
+			currency=EXCLUDED.currency,
+			member_limit=EXCLUDED.member_limit,
+			payment_method='card',
+			payment_provider='cloudpayments',
+			updated_at=NOW()
+	`, userID, workspaceID, plan.Name, plan.Code, period, amount, plan.Currency, plan.MemberLimit)
+	return err
+}
+
 func (s *Store) UpdateAccount(ctx context.Context, userID int, name, avatarURL, companyRole string) (Account, error) {
 	var account Account
 	err := s.dbx.QueryRowContext(ctx, `
@@ -821,8 +842,10 @@ func (s *Store) CreateInvoice(
 		return Invoice{}, err
 	}
 	description := fmt.Sprintf("Подписка REUP.goals, тариф %s, оплата за месяц", plan.Name)
-	if request.BillingPeriod == billing.PeriodAnnual {
-		description = fmt.Sprintf("Подписка REUP.goals, тариф %s, оплата за год со скидкой 20%%", plan.Name)
+	if request.BillingPeriod == billing.PeriodQuarterly {
+		description = fmt.Sprintf("Подписка REUP.goals, тариф %s, оплата за 3 месяца со скидкой 10%%", plan.Name)
+	} else if request.BillingPeriod == billing.PeriodAnnual {
+		description = fmt.Sprintf("Подписка REUP.goals, тариф %s, оплата за год со скидкой 30%%", plan.Name)
 	}
 	if request.OrderKind == billing.OrderQuotaReset {
 		request.BillingPeriod = billing.PeriodMonthly

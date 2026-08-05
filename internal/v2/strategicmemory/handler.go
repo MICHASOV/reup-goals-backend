@@ -48,6 +48,23 @@ func (h *Handler) CleanupWorkspaceData(ctx context.Context, workspaceID int) err
 	return h.service.CleanupExternalResources(ctx, workspaceID)
 }
 
+func (h *Handler) OnboardingSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	workspace, ok := h.currentWorkspace(w, r)
+	if !ok {
+		return
+	}
+	documents, err := h.store.ListDocuments(r.Context(), workspace.ID)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "onboarding_summary_load_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspace.ID, "documents": documents})
+}
+
 func (h *Handler) StrategicDirector(w http.ResponseWriter, r *http.Request) {
 	workspace, ok := h.currentWorkspace(w, r)
 	if !ok {

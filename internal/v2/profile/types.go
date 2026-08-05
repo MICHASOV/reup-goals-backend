@@ -177,6 +177,11 @@ type InvoiceRequest struct {
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
+type CheckoutRequest struct {
+	PlanCode      string `json:"plan_code"`
+	BillingPeriod string `json:"billing_period"`
+}
+
 type BillingDocument struct {
 	ID          int64      `json:"id"`
 	InvoiceID   *int64     `json:"invoice_id,omitempty"`

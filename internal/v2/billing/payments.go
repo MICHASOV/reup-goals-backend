@@ -80,7 +80,9 @@ func (s *Service) ConfirmInvoicePayment(ctx context.Context, invoiceID int64, co
 	switch orderKind {
 	case OrderSubscription:
 		periodEnd := now.AddDate(0, 1, 0)
-		if billingPeriod == PeriodAnnual {
+		if billingPeriod == PeriodQuarterly {
+			periodEnd = now.AddDate(0, 3, 0)
+		} else if billingPeriod == PeriodAnnual {
 			periodEnd = now.AddDate(1, 0, 0)
 		}
 		result, err := tx.ExecContext(ctx, `

@@ -3822,6 +3822,30 @@ var migrations = []Migration{
 				ALTER COLUMN tactical_plan_id DROP NOT NULL;
 		`,
 	},
+	{
+		ID: "20260805_075_subscription_periods_and_discounts",
+		SQL: `
+			ALTER TABLE billing_plans
+				ADD COLUMN IF NOT EXISTS quarterly_amount NUMERIC(12,2) NOT NULL DEFAULT 0;
+
+			UPDATE billing_plans SET
+				quarterly_amount=CASE code
+					WHEN 'founder' THEN 9423 WHEN 'team' THEN 32373 WHEN 'company' THEN 80973
+					ELSE quarterly_amount END,
+				annual_amount=CASE code
+					WHEN 'founder' THEN 29316 WHEN 'team' THEN 100716 WHEN 'company' THEN 251916
+					ELSE annual_amount END,
+				updated_at=NOW();
+
+			ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS chk_subscriptions_billing_period;
+			ALTER TABLE subscriptions ADD CONSTRAINT chk_subscriptions_billing_period
+				CHECK (billing_period IN ('monthly', 'quarterly', 'annual'));
+
+			ALTER TABLE workspace_billing_orders DROP CONSTRAINT IF EXISTS workspace_billing_orders_billing_period_check;
+			ALTER TABLE workspace_billing_orders ADD CONSTRAINT workspace_billing_orders_billing_period_check
+				CHECK (billing_period IN ('monthly', 'quarterly', 'annual'));
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

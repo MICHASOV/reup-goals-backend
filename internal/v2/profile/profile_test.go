@@ -112,6 +112,18 @@ func TestInvoiceRequestJSONContract(t *testing.T) {
 	}
 }
 
+func TestCheckoutRequestJSONContract(t *testing.T) {
+	var request CheckoutRequest
+	decoder := json.NewDecoder(strings.NewReader(`{"plan_code":"team","billing_period":"quarterly"}`))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		t.Fatalf("decode checkout request: %v", err)
+	}
+	if request.PlanCode != "team" || request.BillingPeriod != "quarterly" {
+		t.Fatalf("unexpected checkout request: %+v", request)
+	}
+}
+
 func TestAIUsageResponseJSONContract(t *testing.T) {
 	payload, err := json.Marshal(AIUsageResponse{
 		PlanCode: "team", PlanName: "Team", ResetAmount: 2990, Currency: "RUB",

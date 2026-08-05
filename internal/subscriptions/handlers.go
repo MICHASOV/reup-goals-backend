@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"reup-goals-backend/internal/auth"
+	v2billing "reup-goals-backend/internal/v2/billing"
 )
 
 const (
@@ -203,8 +204,16 @@ func (h *Handler) validateCheck(form url.Values) bool {
 		return false
 	}
 
+	selection, err := h.checkoutSelection(uid)
+	if err != nil {
+		return false
+	}
 	currency := formValue(form, "Currency")
-	if currency != "" && currency != h.cp.Currency() {
+	if currency != "" && currency != selection.currency {
+		return false
+	}
+	amount := parseAmount(formValue(form, "Amount"))
+	if amount != 0 && amount != selection.amount {
 		return false
 	}
 
@@ -218,8 +227,18 @@ func (h *Handler) applyWebhook(eventType string, form url.Values) error {
 		return errors.New("invalid_account_id")
 	}
 
+	selection, err := h.checkoutSelection(uid)
+	if err != nil {
+		return err
+	}
 	amount := parseAmount(formValue(form, "Amount"))
 	currency := formValue(form, "Currency")
+	if amount != 0 && amount != selection.amount {
+		return errors.New("payment_amount_mismatch")
+	}
+	if currency != "" && currency != selection.currency {
+		return errors.New("payment_currency_mismatch")
+	}
 	transactionID := formValue(form, "TransactionId")
 	cpSubscriptionID := firstNonEmpty(
 		formValue(form, "SubscriptionId"),
@@ -233,7 +252,18 @@ func (h *Handler) applyWebhook(eventType string, form url.Values) error {
 		formValue(form, "NextTransactionDate"),
 	))
 	if nextPaymentAt == nil && eventType == "pay" {
-		nextPaymentAt = &trialEndsAt
+		if h.cp.TrialDays() > 0 {
+			nextPaymentAt = &trialEndsAt
+		} else {
+			months := 1
+			if selection.billingPeriod == v2billing.PeriodQuarterly {
+				months = 3
+			} else if selection.billingPeriod == v2billing.PeriodAnnual {
+				months = 12
+			}
+			fallback := now.AddDate(0, months, 0)
+			nextPaymentAt = &fallback
+		}
 	}
 
 	status := statusActive
@@ -258,7 +288,7 @@ func (h *Handler) applyWebhook(eventType string, form url.Values) error {
 		}
 	}
 
-	subscriptionID, err := h.upsertSubscription(uid, status, cpSubscriptionID, token, amount, currency, nextPaymentAt, eventType)
+	subscriptionID, err := h.upsertSubscription(uid, selection, status, cpSubscriptionID, token, amount, currency, nextPaymentAt, eventType)
 	if err != nil {
 		return err
 	}
@@ -266,12 +296,37 @@ func (h *Handler) applyWebhook(eventType string, form url.Values) error {
 	return h.storeEvent(eventType, uid, subscriptionID, transactionID, cpSubscriptionID, accountID, amount, currency, form)
 }
 
-func (h *Handler) upsertSubscription(uid int, status string, cpSubscriptionID string, token string, amount float64, currency string, nextPaymentAt *time.Time, eventType string) (int, error) {
+type checkoutSelection struct {
+	planCode      string
+	planName      string
+	billingPeriod string
+	amount        float64
+	currency      string
+	memberLimit   int
+}
+
+func (h *Handler) checkoutSelection(uid int) (checkoutSelection, error) {
+	var result checkoutSelection
+	err := h.dbx.QueryRow(`
+		SELECT plan_code, plan_name, billing_period, amount, currency, member_limit
+		FROM subscriptions WHERE user_id=$1
+	`, uid).Scan(&result.planCode, &result.planName, &result.billingPeriod, &result.amount, &result.currency, &result.memberLimit)
+	if errors.Is(err, sql.ErrNoRows) {
+		plan, _ := v2billing.PlanByCode(v2billing.PlanFounder)
+		return checkoutSelection{
+			planCode: plan.Code, planName: plan.Name, billingPeriod: v2billing.PeriodMonthly,
+			amount: plan.MonthlyAmount, currency: plan.Currency, memberLimit: plan.MemberLimit,
+		}, nil
+	}
+	return result, err
+}
+
+func (h *Handler) upsertSubscription(uid int, selection checkoutSelection, status string, cpSubscriptionID string, token string, amount float64, currency string, nextPaymentAt *time.Time, eventType string) (int, error) {
 	if amount == 0 {
-		amount = h.cp.Amount()
+		amount = selection.amount
 	}
 	if currency == "" {
-		currency = h.cp.Currency()
+		currency = selection.currency
 	}
 
 	now := time.Now().UTC()
@@ -293,7 +348,13 @@ func (h *Handler) upsertSubscription(uid int, status string, cpSubscriptionID st
 		lastPaymentAt = &now
 	case statusActive:
 		currentPeriodStart = &now
-		end := now.AddDate(0, 1, 0)
+		months := 1
+		if selection.billingPeriod == v2billing.PeriodQuarterly {
+			months = 3
+		} else if selection.billingPeriod == v2billing.PeriodAnnual {
+			months = 12
+		}
+		end := now.AddDate(0, months, 0)
 		if nextPaymentAt != nil {
 			end = *nextPaymentAt
 		}
@@ -311,14 +372,14 @@ func (h *Handler) upsertSubscription(uid int, status string, cpSubscriptionID st
 	err := h.dbx.QueryRow(`
 		INSERT INTO subscriptions (
 			user_id, workspace_id, cloudpayments_subscription_id, cloudpayments_token, status, plan_name,
-			amount, currency, trial_started_at, trial_ends_at, current_period_start,
+			plan_code, billing_period, amount, currency, member_limit, trial_started_at, trial_ends_at, current_period_start,
 			current_period_end, next_payment_at, grace_until, cancelled_at, last_payment_at,
 			last_failed_at, failed_attempts, payment_method, payment_provider
 		)
 		VALUES (
 			$1,
 			(SELECT id FROM workspaces WHERE owner_user_id=$1 AND status='active' ORDER BY created_at ASC LIMIT 1),
-			nullif($2,''), nullif($3,''), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+			nullif($2,''), nullif($3,''), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
 			CASE WHEN $4 = 'past_due' THEN 1 ELSE 0 END,
 			'card', 'cloudpayments'
 		)
@@ -328,8 +389,11 @@ func (h *Handler) upsertSubscription(uid int, status string, cpSubscriptionID st
 			cloudpayments_token=COALESCE(nullif(EXCLUDED.cloudpayments_token,''), subscriptions.cloudpayments_token),
 			status=EXCLUDED.status,
 			plan_name=EXCLUDED.plan_name,
+			plan_code=EXCLUDED.plan_code,
+			billing_period=EXCLUDED.billing_period,
 			amount=EXCLUDED.amount,
 			currency=EXCLUDED.currency,
+			member_limit=EXCLUDED.member_limit,
 			trial_started_at=COALESCE(EXCLUDED.trial_started_at, subscriptions.trial_started_at),
 			trial_ends_at=COALESCE(EXCLUDED.trial_ends_at, subscriptions.trial_ends_at),
 			current_period_start=COALESCE(EXCLUDED.current_period_start, subscriptions.current_period_start),
@@ -348,7 +412,9 @@ func (h *Handler) upsertSubscription(uid int, status string, cpSubscriptionID st
 			payment_provider='cloudpayments',
 			updated_at=NOW()
 		RETURNING id
-	`, uid, cpSubscriptionID, token, status, h.cp.PlanName(), amount, currency, trialStartedAt, trialEndsAt, currentPeriodStart, currentPeriodEnd, nextPaymentAt, graceUntil, cancelledAt, lastPaymentAt, lastFailedAt).Scan(&id)
+	`, uid, cpSubscriptionID, token, status, selection.planName, selection.planCode, selection.billingPeriod,
+		amount, currency, selection.memberLimit, trialStartedAt, trialEndsAt, currentPeriodStart, currentPeriodEnd,
+		nextPaymentAt, graceUntil, cancelledAt, lastPaymentAt, lastFailedAt).Scan(&id)
 	if err != nil {
 		return 0, err
 	}

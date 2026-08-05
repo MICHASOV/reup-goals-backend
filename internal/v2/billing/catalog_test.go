@@ -10,21 +10,22 @@ func TestPlanCatalog(t *testing.T) {
 	tests := []struct {
 		code        string
 		monthly     float64
+		quarterly   float64
 		annual      float64
 		reset       float64
 		members     int
 		weeklyLimit int
 	}{
-		{PlanFounder, 3490, 33504, 890, 1, 1_250_000},
-		{PlanTeam, 11990, 115104, 2990, 5, 3_000_000},
-		{PlanCompany, 29990, 287904, 7490, 0, 9_000_000},
+		{PlanFounder, 3490, 9423, 29316, 890, 1, 1_250_000},
+		{PlanTeam, 11990, 32373, 100716, 2990, 5, 3_000_000},
+		{PlanCompany, 29990, 80973, 251916, 7490, 0, 9_000_000},
 	}
 	for _, test := range tests {
 		plan, err := PlanByCode(test.code)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if plan.MonthlyAmount != test.monthly || plan.AnnualAmount != test.annual ||
+		if plan.MonthlyAmount != test.monthly || plan.QuarterlyAmount != test.quarterly || plan.AnnualAmount != test.annual ||
 			plan.ResetAmount != test.reset || plan.MemberLimit != test.members ||
 			plan.WeeklyTokenLimit != test.weeklyLimit {
 			t.Fatalf("unexpected plan: %+v", plan)
