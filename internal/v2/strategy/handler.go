@@ -103,43 +103,80 @@ func (h *Handler) SubmitAgentStrategyForReview(
 	if err != nil {
 		return tactics.AppliedTacticsChange{}, err
 	}
-	if session.LastUserMessageID <= 0 {
-		return tactics.AppliedTacticsChange{}, fmt.Errorf("strategy_review_no_session")
-	}
 	summary := formatAgentStrategyCandidate(input)
+	if session.LastUserMessageID <= 0 {
+		messageID, createErr := h.store.CreateChatMessage(ctx, workspaceID, &userID, "user", "Подтверждаю подготовленную стратегию.", map[string]any{
+			"agent_runtime": true, "strategy_candidate": input, "synthetic_confirmation": true,
+		})
+		if createErr != nil {
+			return tactics.AppliedTacticsChange{}, createErr
+		}
+		session, err = h.store.BeginFacilitatorTurn(ctx, workspaceID, userID, messageID)
+		if err != nil {
+			return tactics.AppliedTacticsChange{}, err
+		}
+	}
+	goal := agentStrategyValue(input, "strategic_goal")
+	if goal == "" {
+		goal = "Стратегия компании"
+	}
+	artifactContent := agentStrategyArtifacts(input)
+	if err := h.store.ApplyAgentCandidate(ctx, workspaceID, state.Strategy.ID, goal, artifactContent); err != nil {
+		return tactics.AppliedTacticsChange{}, err
+	}
 	if _, err := h.store.CreateChatMessage(ctx, workspaceID, nil, "assistant", summary, map[string]any{
 		"agent_runtime":      true,
 		"strategy_candidate": input,
 		"session_status":     FacilitatorStatusCandidateReady,
 	}); err != nil {
-		return tactics.AppliedTacticsChange{}, err
+		log.Printf("[WARN] record agent strategy message workspace_id=%d strategy_id=%d: %v", workspaceID, state.Strategy.ID, err)
 	}
 	assessment := strategyFacilitatorModelOutput{
 		Message:       summary,
 		SessionStatus: FacilitatorStatusCandidateReady,
 		StatusReason:  "The user explicitly confirmed the strategy package prepared by the unified advisor.",
 	}
-	session, err = h.store.RecordFacilitatorAssessment(ctx, workspaceID, session.LastUserMessageID, assessment)
-	if err != nil {
-		return tactics.AppliedTacticsChange{}, err
+	updatedSession, assessmentErr := h.store.RecordFacilitatorAssessment(ctx, workspaceID, session.LastUserMessageID, assessment)
+	if assessmentErr != nil {
+		log.Printf("[WARN] record agent strategy assessment workspace_id=%d strategy_id=%d: %v", workspaceID, state.Strategy.ID, assessmentErr)
+	} else {
+		session = updatedSession
 	}
 	if h.readiness != nil {
 		if _, err := h.readiness.QueueCandidate(ctx, session, state.Strategy.ID); err != nil {
-			return tactics.AppliedTacticsChange{}, err
+			log.Printf("[WARN] queue strategy review workspace_id=%d strategy_id=%d: %v", workspaceID, state.Strategy.ID, err)
 		}
-	}
-	title := agentStrategyValue(input, "strategic_goal")
-	if title == "" {
-		title = "Стратегия компании"
 	}
 	return tactics.AppliedTacticsChange{
 		Operation:  "submit",
 		EntityType: "strategy_review",
 		EntityID:   state.Strategy.ID,
-		Title:      title,
-		Status:     "queued",
+		Title:      goal,
+		Status:     "saved",
 		Fields:     input,
 	}, nil
+}
+
+func agentStrategyArtifacts(input map[string]any) map[string]string {
+	currentState := agentStrategyValue(input, "current_state")
+	targetState := agentStrategyValue(input, "target_state")
+	goal := agentStrategyValue(input, "strategic_goal")
+	logic := agentStrategyValue(input, "strategic_logic")
+	nonPriorities := agentStrategyValue(input, "deliberate_non_priorities")
+	risks := agentStrategyValue(input, "risks_and_assumptions")
+	return map[string]string{
+		"business_stage":       currentState,
+		"global_goal":          strings.TrimSpace(strings.Join([]string{goal, targetState}, "\n\n")),
+		"current_challenge":    currentState,
+		"strategic_direction":  strings.TrimSpace(strings.Join([]string{logic, nonPriorities}, "\n\n")),
+		"economic_engine":      agentStrategyValue(input, "economic_engine"),
+		"key_metric":           agentStrategyValue(input, "key_metric"),
+		"local_goal":           goal,
+		"tactical_focuses":     logic,
+		"risks_and_hypotheses": risks,
+		"strategy_verdict":     strings.TrimSpace(strings.Join([]string{goal, targetState, logic}, "\n\n")),
+		"validation_plan":      risks,
+	}
 }
 
 func formatAgentStrategyCandidate(input map[string]any) string {

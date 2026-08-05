@@ -3815,6 +3815,13 @@ var migrations = []Migration{
 				ON v2_task_attachment_links (workspace_id, task_id);
 		`,
 	},
+	{
+		ID: "20260805_074_workspace_scoped_tactics_actions",
+		SQL: `
+			ALTER TABLE v2_tactics_action_applications
+				ALTER COLUMN tactical_plan_id DROP NOT NULL;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

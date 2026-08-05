@@ -560,14 +560,13 @@ func (s *Service) Decide(ctx context.Context, userID int, publicID string, reque
 			return Run{}, err
 		}
 	}
-	if err := s.store.QueueResume(ctx, run.ID); err != nil {
-		return Run{}, err
-	}
-	if _, err := s.jobs.EnqueuePriority(
-		ctx, workspace.ID, JobTypeResume, run.PublicID, agentJobPayload{RunID: run.PublicID}, 3, time.Time{},
-		InteractiveJobPriority,
+	// The source-of-truth changes are already committed. Finishing the run here
+	// keeps confirmation atomic and avoids reporting a false failure when an
+	// optional post-approval model continuation is unavailable.
+	if err := s.store.SetCompleted(
+		ctx, run.ID, "Изменения применены.", "Изменения применены.", "",
+		run.AssistantMessageID, RuntimeUsage{},
 	); err != nil {
-		_ = s.store.SetFailed(ctx, run.ID, "agent_resume_enqueue_failed", true)
 		return Run{}, err
 	}
 	run, err = s.store.ByPublicIDForUser(ctx, publicID, workspace.ID, userID)
@@ -884,9 +883,16 @@ func (s *Service) saveApprovalTurn(ctx context.Context, run Run, result RuntimeR
 		}
 	}
 	hasTacticsChanges := len(tacticsChanges) > 0
+	requiresTacticalPlan := false
+	for _, change := range tacticsChanges {
+		if change.EntityType != tactics.EntityDepartment && change.EntityType != tactics.EntityTask {
+			requiresTacticalPlan = true
+			break
+		}
+	}
 	var state tactics.CurrentResponse
 	var err error
-	if hasTacticsChanges {
+	if requiresTacticalPlan {
 		state, err = s.tactics.Current(ctx, run.WorkspaceID, run.UserID)
 		if err != nil || state.TacticalPlan == nil {
 			if err == nil {
@@ -924,10 +930,18 @@ func (s *Service) saveApprovalTurn(ctx context.Context, run Run, result RuntimeR
 		}
 	}
 	if hasTacticsChanges {
-		if err := s.tactics.RegisterTacticsActions(
-			ctx, run.WorkspaceID, state.TacticalPlan.ID, assistantMessageID, changes,
-		); err != nil {
-			return err
+		var registerErr error
+		if requiresTacticalPlan {
+			registerErr = s.tactics.RegisterTacticsActions(
+				ctx, run.WorkspaceID, state.TacticalPlan.ID, assistantMessageID, changes,
+			)
+		} else {
+			registerErr = s.tactics.RegisterWorkspaceActions(
+				ctx, run.WorkspaceID, assistantMessageID, changes,
+			)
+		}
+		if registerErr != nil {
+			return registerErr
 		}
 	}
 	if err := s.store.InsertApprovals(ctx, run.ID, result.Interruptions); err != nil {

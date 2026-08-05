@@ -248,6 +248,63 @@ func (s *Store) UpdateArtifact(ctx context.Context, workspaceID int, artifactID 
 	return scanArtifact(row)
 }
 
+func (s *Store) ApplyAgentCandidate(
+	ctx context.Context,
+	workspaceID int,
+	strategyID int,
+	title string,
+	artifacts map[string]string,
+) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "Стратегия компании"
+	}
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE v2_strategies
+		SET title=$1, summary=$1, updated_at=NOW()
+		WHERE id=$2 AND workspace_id=$3 AND archived_at IS NULL
+	`, title, strategyID, workspaceID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("strategy_not_found")
+	}
+
+	for artifactType, rawContent := range artifacts {
+		content := strings.TrimSpace(rawContent)
+		if content == "" {
+			continue
+		}
+		result, err = tx.ExecContext(ctx, `
+			UPDATE v2_strategy_artifacts
+			SET content=$1, status=$2, source=$3, updated_at=NOW()
+			WHERE workspace_id=$4 AND strategy_id=$5 AND type=$6
+		`, content, ArtifactStatusFilled, SourceManual, workspaceID, strategyID, artifactType)
+		if err != nil {
+			return err
+		}
+		rows, err = result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return fmt.Errorf("strategy_artifact_not_found: %s", artifactType)
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) Activate(ctx context.Context, workspaceID int, strategyID int, userID int) (Strategy, error) {
 	tx, err := s.dbx.BeginTx(ctx, nil)
 	if err != nil {

@@ -343,6 +343,14 @@ func (s *Store) tacticsActionStates(ctx context.Context, workspaceID int) (map[i
 }
 
 func (s *Store) RegisterTacticsActions(ctx context.Context, workspaceID int, planID int, messageID int, changes []TacticsDraftChange) error {
+	return s.registerTacticsActions(ctx, workspaceID, "tactical_plan", planID, messageID, changes)
+}
+
+func (s *Store) RegisterWorkspaceActions(ctx context.Context, workspaceID int, messageID int, changes []TacticsDraftChange) error {
+	return s.registerTacticsActions(ctx, workspaceID, "workspace", workspaceID, messageID, changes)
+}
+
+func (s *Store) registerTacticsActions(ctx context.Context, workspaceID int, scopeType string, scopeID int, messageID int, changes []TacticsDraftChange) error {
 	proposals := make([]aiactions.Proposal, 0, len(changes))
 	for _, change := range changes {
 		proposals = append(proposals, aiactions.Proposal{
@@ -354,8 +362,8 @@ func (s *Store) RegisterTacticsActions(ctx context.Context, workspaceID int, pla
 		ctx,
 		workspaceID,
 		aiactions.ScenarioTacticsFacilitator,
-		"tactical_plan",
-		planID,
+		scopeType,
+		scopeID,
 		messageID,
 		nil,
 		proposals,
@@ -366,7 +374,7 @@ func (s *Store) RegisterTacticsActions(ctx context.Context, workspaceID int, pla
 func (s *Store) ClaimTacticsActionApplication(
 	ctx context.Context,
 	workspaceID int,
-	planID int,
+	planID *int,
 	messageID int,
 	actionIndex int,
 	change TacticsDraftChange,

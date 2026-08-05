@@ -199,13 +199,6 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 	if request.MessageID <= 0 || len(request.ActionIndices) == 0 {
 		return ApplyTacticsChangesResponse{}, fmt.Errorf("invalid_tactics_actions")
 	}
-	state, err := s.store.Current(ctx, workspaceID, userID)
-	if err != nil {
-		return ApplyTacticsChangesResponse{}, err
-	}
-	if state.TacticalPlan == nil {
-		return ApplyTacticsChangesResponse{}, fmt.Errorf("tactics_plan_required")
-	}
 	changes, err := s.store.AssistantDraftChanges(ctx, workspaceID, request.MessageID)
 	if err != nil {
 		return ApplyTacticsChangesResponse{}, err
@@ -221,6 +214,22 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 	}
 	if err := ValidateDraftChangesForConfirmation(selectedChanges); err != nil {
 		return ApplyTacticsChangesResponse{}, err
+	}
+	var plan TacticalPlan
+	requiresPlan := false
+	for _, change := range selectedChanges {
+		if change.EntityType != EntityDepartment && change.EntityType != EntityTask {
+			requiresPlan = true
+			break
+		}
+	}
+	if state, stateErr := s.store.Current(ctx, workspaceID, userID); stateErr == nil && state.TacticalPlan != nil {
+		plan = *state.TacticalPlan
+	} else if requiresPlan {
+		if stateErr != nil {
+			return ApplyTacticsChangesResponse{}, stateErr
+		}
+		return ApplyTacticsChangesResponse{}, fmt.Errorf("tactics_plan_required")
 	}
 	createdByKey := map[string]int{}
 	response := ApplyTacticsChangesResponse{
@@ -256,12 +265,16 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 				return ApplyTacticsChangesResponse{}, err
 			}
 		}
-		claimed, err := s.store.ClaimTacticsActionApplication(
-			ctx, workspaceID, state.TacticalPlan.ID, request.MessageID, index, change, userID,
+		var planID *int
+		if plan.ID > 0 {
+			planID = &plan.ID
+		}
+		claimed, claimErr := s.store.ClaimTacticsActionApplication(
+			ctx, workspaceID, planID, request.MessageID, index, change, userID,
 		)
-		if err != nil {
-			_ = s.store.aiActions.MarkFailed(ctx, workspaceID, aiactions.ScenarioTacticsFacilitator, request.MessageID, index, err.Error())
-			return ApplyTacticsChangesResponse{}, err
+		if claimErr != nil {
+			_ = s.store.aiActions.MarkFailed(ctx, workspaceID, aiactions.ScenarioTacticsFacilitator, request.MessageID, index, claimErr.Error())
+			return ApplyTacticsChangesResponse{}, claimErr
 		}
 		if !claimed {
 			continue
@@ -271,7 +284,7 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 		if parentID <= 0 && change.ParentDraftKey != "" {
 			parentID = createdByKey[change.ParentDraftKey]
 		}
-		item, ok := s.store.applyFacilitatorDraftChange(ctx, workspaceID, userID, *state.TacticalPlan, parentID, change)
+		item, ok := s.store.applyFacilitatorDraftChange(ctx, workspaceID, userID, plan, parentID, change)
 		if !ok {
 			_ = s.store.aiActions.MarkFailed(ctx, workspaceID, aiactions.ScenarioTacticsFacilitator, request.MessageID, index, "change_not_applicable")
 			_ = s.store.FailTacticsActionApplication(ctx, workspaceID, request.MessageID, index, "change_not_applicable")
@@ -280,7 +293,9 @@ func (s *FacilitatorService) ApplyConfirmedChanges(
 		if change.DraftKey != "" {
 			createdByKey[change.DraftKey] = item.EntityID
 		}
-		item.ID = s.store.recordAppliedTacticsChange(ctx, workspaceID, state.TacticalPlan.ID, request.MessageID, userID, item)
+		if plan.ID > 0 {
+			item.ID = s.store.recordAppliedTacticsChange(ctx, workspaceID, plan.ID, request.MessageID, userID, item)
+		}
 		if err := s.store.aiActions.MarkApplied(
 			ctx,
 			workspaceID,
@@ -616,7 +631,7 @@ func (s *Store) applyTaskDraft(
 
 	if operation == "update" {
 		current, err := taskStore.Get(ctx, workspaceID, entityID)
-		if err != nil || current.TacticalPlanID != plan.ID {
+		if err != nil || (plan.ID > 0 && current.TacticalPlanID != plan.ID) {
 			return AppliedTacticsChange{}, false
 		}
 		input := tasks.TaskInput{}
@@ -633,6 +648,9 @@ func (s *Store) applyTaskDraft(
 			input.WhyNow = &change.WhyNow
 		}
 		if change.ProjectID != nil {
+			if plan.ID <= 0 {
+				return AppliedTacticsChange{}, false
+			}
 			input.ProjectID = change.ProjectID
 			projectWorkstreamID, valid := s.taskDraftProjectWorkstream(ctx, workspaceID, plan.ID, *change.ProjectID)
 			if !valid {
