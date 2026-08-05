@@ -246,95 +246,14 @@ func (s *Store) ConfirmKnowledgeContext(ctx context.Context, workspaceID int, us
 	}
 	defer tx.Rollback()
 
-	var pipelineStatus string
-	var readyRevision int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT status, ready_revision
-		FROM strategic_knowledge_pipeline_state
-		WHERE workspace_id=$1
-		FOR UPDATE
-	`, workspaceID).Scan(&pipelineStatus, &readyRevision); err != nil {
-		return KnowledgePipelineState{}, err
-	}
-	if pipelineStatus != KnowledgePipelineReady || readyRevision <= 0 {
-		return KnowledgePipelineState{}, sql.ErrNoRows
-	}
-
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, workspace_id, document_type, title, markdown, source_claim_ids_json,
-			status, version, generated_at
-		FROM strategic_documents
-		WHERE workspace_id=$1 AND BTRIM(markdown) <> ''
-	`, workspaceID)
-	if err != nil {
-		return KnowledgePipelineState{}, err
-	}
-	documents := []StrategicDocument{}
-	for rows.Next() {
-		var document StrategicDocument
-		if err := rows.Scan(
-			&document.ID, &document.WorkspaceID, &document.DocumentType, &document.Title,
-			&document.Markdown, &document.SourceClaimIDs, &document.Status, &document.Version,
-			&document.GeneratedAt,
-		); err != nil {
-			if closeErr := rows.Close(); closeErr != nil {
-				return KnowledgePipelineState{}, fmt.Errorf("scan strategic document: %w (close rows: %v)", err, closeErr)
-			}
-			return KnowledgePipelineState{}, err
-		}
-		documents = append(documents, document)
-	}
-	if err := rows.Close(); err != nil {
-		return KnowledgePipelineState{}, err
-	}
-	companyOverview := buildCompanyOverviewMarkdown(documents)
-	if strings.TrimSpace(companyOverview) == "" {
-		return KnowledgePipelineState{}, sql.ErrNoRows
-	}
-
-	var documentID int64
-	var documentVersion int
-	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO workspace_documents (
-			workspace_id, title, content, status, favorite, created_by, updated_by, system_key
-		) VALUES ($1, 'О компании', $3, 'published', TRUE, $2, $2, 'company_overview')
-		ON CONFLICT (workspace_id, system_key) WHERE system_key <> '' AND archived_at IS NULL
-		DO UPDATE SET
-			title='О компании',
-			content=EXCLUDED.content,
-			status='published',
-			favorite=TRUE,
-			updated_by=EXCLUDED.updated_by,
-			version=workspace_documents.version + CASE WHEN workspace_documents.content IS DISTINCT FROM EXCLUDED.content THEN 1 ELSE 0 END,
-			updated_at=NOW()
-		RETURNING id, version
-	`, workspaceID, userID, companyOverview).Scan(&documentID, &documentVersion); err != nil {
-		return KnowledgePipelineState{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO workspace_document_versions (
-			document_id, workspace_id, version, title, content, status, favorite,
-			linked_department_ids, linked_workstream_ids, linked_project_ids, saved_by
-		)
-		SELECT id, workspace_id, version, title, content, status, favorite,
-			linked_department_ids, linked_workstream_ids, linked_project_ids, $2
-		FROM workspace_documents
-		WHERE id=$1
-		ON CONFLICT (document_id, version) DO NOTHING
-	`, documentID, userID); err != nil {
-		return KnowledgePipelineState{}, err
-	}
-
 	var item KnowledgePipelineState
 	err = tx.QueryRowContext(ctx, `
 		UPDATE strategic_knowledge_pipeline_state
 		SET onboarding_confirmed_by=$2, onboarding_confirmed_at=NOW(), updated_at=NOW()
 		WHERE workspace_id=$1
-			AND status='ready'
-			AND ready_revision > 0
 			AND EXISTS (
-				SELECT 1 FROM strategic_documents
-				WHERE workspace_id=$1 AND BTRIM(markdown) <> ''
+				SELECT 1 FROM strategic_onboarding_summaries
+				WHERE workspace_id=$1 AND status='ready' AND BTRIM(markdown) <> ''
 			)
 		RETURNING workspace_id, status, conversation_revision, last_user_source_id,
 			last_extracted_source_id, last_audited_source_id, candidate_revision,
@@ -383,6 +302,61 @@ func buildCompanyOverviewMarkdown(documents []StrategicDocument) string {
 		return ""
 	}
 	return "# О компании\n\n" + strings.Join(sections, "\n\n---\n\n")
+}
+
+func upsertCompanyOverviewDocument(ctx context.Context, tx *sql.Tx, workspaceID int, documents []StrategicDocument) error {
+	companyOverview := buildCompanyOverviewMarkdown(documents)
+	if strings.TrimSpace(companyOverview) == "" {
+		return sql.ErrNoRows
+	}
+	var documentID int64
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO workspace_documents (
+			workspace_id, title, content, status, favorite, created_by, updated_by, system_key
+		)
+		SELECT $1, 'О компании', $2, 'published', TRUE,
+			COALESCE(pipeline.onboarding_confirmed_by, workspace.owner_user_id),
+			COALESCE(pipeline.onboarding_confirmed_by, workspace.owner_user_id),
+			'company_overview'
+		FROM workspaces workspace
+		LEFT JOIN strategic_knowledge_pipeline_state pipeline ON pipeline.workspace_id=workspace.id
+		WHERE workspace.id=$1
+		ON CONFLICT (workspace_id, system_key) WHERE system_key <> '' AND archived_at IS NULL
+		DO UPDATE SET
+			title='О компании', content=EXCLUDED.content, status='published', favorite=TRUE,
+			updated_by=EXCLUDED.updated_by,
+			version=workspace_documents.version + CASE WHEN workspace_documents.content IS DISTINCT FROM EXCLUDED.content THEN 1 ELSE 0 END,
+			updated_at=NOW()
+		RETURNING id
+	`, workspaceID, companyOverview).Scan(&documentID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO workspace_document_versions (
+			document_id, workspace_id, version, title, content, status, favorite,
+			linked_department_ids, linked_workstream_ids, linked_project_ids, saved_by
+		)
+		SELECT id, workspace_id, version, title, content, status, favorite,
+			linked_department_ids, linked_workstream_ids, linked_project_ids, updated_by
+		FROM workspace_documents
+		WHERE id=$1
+		ON CONFLICT (document_id, version) DO NOTHING
+	`, documentID)
+	return err
+}
+
+func ensureOnboardingSummaryFromCompilation(ctx context.Context, tx *sql.Tx, workspaceID int, revision int, sourceID int, documents []StrategicDocument) error {
+	companyOverview := buildCompanyOverviewMarkdown(documents)
+	if strings.TrimSpace(companyOverview) == "" {
+		return sql.ErrNoRows
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO strategic_onboarding_summaries (
+			workspace_id, source_revision, source_id, status, markdown
+		) VALUES ($1, $2, $3, 'ready', $4)
+		ON CONFLICT (workspace_id) DO NOTHING
+	`, workspaceID, revision, sourceID, companyOverview)
+	return err
 }
 
 func (s *Store) CreateStrategicFile(ctx context.Context, workspaceID int, rawSourceID *int, openAIFileID string, vectorStoreID string, filename string, contentType string, sizeBytes int64, status string, errorText string) (StrategicFile, error) {
@@ -1449,6 +1423,9 @@ func (s *Store) Reset(ctx context.Context, workspaceID int) error {
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_ai_runs WHERE workspace_id=$1`, workspaceID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_onboarding_summaries WHERE workspace_id=$1`, workspaceID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM strategic_knowledge_pipeline_state WHERE workspace_id=$1`, workspaceID); err != nil {

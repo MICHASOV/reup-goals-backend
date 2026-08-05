@@ -3910,6 +3910,35 @@ var migrations = []Migration{
 			ON CONFLICT (document_id, version) DO NOTHING;
 		`,
 	},
+	{
+		ID: "20260805_078_fast_onboarding_summary",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS strategic_onboarding_summaries (
+				workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+				source_revision INTEGER NOT NULL,
+				source_id INTEGER NOT NULL,
+				status TEXT NOT NULL DEFAULT 'generating'
+					CHECK (status IN ('generating', 'ready')),
+				markdown TEXT NOT NULL DEFAULT '',
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			INSERT INTO strategic_onboarding_summaries (
+				workspace_id, source_revision, source_id, status, markdown
+			)
+			SELECT pipeline.workspace_id, pipeline.ready_revision, pipeline.last_user_source_id,
+				'ready', '# О компании' || E'\n\n' || string_agg(
+					'## ' || document.title || E'\n\n' || document.markdown,
+					E'\n\n---\n\n' ORDER BY document.document_type
+				)
+			FROM strategic_knowledge_pipeline_state pipeline
+			JOIN strategic_documents document ON document.workspace_id=pipeline.workspace_id AND BTRIM(document.markdown) <> ''
+			WHERE pipeline.status='ready' AND pipeline.ready_revision > 0
+			GROUP BY pipeline.workspace_id, pipeline.ready_revision, pipeline.last_user_source_id
+			ON CONFLICT (workspace_id) DO NOTHING;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

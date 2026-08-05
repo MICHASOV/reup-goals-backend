@@ -175,6 +175,15 @@ type KnowledgePipelineState struct {
 	UpdatedAt                 time.Time       `json:"updated_at"`
 }
 
+type OnboardingSummary struct {
+	WorkspaceID    int       `json:"workspace_id"`
+	SourceRevision int       `json:"source_revision"`
+	SourceID       int       `json:"source_id"`
+	Status         string    `json:"status"`
+	Markdown       string    `json:"markdown"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 type StrategicFile struct {
 	ID            int       `json:"id"`
 	WorkspaceID   int       `json:"workspace_id"`
@@ -203,6 +212,7 @@ type StateResponse struct {
 	RecentMessages       []ConversationMessage  `json:"recent_messages"`
 	Files                []StrategicFile        `json:"files,omitempty"`
 	Pipeline             KnowledgePipelineState `json:"pipeline"`
+	OnboardingSummary    *OnboardingSummary     `json:"onboarding_summary,omitempty"`
 }
 
 type DocumentCatalogItem struct {
@@ -271,6 +281,7 @@ type MessageResponse struct {
 	DialogueFocus        DialogueFocus          `json:"dialogue_focus"`
 	OpenAIResponseID     string                 `json:"openai_response_id,omitempty"`
 	Pipeline             KnowledgePipelineState `json:"pipeline"`
+	OnboardingSummary    *OnboardingSummary     `json:"onboarding_summary,omitempty"`
 }
 
 type auditorTurnOutput struct {
@@ -279,6 +290,10 @@ type auditorTurnOutput struct {
 	ReadinessReason       string `json:"readiness_reason"`
 	LegacyAuditCandidate  bool   `json:"audit_candidate,omitempty"`
 	LegacyCandidateReason string `json:"candidate_reason,omitempty"`
+}
+
+type onboardingSummaryOutput struct {
+	SummaryMarkdown string `json:"summary_markdown"`
 }
 
 type FileUploadResponse struct {

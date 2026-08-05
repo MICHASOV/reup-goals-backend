@@ -66,7 +66,7 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 	type loadResult struct {
 		err error
 	}
-	results := make(chan loadResult, 9)
+	results := make(chan loadResult, 10)
 	go func() {
 		var err error
 		state.Snapshot, err = s.store.LatestSnapshot(ctx, workspaceID)
@@ -110,12 +110,17 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 	go func() {
 		var err error
 		state.Files, err = s.store.ListFiles(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	go func() {
+		var err error
+		state.Pipeline, err = s.store.KnowledgePipelineState(ctx, workspaceID)
 		if err == nil {
-			state.Pipeline, err = s.store.KnowledgePipelineState(ctx, workspaceID)
+			state.OnboardingSummary, err = s.store.OnboardingSummary(ctx, workspaceID)
 		}
 		results <- loadResult{err}
 	}()
-	for range 9 {
+	for range 10 {
 		if result := <-results; result.err != nil {
 			return StateResponse{}, result.err
 		}
@@ -135,7 +140,7 @@ func (s *Service) WorkspaceState(ctx context.Context, workspaceID int) (StateRes
 	type loadResult struct {
 		err error
 	}
-	results := make(chan loadResult, 5)
+	results := make(chan loadResult, 6)
 	go func() {
 		var err error
 		state.Documents, err = s.store.ListDocuments(ctx, workspaceID)
@@ -161,7 +166,12 @@ func (s *Service) WorkspaceState(ctx context.Context, workspaceID int) (StateRes
 		state.Pipeline, err = s.store.KnowledgePipelineState(ctx, workspaceID)
 		results <- loadResult{err}
 	}()
-	for range 5 {
+	go func() {
+		var err error
+		state.OnboardingSummary, err = s.store.OnboardingSummary(ctx, workspaceID)
+		results <- loadResult{err}
+	}()
+	for range 6 {
 		if result := <-results; result.err != nil {
 			return StateResponse{}, result.err
 		}
@@ -181,7 +191,11 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	if err != nil {
 		return MessageResponse{}, err
 	}
-	if knowledgeInputLocked(currentPipeline.Status) {
+	currentSummary, err := s.store.OnboardingSummary(ctx, workspaceID)
+	if err != nil {
+		return MessageResponse{}, err
+	}
+	if knowledgeInputLocked(currentPipeline.Status) || currentSummary != nil {
 		return MessageResponse{}, fmt.Errorf("knowledge_context_locked")
 	}
 
@@ -305,26 +319,41 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		_ = s.store.UpdateOpenAIConversationID(ctx, workspaceID, result.ConversationID)
 	}
 
-	assistantMessage := cleanAssistantMessage(turn.Reply)
-	assistantMessage = fallbackAssistantReply(assistantMessage)
-	_, _ = s.store.CreateRawSource(ctx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
-		"prompt_version":   StrategicMemoryPromptVersion,
-		"mode":             "openai_native",
-		"user_source_id":   sourceID,
-		"response_id":      result.ResponseID,
-		"conversation_id":  result.ConversationID,
-		"vector_store_ids": vectorStoreIDs,
-	})
 	if feedbackIncluded {
 		_ = s.store.MarkKnowledgeFeedbackDelivered(ctx, workspaceID, pipeline.CandidateRevision)
 	}
 	contextReady, readinessReason := turn.contextReadinessDecision()
-	if contextReady && pipeline.ReadyRevision == 0 {
-		queuedState, queueErr := s.queueKnowledgeCandidate(ctx, workspaceID, pipeline, sourceID, readinessReason)
-		if queueErr != nil {
-			return MessageResponse{}, queueErr
+	assistantMessage := ""
+	if contextReady {
+		if err := s.store.BeginOnboardingSummary(ctx, workspaceID, pipeline.ConversationRevision, sourceID); err != nil {
+			return MessageResponse{}, err
 		}
-		pipeline = queuedState
+		summaryResult, summaryErr := s.generateOnboardingSummary(ctx, workspaceID, userID, result.ConversationID, vectorStoreIDs, session)
+		if summaryErr != nil {
+			_ = s.store.DeleteOnboardingSummary(ctx, workspaceID, pipeline.ConversationRevision, sourceID)
+			return MessageResponse{}, summaryErr
+		}
+		if err := s.store.CompleteOnboardingSummary(ctx, workspaceID, pipeline.ConversationRevision, sourceID, summaryResult.Markdown); err != nil {
+			_ = s.store.DeleteOnboardingSummary(ctx, workspaceID, pipeline.ConversationRevision, sourceID)
+			return MessageResponse{}, err
+		}
+		if strings.TrimSpace(summaryResult.ConversationID) != "" && summaryResult.ConversationID != result.ConversationID {
+			_ = s.store.UpdateOpenAIConversationID(ctx, workspaceID, summaryResult.ConversationID)
+		}
+		queuedState, queueErr := s.queueKnowledgeCandidate(ctx, workspaceID, pipeline, sourceID, readinessReason)
+		if queueErr == nil {
+			pipeline = queuedState
+		}
+	} else {
+		assistantMessage = fallbackAssistantReply(cleanAssistantMessage(turn.Reply))
+		_, _ = s.store.CreateRawSource(ctx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
+			"prompt_version":   StrategicMemoryPromptVersion,
+			"mode":             "openai_native",
+			"user_source_id":   sourceID,
+			"response_id":      result.ResponseID,
+			"conversation_id":  result.ConversationID,
+			"vector_store_ids": vectorStoreIDs,
+		})
 	}
 
 	finalState, err := s.State(ctx, workspaceID)
@@ -347,7 +376,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	return MessageResponse{
 		WorkspaceID:          workspaceID,
 		AssistantMessage:     assistantMessage,
-		ConversationState:    pipelineConversationState(finalState.Pipeline),
+		ConversationState:    pipelineConversationState(finalState.Pipeline, finalState.OnboardingSummary),
 		MemoryUpdates:        MemoryUpdates{},
 		Snapshot:             finalState.Snapshot,
 		Documents:            documents,
@@ -357,6 +386,7 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		DialogueFocus:        finalState.DialogueFocus,
 		OpenAIResponseID:     result.ResponseID,
 		Pipeline:             finalState.Pipeline,
+		OnboardingSummary:    finalState.OnboardingSummary,
 	}, nil
 }
 
@@ -368,6 +398,51 @@ func knowledgeInputLocked(status string) bool {
 	default:
 		return false
 	}
+}
+
+type generatedOnboardingSummary struct {
+	Markdown       string
+	ConversationID string
+}
+
+func (s *Service) generateOnboardingSummary(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	conversationID string,
+	vectorStoreIDs []string,
+	session OpenAISession,
+) (generatedOnboardingSummary, error) {
+	aiCtx := ai.WithScenario(ctx, workspaceID, userID, "business_onboarding_summary", "business_onboarding_summary_v1")
+	started := time.Now()
+	result, err := s.ai.GenerateJSONNative(aiCtx, onboardingSummaryPrompt, "Create the final factual company summary now. Return JSON only and do not include questions.", ai.ResponseContextOptions{
+		UseConversation:      true,
+		ConversationID:       conversationID,
+		VectorStoreIDs:       vectorStoreIDs,
+		CompactThreshold:     session.CompactThreshold,
+		PromptCacheKey:       session.PromptCacheKey,
+		MaxFileSearchResults: 4,
+		MaxOutputTokens:      3500,
+	})
+	duration := time.Since(started).Milliseconds()
+	if err != nil {
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_onboarding_summary", s.ai.ModelName(), "business_onboarding_summary_v1", duration, 0, 0, "failed", err.Error())
+		return generatedOnboardingSummary{}, err
+	}
+	var output onboardingSummaryOutput
+	if err := json.Unmarshal([]byte(result.Text), &output); err != nil {
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_onboarding_summary", s.ai.ModelName(), "business_onboarding_summary_v1", duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
+		return generatedOnboardingSummary{}, fmt.Errorf("onboarding summary decode failed: %w", err)
+	}
+	markdown := strings.TrimSpace(output.SummaryMarkdown)
+	if markdown == "" {
+		return generatedOnboardingSummary{}, fmt.Errorf("onboarding summary is empty")
+	}
+	if !strings.HasPrefix(markdown, "# ") {
+		markdown = "# О компании\n\n" + markdown
+	}
+	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_onboarding_summary", s.ai.ModelName(), "business_onboarding_summary_v1", duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	return generatedOnboardingSummary{Markdown: markdown, ConversationID: result.ConversationID}, nil
 }
 
 func parseAuditorTurn(raw string) (auditorTurnOutput, error) {
@@ -426,7 +501,11 @@ func (s *Service) uploadFile(ctx context.Context, workspaceID int, userID int, f
 		if err != nil {
 			return FileUploadResponse{}, err
 		}
-		if knowledgeInputLocked(pipeline.Status) {
+		summary, err := s.store.OnboardingSummary(ctx, workspaceID)
+		if err != nil {
+			return FileUploadResponse{}, err
+		}
+		if knowledgeInputLocked(pipeline.Status) || summary != nil {
 			return FileUploadResponse{}, fmt.Errorf("knowledge_context_locked")
 		}
 	}
@@ -510,7 +589,7 @@ func (s *Service) fallbackMessageResponse(ctx context.Context, workspaceID int, 
 	return MessageResponse{
 		WorkspaceID:          workspaceID,
 		AssistantMessage:     assistantMessage,
-		ConversationState:    pipelineConversationState(state.Pipeline),
+		ConversationState:    pipelineConversationState(state.Pipeline, state.OnboardingSummary),
 		MemoryUpdates:        MemoryUpdates{},
 		Snapshot:             state.Snapshot,
 		Documents:            state.Documents,
@@ -519,6 +598,7 @@ func (s *Service) fallbackMessageResponse(ctx context.Context, workspaceID int, 
 		CommunicationProfile: state.CommunicationProfile,
 		DialogueFocus:        state.DialogueFocus,
 		Pipeline:             state.Pipeline,
+		OnboardingSummary:    state.OnboardingSummary,
 	}
 }
 

@@ -140,10 +140,15 @@ func (s *Service) runKnowledgeCandidate(ctx context.Context, workspaceID int, pa
 	if state.LastUserSourceID > payload.ThroughSourceID {
 		return s.store.SupersedeKnowledgeCandidate(ctx, workspaceID, payload.Revision)
 	}
+	onboardingSummary, err := s.store.OnboardingSummary(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	onboardingFinalized := onboardingSummary != nil && onboardingSummary.Status == "ready" && strings.TrimSpace(onboardingSummary.Markdown) != ""
 
 	var report QualityReport
 	checkpointReady := state.Status == KnowledgePipelineCompiling &&
-		json.Unmarshal(state.CandidateReport, &report) == nil && report.StrategyGate.CanStartStrategy
+		json.Unmarshal(state.CandidateReport, &report) == nil && (report.StrategyGate.CanStartStrategy || onboardingFinalized)
 	if !checkpointReady {
 		if err := s.store.UpdateKnowledgePipelineStatus(ctx, workspaceID, payload.Revision, KnowledgePipelineReviewing); err != nil {
 			return err
@@ -152,13 +157,13 @@ func (s *Service) runKnowledgeCandidate(ctx context.Context, workspaceID int, pa
 		if err != nil {
 			return err
 		}
-		if err := s.store.CompleteKnowledgeReview(ctx, workspaceID, payload.Revision, payload.ThroughSourceID, report); err != nil {
+		if err := s.store.CompleteKnowledgeReview(ctx, workspaceID, payload.Revision, payload.ThroughSourceID, report, onboardingFinalized); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return s.store.SupersedeKnowledgeCandidate(ctx, workspaceID, payload.Revision)
 			}
 			return err
 		}
-		if !report.StrategyGate.CanStartStrategy {
+		if !report.StrategyGate.CanStartStrategy && !onboardingFinalized {
 			s.markQualityAuditCompleted(workspaceID)
 			if s.contextIndex != nil {
 				s.contextIndex.RefreshAsync(workspaceID)
@@ -524,7 +529,20 @@ func validDocumentClaimIDs(candidate []int, valid map[int]bool) []int {
 	return result
 }
 
-func pipelineConversationState(state KnowledgePipelineState) string {
+func pipelineConversationState(state KnowledgePipelineState, summaries ...*OnboardingSummary) string {
+	var summary *OnboardingSummary
+	if len(summaries) > 0 {
+		summary = summaries[0]
+	}
+	if summary != nil {
+		if state.OnboardingConfirmedAt != nil {
+			return ConversationStateReadyForStrategy
+		}
+		if summary.Status == "ready" && strings.TrimSpace(summary.Markdown) != "" {
+			return ConversationStateAwaitingConfirmation
+		}
+		return ConversationStateProcessingContext
+	}
 	switch state.Status {
 	case KnowledgePipelineAuditCandidate, KnowledgePipelineExtracting, KnowledgePipelineReviewing, KnowledgePipelineCompiling:
 		return ConversationStateProcessingContext

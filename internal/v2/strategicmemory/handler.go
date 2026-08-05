@@ -60,11 +60,20 @@ func (h *Handler) OnboardingSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	document, err := h.store.CompanyOverviewDocument(r.Context(), workspace.ID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspace.ID, "documents": []StrategicDocument{}})
+		if !errors.Is(err, sql.ErrNoRows) {
+			api.WriteError(w, http.StatusInternalServerError, "onboarding_summary_load_failed")
 			return
 		}
-		api.WriteError(w, http.StatusInternalServerError, "onboarding_summary_load_failed")
+		summary, summaryErr := h.store.OnboardingSummary(r.Context(), workspace.ID)
+		if summaryErr != nil {
+			api.WriteError(w, http.StatusInternalServerError, "onboarding_summary_load_failed")
+			return
+		}
+		if summaryDocument, ok := strategicDocumentFromOnboardingSummary(summary); ok {
+			api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspace.ID, "documents": []StrategicDocument{summaryDocument}})
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspace.ID, "documents": []StrategicDocument{}})
 		return
 	}
 	api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspace.ID, "documents": []StrategicDocument{document}})

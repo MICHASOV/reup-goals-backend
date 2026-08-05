@@ -153,6 +153,7 @@ func (s *Store) CompleteKnowledgeReview(
 	revision int,
 	throughSourceID int,
 	report QualityReport,
+	allowCompilation bool,
 ) error {
 	tx, err := s.dbx.BeginTx(ctx, nil)
 	if err != nil {
@@ -170,7 +171,7 @@ func (s *Store) CompleteKnowledgeReview(
 	}
 
 	status := KnowledgePipelineNeedsMoreContext
-	if report.StrategyGate.CanStartStrategy {
+	if report.StrategyGate.CanStartStrategy || allowCompilation {
 		status = KnowledgePipelineCompiling
 	} else if err := insertQualityReport(ctx, tx, workspaceID, report); err != nil {
 		return err
@@ -215,6 +216,12 @@ func (s *Store) PublishKnowledgeCompilation(
 	}
 	updated, err := upsertDocuments(ctx, tx, workspaceID, documents)
 	if err != nil {
+		return 0, err
+	}
+	if err := upsertCompanyOverviewDocument(ctx, tx, workspaceID, documents); err != nil {
+		return 0, err
+	}
+	if err := ensureOnboardingSummaryFromCompilation(ctx, tx, workspaceID, revision, throughSourceID, documents); err != nil {
 		return 0, err
 	}
 	if err := insertQualityReport(ctx, tx, workspaceID, report); err != nil {

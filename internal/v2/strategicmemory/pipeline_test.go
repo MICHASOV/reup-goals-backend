@@ -207,6 +207,17 @@ func TestPipelineConversationState(t *testing.T) {
 	if got := pipelineConversationState(KnowledgePipelineState{Status: KnowledgePipelineNeedsMoreContext}); got != ConversationStateCollectingContext {
 		t.Fatalf("needs-more-context mapped to %q", got)
 	}
+	generating := &OnboardingSummary{Status: "generating"}
+	if got := pipelineConversationState(KnowledgePipelineState{Status: KnowledgePipelineCollecting}, generating); got != ConversationStateProcessingContext {
+		t.Fatalf("generating summary mapped to %q", got)
+	}
+	readySummary := &OnboardingSummary{Status: "ready", Markdown: "# О компании\n\nКонтекст"}
+	if got := pipelineConversationState(KnowledgePipelineState{Status: KnowledgePipelineExtracting}, readySummary); got != ConversationStateAwaitingConfirmation {
+		t.Fatalf("ready summary must not wait for background extraction, got %q", got)
+	}
+	if got := pipelineConversationState(KnowledgePipelineState{Status: KnowledgePipelineCompiling, OnboardingConfirmedAt: &now}, readySummary); got != ConversationStateReadyForStrategy {
+		t.Fatalf("confirmed summary mapped to %q", got)
+	}
 }
 
 func TestKnowledgeInputLocksWhileFinalDocumentIsPreparedOrReady(t *testing.T) {
@@ -241,6 +252,19 @@ func TestBuildCompanyOverviewMarkdownProducesOneOrderedDocument(t *testing.T) {
 	}
 	if strings.Contains(result, "# Компания\n") || strings.Contains(result, "# Продукт\n") {
 		t.Fatalf("source H1 headings must not be duplicated: %q", result)
+	}
+}
+
+func TestStrategicDocumentFromOnboardingSummary(t *testing.T) {
+	now := time.Now()
+	document, ok := strategicDocumentFromOnboardingSummary(&OnboardingSummary{
+		WorkspaceID: 9, Status: "ready", Markdown: "# О компании\n\nКраткий контекст.", UpdatedAt: now,
+	})
+	if !ok || document.DocumentType != "company_overview" || document.Title != "О компании" || document.Markdown == "" {
+		t.Fatalf("unexpected onboarding summary document: %+v, %v", document, ok)
+	}
+	if _, ok := strategicDocumentFromOnboardingSummary(&OnboardingSummary{Status: "generating"}); ok {
+		t.Fatal("unfinished summary must not be exposed")
 	}
 }
 
