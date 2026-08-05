@@ -12,19 +12,14 @@ import (
 )
 
 type Handler struct {
-	dbx                *sql.DB
-	workspaces         *workspaces.Store
-	billingEnforcement bool
+	dbx        *sql.DB
+	workspaces *workspaces.Store
 }
 
-func NewHandler(dbx *sql.DB, enforcement ...bool) *Handler {
-	result := &Handler{
+func NewHandler(dbx *sql.DB, _ ...bool) *Handler {
+	return &Handler{
 		dbx: dbx, workspaces: workspaces.NewStore(dbx),
 	}
-	if len(enforcement) > 0 {
-		result.billingEnforcement = enforcement[0]
-	}
-	return result
 }
 
 type response struct {
@@ -139,16 +134,8 @@ func (h *Handler) subscription(workspaceID int, ownerUserID int) (subscriptionRe
 		LIMIT 1
 	`, workspaceID, ownerUserID).Scan(&row.Status, &row.CurrentPeriodEnd, &row.GraceUntil)
 	if errors.Is(err, sql.ErrNoRows) {
-		if h.billingEnforcement {
-			return subscriptionResponse{
-				Status: "inactive", Access: false, AccessReason: "payment_required",
-			}, nil
-		}
 		return subscriptionResponse{
-			Status:       "active",
-			Access:       true,
-			AccessReason: "temporary_v2_access",
-			GraceUntil:   nil,
+			Status: "inactive", Access: false, AccessReason: "payment_required",
 		}, nil
 	}
 	if err != nil {

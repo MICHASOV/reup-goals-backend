@@ -28,6 +28,7 @@ type response struct {
 	Account                account             `json:"account"`
 	Workspace              workspace           `json:"workspace"`
 	ContextReady           bool                `json:"context_ready"`
+	SubscriptionAccess     bool                `json:"subscription_access"`
 	Strategy               *strategy           `json:"strategy,omitempty"`
 	StrategySessionActive  bool                `json:"strategy_session_active"`
 	StrategySessionOwnerID *int                `json:"strategy_session_owner_id,omitempty"`
@@ -143,6 +144,13 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		WorkspaceDocuments: []workspaceDocument{},
 		KnowledgeDocuments: []knowledgeDocument{},
 	}
+	result.SubscriptionAccess, err = api.WorkspaceHasProductAccess(
+		r.Context(), h.dbx, currentWorkspace.ID, currentWorkspace.OwnerUserID, time.Now().UTC(),
+	)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "subscription_lookup_failed")
+		return
+	}
 	if currentWorkspace.DisplayName != nil && strings.TrimSpace(*currentWorkspace.DisplayName) != "" {
 		result.Workspace.DisplayName = strings.TrimSpace(*currentWorkspace.DisplayName)
 	}
@@ -217,6 +225,14 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 	}
 	if result.Strategy != nil && result.Strategy.Status == "active" {
 		result.ContextReady = true
+	}
+	if result.ContextReady && !result.SubscriptionAccess {
+		result.Strategy = nil
+		result.MainTask = nil
+		result.Workstreams = []workstream{}
+		result.Departments = []department{}
+		result.WorkspaceDocuments = []workspaceDocument{}
+		result.KnowledgeDocuments = []knowledgeDocument{}
 	}
 	api.WriteJSON(w, http.StatusOK, result)
 }

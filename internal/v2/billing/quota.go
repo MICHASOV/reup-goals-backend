@@ -98,6 +98,12 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 		if err != nil {
 			return Reservation{}, err
 		}
+		if !allowed && module == "business_auditor_openai_native" {
+			allowed, err = s.onboardingPending(ctx, workspaceID)
+			if err != nil {
+				return Reservation{}, err
+			}
+		}
 		if !allowed {
 			return Reservation{}, ErrPaymentRequired
 		}
@@ -156,6 +162,25 @@ func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module s
 	}
 	s.syncWarningBestEffort(ctx, workspaceID, state, false)
 	return Reservation{ID: reservationID}, nil
+}
+
+// The initial company interview is the one AI flow available before payment.
+// As soon as the knowledge pipeline is ready (or a strategy already exists),
+// regular subscription enforcement applies to the same AI module.
+func (s *Service) onboardingPending(ctx context.Context, workspaceID int) (bool, error) {
+	var pending bool
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT
+			COALESCE((
+				SELECT ready_revision = 0
+				FROM workspace_knowledge_pipeline
+				WHERE workspace_id=$1
+			), TRUE)
+			AND NOT EXISTS (
+				SELECT 1 FROM strategies WHERE workspace_id=$1 AND status='active'
+			)
+	`, workspaceID).Scan(&pending)
+	return pending, err
 }
 
 func (s *Service) hasAIEntitlement(ctx context.Context, workspaceID int, now time.Time) (bool, error) {
