@@ -58,12 +58,16 @@ func (h *Handler) OnboardingSummary(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	documents, err := h.store.ListDocuments(r.Context(), workspace.ID)
+	document, err := h.store.CompanyOverviewDocument(r.Context(), workspace.ID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspace.ID, "documents": []StrategicDocument{}})
+			return
+		}
 		api.WriteError(w, http.StatusInternalServerError, "onboarding_summary_load_failed")
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspace.ID, "documents": documents})
+	api.WriteJSON(w, http.StatusOK, map[string]any{"workspace_id": workspace.ID, "documents": []StrategicDocument{document}})
 }
 
 func (h *Handler) StrategicDirector(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +212,10 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request, workspaceID i
 
 	response, err := h.service.HandleMessage(r.Context(), workspaceID, userID, req.Message)
 	if err != nil {
+		if strings.Contains(err.Error(), "knowledge_context_locked") {
+			api.WriteError(w, http.StatusConflict, "knowledge_context_locked")
+			return
+		}
 		if strings.Contains(err.Error(), "message_too_short") {
 			api.WriteError(w, http.StatusBadRequest, "message_too_short")
 			return
@@ -256,6 +264,10 @@ func (h *Handler) files(w http.ResponseWriter, r *http.Request, workspaceID int)
 	filename := security.SafeFilename(header.Filename)
 	response, err := h.service.UploadFile(r.Context(), workspaceID, userID, filename, contentType, header.Size, content)
 	if err != nil {
+		if strings.Contains(err.Error(), "knowledge_context_locked") {
+			api.WriteError(w, http.StatusConflict, "knowledge_context_locked")
+			return
+		}
 		api.WriteError(w, http.StatusBadGateway, "strategic_file_upload_failed")
 		return
 	}

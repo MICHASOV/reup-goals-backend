@@ -240,8 +240,91 @@ func (s *Store) RecordDeferredKnowledgeSource(ctx context.Context, workspaceID i
 }
 
 func (s *Store) ConfirmKnowledgeContext(ctx context.Context, workspaceID int, userID int) (KnowledgePipelineState, error) {
+	tx, err := s.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return KnowledgePipelineState{}, err
+	}
+	defer tx.Rollback()
+
+	var pipelineStatus string
+	var readyRevision int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT status, ready_revision
+		FROM strategic_knowledge_pipeline_state
+		WHERE workspace_id=$1
+		FOR UPDATE
+	`, workspaceID).Scan(&pipelineStatus, &readyRevision); err != nil {
+		return KnowledgePipelineState{}, err
+	}
+	if pipelineStatus != KnowledgePipelineReady || readyRevision <= 0 {
+		return KnowledgePipelineState{}, sql.ErrNoRows
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, workspace_id, document_type, title, markdown, source_claim_ids_json,
+			status, version, generated_at
+		FROM strategic_documents
+		WHERE workspace_id=$1 AND BTRIM(markdown) <> ''
+	`, workspaceID)
+	if err != nil {
+		return KnowledgePipelineState{}, err
+	}
+	documents := []StrategicDocument{}
+	for rows.Next() {
+		var document StrategicDocument
+		if err := rows.Scan(
+			&document.ID, &document.WorkspaceID, &document.DocumentType, &document.Title,
+			&document.Markdown, &document.SourceClaimIDs, &document.Status, &document.Version,
+			&document.GeneratedAt,
+		); err != nil {
+			rows.Close()
+			return KnowledgePipelineState{}, err
+		}
+		documents = append(documents, document)
+	}
+	if err := rows.Close(); err != nil {
+		return KnowledgePipelineState{}, err
+	}
+	companyOverview := buildCompanyOverviewMarkdown(documents)
+	if strings.TrimSpace(companyOverview) == "" {
+		return KnowledgePipelineState{}, sql.ErrNoRows
+	}
+
+	var documentID int64
+	var documentVersion int
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO workspace_documents (
+			workspace_id, title, content, status, favorite, created_by, updated_by, system_key
+		) VALUES ($1, 'О компании', $3, 'published', TRUE, $2, $2, 'company_overview')
+		ON CONFLICT (workspace_id, system_key) WHERE system_key <> '' AND archived_at IS NULL
+		DO UPDATE SET
+			title='О компании',
+			content=EXCLUDED.content,
+			status='published',
+			favorite=TRUE,
+			updated_by=EXCLUDED.updated_by,
+			version=workspace_documents.version + CASE WHEN workspace_documents.content IS DISTINCT FROM EXCLUDED.content THEN 1 ELSE 0 END,
+			updated_at=NOW()
+		RETURNING id, version
+	`, workspaceID, userID, companyOverview).Scan(&documentID, &documentVersion); err != nil {
+		return KnowledgePipelineState{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO workspace_document_versions (
+			document_id, workspace_id, version, title, content, status, favorite,
+			linked_department_ids, linked_workstream_ids, linked_project_ids, saved_by
+		)
+		SELECT id, workspace_id, version, title, content, status, favorite,
+			linked_department_ids, linked_workstream_ids, linked_project_ids, $2
+		FROM workspace_documents
+		WHERE id=$1
+		ON CONFLICT (document_id, version) DO NOTHING
+	`, documentID, userID); err != nil {
+		return KnowledgePipelineState{}, err
+	}
+
 	var item KnowledgePipelineState
-	err := s.dbx.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		UPDATE strategic_knowledge_pipeline_state
 		SET onboarding_confirmed_by=$2, onboarding_confirmed_at=NOW(), updated_at=NOW()
 		WHERE workspace_id=$1
@@ -263,7 +346,41 @@ func (s *Store) ConfirmKnowledgeContext(ctx context.Context, workspaceID int, us
 		&item.CandidateReason, &item.AuditFeedback, &item.CandidateReport, &item.FeedbackDeliveredRevision,
 		&item.OnboardingConfirmedBy, &item.OnboardingConfirmedAt, &item.UpdatedAt,
 	)
-	return item, err
+	if err != nil {
+		return KnowledgePipelineState{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return KnowledgePipelineState{}, err
+	}
+	return item, nil
+}
+
+func buildCompanyOverviewMarkdown(documents []StrategicDocument) string {
+	byType := make(map[string]StrategicDocument, len(documents))
+	for _, document := range documents {
+		if strings.TrimSpace(document.Markdown) != "" {
+			byType[document.DocumentType] = document
+		}
+	}
+	sections := []string{}
+	for _, definition := range strategicDocumentDefinitions() {
+		document, ok := byType[definition.DocumentType]
+		if !ok {
+			continue
+		}
+		body := strings.TrimSpace(document.Markdown)
+		lines := strings.Split(body, "\n")
+		if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "# ") {
+			body = strings.TrimSpace(strings.Join(lines[1:], "\n"))
+		}
+		if body != "" {
+			sections = append(sections, "## "+definition.Title+"\n\n"+body)
+		}
+	}
+	if len(sections) == 0 {
+		return ""
+	}
+	return "# О компании\n\n" + strings.Join(sections, "\n\n---\n\n")
 }
 
 func (s *Store) CreateStrategicFile(ctx context.Context, workspaceID int, rawSourceID *int, openAIFileID string, vectorStoreID string, filename string, contentType string, sizeBytes int64, status string, errorText string) (StrategicFile, error) {
@@ -1064,6 +1181,22 @@ func (s *Store) ListDocuments(ctx context.Context, workspaceID int) ([]Strategic
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (s *Store) CompanyOverviewDocument(ctx context.Context, workspaceID int) (StrategicDocument, error) {
+	var item StrategicDocument
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT id, workspace_id, 'company_overview', title, content, '[]'::jsonb,
+			'strong', version, updated_at
+		FROM workspace_documents
+		WHERE workspace_id=$1 AND system_key='company_overview' AND archived_at IS NULL
+		ORDER BY id ASC
+		LIMIT 1
+	`, workspaceID).Scan(
+		&item.ID, &item.WorkspaceID, &item.DocumentType, &item.Title, &item.Markdown,
+		&item.SourceClaimIDs, &item.Status, &item.Version, &item.GeneratedAt,
+	)
+	return item, err
 }
 
 func (s *Store) LatestQualityReport(ctx context.Context, workspaceID int) (*QualityReport, error) {

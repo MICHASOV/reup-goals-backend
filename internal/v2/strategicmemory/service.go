@@ -177,6 +177,13 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	if len([]rune(message)) > 50000 {
 		return MessageResponse{}, fmt.Errorf("message_too_long")
 	}
+	currentPipeline, err := s.store.KnowledgePipelineState(ctx, workspaceID)
+	if err != nil {
+		return MessageResponse{}, err
+	}
+	if knowledgeInputLocked(currentPipeline.Status) {
+		return MessageResponse{}, fmt.Errorf("knowledge_context_locked")
+	}
 
 	sourceID, err := s.store.CreateRawSource(ctx, workspaceID, &userID, SourceTypeUserMessage, message, map[string]any{})
 	if err != nil {
@@ -313,22 +320,11 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 	}
 	contextReady, readinessReason := turn.contextReadinessDecision()
 	if contextReady && pipeline.ReadyRevision == 0 {
-		readyState, accepted, acceptErr := s.store.AcceptKnowledgeInterviewerDecision(
-			ctx,
-			workspaceID,
-			pipeline.ConversationRevision,
-			sourceID,
-			readinessReason,
-		)
-		if acceptErr != nil {
-			return MessageResponse{}, acceptErr
+		queuedState, queueErr := s.queueKnowledgeCandidate(ctx, workspaceID, pipeline, sourceID, readinessReason)
+		if queueErr != nil {
+			return MessageResponse{}, queueErr
 		}
-		if accepted {
-			pipeline = readyState
-			if refreshErr := s.queueImmediateKnowledgeContextRefresh(ctx, workspaceID, sourceID); refreshErr != nil {
-				s.store.LogAIRunWithUsage(ctx, workspaceID, "knowledge_base_context_refresh", knowledgeExtractionModel, StrategicMemoryPromptVersion, 0, 0, 0, "failed", refreshErr.Error())
-			}
-		}
+		pipeline = queuedState
 	}
 
 	finalState, err := s.State(ctx, workspaceID)
@@ -362,6 +358,16 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		OpenAIResponseID:     result.ResponseID,
 		Pipeline:             finalState.Pipeline,
 	}, nil
+}
+
+func knowledgeInputLocked(status string) bool {
+	switch status {
+	case KnowledgePipelineAuditCandidate, KnowledgePipelineExtracting, KnowledgePipelineReviewing,
+		KnowledgePipelineCompiling, KnowledgePipelineReady:
+		return true
+	default:
+		return false
+	}
 }
 
 func parseAuditorTurn(raw string) (auditorTurnOutput, error) {
@@ -415,6 +421,15 @@ func (s *Service) UploadReferenceFile(ctx context.Context, workspaceID int, user
 }
 
 func (s *Service) uploadFile(ctx context.Context, workspaceID int, userID int, filename string, contentType string, sizeBytes int64, file io.Reader, recordKnowledgeTurn bool) (FileUploadResponse, error) {
+	if recordKnowledgeTurn {
+		pipeline, err := s.store.KnowledgePipelineState(ctx, workspaceID)
+		if err != nil {
+			return FileUploadResponse{}, err
+		}
+		if knowledgeInputLocked(pipeline.Status) {
+			return FileUploadResponse{}, fmt.Errorf("knowledge_context_locked")
+		}
+	}
 	session, err := s.store.OpenAISession(ctx, workspaceID, s.compactThreshold)
 	if err != nil {
 		return FileUploadResponse{}, err

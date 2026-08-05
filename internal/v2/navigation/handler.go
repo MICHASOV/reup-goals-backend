@@ -615,6 +615,24 @@ func (h *Handler) loadWorkspaceDocuments(r *http.Request, workspaceID int) ([]wo
 }
 
 func (h *Handler) loadKnowledgeDocuments(r *http.Request, workspaceID int) ([]knowledgeDocument, error) {
+	var hideInternalDocuments bool
+	if err := h.dbx.QueryRowContext(r.Context(), `
+		SELECT
+			EXISTS (
+				SELECT 1 FROM workspace_documents
+				WHERE workspace_id=$1 AND system_key='company_overview' AND archived_at IS NULL
+			)
+			OR COALESCE((
+				SELECT onboarding_confirmed_at IS NOT NULL
+				FROM strategic_knowledge_pipeline_state
+				WHERE workspace_id=$1
+			), FALSE)
+	`, workspaceID).Scan(&hideInternalDocuments); err != nil {
+		return nil, err
+	}
+	if hideInternalDocuments {
+		return []knowledgeDocument{}, nil
+	}
 	rows, err := h.dbx.QueryContext(r.Context(), `
 		SELECT document_type, status, version
 		FROM strategic_documents

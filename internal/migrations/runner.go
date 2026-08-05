@@ -3862,6 +3862,54 @@ var migrations = []Migration{
 				);
 		`,
 	},
+	{
+		ID: "20260805_077_company_overview_document",
+		SQL: `
+			ALTER TABLE workspace_documents
+				ADD COLUMN IF NOT EXISTS system_key TEXT NOT NULL DEFAULT '';
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_documents_system_key
+				ON workspace_documents (workspace_id, system_key)
+				WHERE system_key <> '' AND archived_at IS NULL;
+
+			INSERT INTO workspace_documents (
+				workspace_id, title, content, status, favorite, created_by, updated_by, system_key
+			)
+			SELECT pipeline.workspace_id,
+				'О компании',
+				'# О компании' || E'\n\n' || string_agg(
+					'## ' || document.title || E'\n\n' || document.markdown,
+					E'\n\n---\n\n' ORDER BY CASE document.document_type
+						WHEN 'company_governance' THEN 10 WHEN 'strategy_development' THEN 20
+						WHEN 'product_value' THEN 30 WHEN 'customers_market_competition' THEN 40
+						WHEN 'marketing_sales_relationships' THEN 50 WHEN 'operations_execution' THEN 60
+						WHEN 'team_organization' THEN 70 WHEN 'technology_data_assets' THEN 80
+						WHEN 'finance_economics' THEN 90 WHEN 'legal_compliance' THEN 100
+						WHEN 'hypotheses_assumptions' THEN 110 WHEN 'open_questions' THEN 120
+						WHEN 'contradictions_changes' THEN 130 ELSE 999 END
+				),
+				'published', TRUE, workspace.owner_user_id, workspace.owner_user_id, 'company_overview'
+			FROM strategic_knowledge_pipeline_state pipeline
+			JOIN strategic_documents document ON document.workspace_id=pipeline.workspace_id AND BTRIM(document.markdown) <> ''
+			JOIN workspaces workspace ON workspace.id=pipeline.workspace_id
+			WHERE pipeline.status='ready' AND pipeline.ready_revision > 0
+			GROUP BY pipeline.workspace_id, workspace.owner_user_id
+			ON CONFLICT (workspace_id, system_key) WHERE system_key <> '' AND archived_at IS NULL
+			DO NOTHING;
+
+			INSERT INTO workspace_document_versions (
+				document_id, workspace_id, version, title, content, status, favorite,
+				linked_department_ids, linked_workstream_ids, linked_project_ids, saved_by
+			)
+			SELECT document.id, document.workspace_id, document.version, document.title,
+				document.content, document.status, document.favorite,
+				document.linked_department_ids, document.linked_workstream_ids,
+				document.linked_project_ids, document.updated_by
+			FROM workspace_documents document
+			WHERE document.system_key='company_overview' AND document.archived_at IS NULL
+			ON CONFLICT (document_id, version) DO NOTHING;
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

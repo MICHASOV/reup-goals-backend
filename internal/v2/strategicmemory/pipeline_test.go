@@ -209,6 +209,41 @@ func TestPipelineConversationState(t *testing.T) {
 	}
 }
 
+func TestKnowledgeInputLocksWhileFinalDocumentIsPreparedOrReady(t *testing.T) {
+	for _, status := range []string{
+		KnowledgePipelineAuditCandidate, KnowledgePipelineExtracting, KnowledgePipelineReviewing,
+		KnowledgePipelineCompiling, KnowledgePipelineReady,
+	} {
+		if !knowledgeInputLocked(status) {
+			t.Fatalf("status %q must lock onboarding input", status)
+		}
+	}
+	for _, status := range []string{KnowledgePipelineCollecting, KnowledgePipelineNeedsMoreContext} {
+		if knowledgeInputLocked(status) {
+			t.Fatalf("status %q must keep onboarding input available", status)
+		}
+	}
+}
+
+func TestBuildCompanyOverviewMarkdownProducesOneOrderedDocument(t *testing.T) {
+	documents := []StrategicDocument{
+		{DocumentType: "product_value", Title: "Продукт", Markdown: "# Продукт\nЦенность продукта."},
+		{DocumentType: "company_governance", Title: "Компания", Markdown: "# Компания\nФакты о компании."},
+	}
+	result := buildCompanyOverviewMarkdown(documents)
+	if !strings.HasPrefix(result, "# О компании") {
+		t.Fatalf("unexpected overview heading: %q", result)
+	}
+	companyIndex := strings.Index(result, "## Компания и управление")
+	productIndex := strings.Index(result, "## Продукт и ценность")
+	if companyIndex < 0 || productIndex < 0 || companyIndex >= productIndex {
+		t.Fatalf("overview sections are not ordered: %q", result)
+	}
+	if strings.Contains(result, "# Компания\n") || strings.Contains(result, "# Продукт\n") {
+		t.Fatalf("source H1 headings must not be duplicated: %q", result)
+	}
+}
+
 func TestAuditorTurnOutputContract(t *testing.T) {
 	var turn auditorTurnOutput
 	err := json.Unmarshal([]byte(`{"reply":"Продолжим【】.","context_ready":true,"readiness_reason":"baseline covered"}`), &turn)
