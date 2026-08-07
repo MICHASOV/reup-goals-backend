@@ -30,6 +30,9 @@ echo "Building production agent runtime..."
   npm run build
   npm prune --omit=dev
   cp -R dist node_modules package.json package-lock.json "$runtime_stage/"
+  # npm can leave the optional macOS watcher after pruning on a Mac. The
+  # production archive is Linux-only and must not contain host binaries.
+  rm -rf "$runtime_stage/node_modules/fsevents"
 )
 
 if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
