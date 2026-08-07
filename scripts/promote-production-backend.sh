@@ -28,11 +28,14 @@ echo "Building production agent runtime..."
   npm run typecheck
   npm test
   npm run build
-  npm prune --omit=dev
-  cp -R dist node_modules package.json package-lock.json "$runtime_stage/"
-  # npm can leave the optional macOS watcher after pruning on a Mac. The
-  # production archive is Linux-only and must not contain host binaries.
-  rm -rf "$runtime_stage/node_modules/fsevents"
+  cp -R dist package.json package-lock.json "$runtime_stage/"
+)
+(
+  cd "$runtime_stage"
+  npm ci --omit=dev --ignore-scripts
+  # npm can install the optional macOS watcher while assembling the archive on
+  # a Mac. The production archive is Linux-only and must not contain it.
+  rm -rf node_modules/fsevents
 )
 
 if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
@@ -81,43 +84,44 @@ agent_env_backup="${agent_env}.rollback-${timestamp}"
 agent_unit=/etc/systemd/system/reup-goals-agent-production.service
 agent_unit_backup="${agent_unit}.rollback-${timestamp}"
 dropin_dir=/etc/systemd/system/reup-goals.service.d
+agent_backend_config=${dropin_dir}/agent-runtime.conf
+agent_backend_config_backup="${agent_backend_config}.rollback-${timestamp}"
 web_config=${dropin_dir}/web-security.conf
 web_config_backup="${web_config}.rollback-${timestamp}"
-backend_env=
-backend_env_backup=
 backend_changed=false
 agent_changed=false
 
-find_backend_env() {
+read_service_env() {
+  local key=$1
+  local main_pid
+  main_pid=$(systemctl show "$backend_service" -p MainPID --value)
+  if [ -z "$main_pid" ] || [ "$main_pid" = 0 ] || [ ! -r "/proc/${main_pid}/environ" ]; then
+    return 0
+  fi
+  tr '\0' '\n' < "/proc/${main_pid}/environ" \
+    | grep -E "^${key}=" \
+    | tail -1 \
+    | cut -d= -f2- || true
+}
+
+read_config_value() {
+  local key=$1
+  local value
   local candidate
-  candidate=$(systemctl show "$backend_service" -p EnvironmentFiles --value \
-    | awk '{print $1}' | tail -1)
-  candidate=${candidate#-}
-  candidate=${candidate#\"}
-  candidate=${candidate%\"}
-  for candidate in "$candidate" /etc/reup-goals/backend.env /opt/reup-goals-backend/.env; do
-    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
-      backend_env=$candidate
-      return 0
+  value=$(read_service_env "$key")
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+    return 0
+  fi
+  for candidate in /etc/reup-goals/backend.env /opt/reup-goals-backend/.env; do
+    if [ -f "$candidate" ]; then
+      value=$(grep -E "^${key}=" "$candidate" | tail -1 | cut -d= -f2- || true)
+      if [ -n "$value" ]; then
+        printf '%s' "$value"
+        return 0
+      fi
     fi
   done
-  echo "Could not locate the production backend EnvironmentFile." >&2
-  return 1
-}
-
-read_env() {
-  local key=$1
-  grep -E "^${key}=" "$backend_env" | tail -1 | cut -d= -f2- || true
-}
-
-set_backend_env() {
-  local key=$1
-  local value=$2
-  if grep -qE "^${key}=" "$backend_env"; then
-    sed -i "s|^${key}=.*|${key}=${value}|" "$backend_env"
-  else
-    printf '\n%s=%s\n' "$key" "$value" >> "$backend_env"
-  fi
 }
 
 restore_file_or_remove() {
@@ -150,9 +154,7 @@ rollback() {
     if [ -f "$backend_rollback" ]; then
       install -m 755 "$backend_rollback" "$backend_binary"
     fi
-    if [ -n "$backend_env_backup" ] && [ -f "$backend_env_backup" ]; then
-      cp -a "$backend_env_backup" "$backend_env"
-    fi
+    restore_file_or_remove "$agent_backend_config_backup" "$agent_backend_config"
     restore_file_or_remove "$web_config_backup" "$web_config"
   fi
 
@@ -167,29 +169,22 @@ rollback() {
 }
 trap rollback ERR
 
-find_backend_env
-backend_env_backup="${backend_env}.rollback-${timestamp}"
-cp -a "$backend_env" "$backend_env_backup"
-
 service_user=$(systemctl show "$backend_service" -p User --value)
 service_group=$(systemctl show "$backend_service" -p Group --value)
 service_user=${service_user:-root}
 service_group=${service_group:-$service_user}
 
-openai_api_key=$(read_env OPENAI_API_KEY)
+openai_api_key=$(read_config_value OPENAI_API_KEY)
 if [ -z "$openai_api_key" ]; then
-  echo "OPENAI_API_KEY is required to start the production agent runtime." >&2
+  echo "OPENAI_API_KEY is missing from the running production backend." >&2
   exit 1
 fi
-openai_proxy_url=$(read_env OPENAI_PROXY_URL)
-if [ -z "$openai_proxy_url" ]; then
-  openai_proxy_url=socks5://127.0.0.1:10808
-fi
+openai_proxy_url=$(read_config_value OPENAI_PROXY_URL)
 if [ "$(printf '%s' "$openai_proxy_url" | tr '[:upper:]' '[:lower:]')" = direct ]; then
   openai_proxy_url=
 fi
 
-runtime_secret=$(read_env AGENT_RUNTIME_SECRET)
+runtime_secret=$(read_config_value AGENT_RUNTIME_SECRET)
 if [ "${#runtime_secret}" -lt 32 ]; then
   runtime_secret=$(openssl rand -hex 32)
 fi
@@ -280,14 +275,19 @@ for attempt in $(seq 1 45); do
 done
 
 cp -a "$backend_binary" "$backend_rollback"
+if [ -f "$agent_backend_config" ]; then cp -a "$agent_backend_config" "$agent_backend_config_backup"; fi
 if [ -f "$web_config" ]; then cp -a "$web_config" "$web_config_backup"; fi
 backend_changed=true
 
-set_backend_env AGENT_RUNTIME_SECRET "$runtime_secret"
-set_backend_env AGENT_RUNTIME_URL "http://127.0.0.1:8091"
-set_backend_env AGENT_RUNTIME_MAX_TURNS "12"
-set_backend_env AGENT_RELEASE_ID "$release_id"
-set_backend_env AGENT_RUNTIME_ENABLED "true"
+cat > "$agent_backend_config" <<EOF
+[Service]
+Environment="AGENT_RUNTIME_SECRET=${runtime_secret}"
+Environment="AGENT_RUNTIME_URL=http://127.0.0.1:8091"
+Environment="AGENT_RUNTIME_MAX_TURNS=12"
+Environment="AGENT_RELEASE_ID=${release_id}"
+Environment="AGENT_RUNTIME_ENABLED=true"
+EOF
+chmod 600 "$agent_backend_config"
 
 cat > "$web_config" <<'EOF'
 [Service]
@@ -320,7 +320,7 @@ for attempt in $(seq 1 45); do
 done
 
 trap - ERR
-rm -f "$backend_env_backup" "$web_config_backup" "$agent_env_backup" "$agent_unit_backup"
+rm -f "$agent_backend_config_backup" "$web_config_backup" "$agent_env_backup" "$agent_unit_backup"
 rm -rf "$agent_previous"
 systemctl status "$backend_service" "$agent_service" --no-pager
 echo "BACKEND AND AGENT RUNTIME DEPLOYED"
