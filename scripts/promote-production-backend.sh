@@ -38,6 +38,7 @@ cat > "$web_config" <<'EOF'
 Environment="BROWSER_AUTH_ONLY=true"
 Environment="COOKIE_SECURE=true"
 Environment="CORS_ALLOWED_ORIGINS=https://reupgoals.pro,https://www.reupgoals.pro"
+Environment="BILLING_PAYMENTS_ENABLED=true"
 Environment="HTTP_WRITE_TIMEOUT=0s"
 Environment="OPENAI_AUDITOR_COMPACT_THRESHOLD=24000"
 Environment="OPENAI_ADVISOR_COMPACT_THRESHOLD=24000"
