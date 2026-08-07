@@ -23,6 +23,12 @@ func EstimateCost(model string, usage Usage) float64 {
 func modelPrices(model string) (float64, float64, float64) {
 	value := strings.ToLower(strings.TrimSpace(model))
 	switch {
+	case strings.HasPrefix(value, "gpt-5.6-luna"):
+		return 0.2, 0.02, 1.2
+	case strings.HasPrefix(value, "gpt-5.6-terra"):
+		return 2, 0.2, 12
+	case strings.HasPrefix(value, "gpt-5.6-sol"):
+		return 5, 0.5, 30
 	case strings.HasPrefix(value, "gpt-5.6"):
 		return 5, 0.5, 30
 	case strings.HasPrefix(value, "gpt-5.5"):

@@ -106,7 +106,7 @@ func Load() *Config {
 
 	model := os.Getenv("OPENAI_MODEL")
 	if model == "" {
-		model = "gpt-4o-mini" // дефолтная модель (можешь заменить на нужную)
+		model = "gpt-5.6-luna"
 	}
 	auditorModel := os.Getenv("OPENAI_AUDITOR_MODEL")
 	if auditorModel == "" {
@@ -114,11 +114,11 @@ func Load() *Config {
 	}
 	advisorModel := os.Getenv("OPENAI_ADVISOR_MODEL")
 	if advisorModel == "" {
-		advisorModel = "gpt-5.4"
+		advisorModel = "gpt-5.6-luna"
 	}
 	taskModel := os.Getenv("OPENAI_TASK_MODEL")
 	if taskModel == "" {
-		taskModel = "gpt-4o-mini"
+		taskModel = "gpt-5.6-luna"
 	}
 	transcriptionModel := os.Getenv("OPENAI_TRANSCRIPTION_MODEL")
 	if transcriptionModel == "" {

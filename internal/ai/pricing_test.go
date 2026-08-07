@@ -30,6 +30,27 @@ func TestEstimateCostForKnowledgeExtractionModels(t *testing.T) {
 	}
 }
 
+func TestEstimateCostForGPT56Tiers(t *testing.T) {
+	usage := Usage{InputTokens: 100_000, OutputTokens: 100_000, TotalTokens: 200_000}
+
+	if got, want := EstimateCost("gpt-5.6-luna", usage), 0.14; got != want {
+		t.Fatalf("gpt-5.6-luna cost = %f, want %f", got, want)
+	}
+	if got, want := EstimateCost("gpt-5.6-terra", usage), 1.4; got != want {
+		t.Fatalf("gpt-5.6-terra cost = %f, want %f", got, want)
+	}
+	if got, want := EstimateCost("gpt-5.6-sol", usage), 3.5; got != want {
+		t.Fatalf("gpt-5.6-sol cost = %f, want %f", got, want)
+	}
+}
+
+func TestEstimateCostForGPT56LunaLongContext(t *testing.T) {
+	usage := Usage{InputTokens: 300_000, OutputTokens: 10_000, TotalTokens: 310_000}
+	if got, want := EstimateCost("gpt-5.6-luna", usage), 0.138; got != want {
+		t.Fatalf("gpt-5.6-luna long-context cost = %f, want %f", got, want)
+	}
+}
+
 func TestMiniModelsDoNotUseLongContextPremium(t *testing.T) {
 	usage := Usage{InputTokens: 300_000, OutputTokens: 10_000, TotalTokens: 310_000}
 	if got, want := EstimateCost("gpt-5.4-nano", usage), 0.0725; got != want {

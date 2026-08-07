@@ -74,8 +74,8 @@ const (
 	jobTypeKnowledgeQualityAudit   = "knowledge_base.quality_audit"
 	jobTypeKnowledgeCandidate      = "knowledge_base.audit_candidate"
 	jobTypeKnowledgeContextRefresh = "knowledge_base.context_refresh"
-	knowledgeExtractionModel       = "gpt-5.4-nano"
-	knowledgeDocumentModel         = "gpt-5.4-mini"
+	knowledgeExtractionModel       = "gpt-5.6-luna"
+	knowledgeDocumentModel         = "gpt-5.6-luna"
 )
 
 type qualityAuditJobPayload struct {

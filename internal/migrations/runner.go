@@ -3939,6 +3939,16 @@ var migrations = []Migration{
 			ON CONFLICT (workspace_id) DO NOTHING;
 		`,
 	},
+	{
+		ID: "20260807_079_gpt_5_6_luna",
+		SQL: `
+			UPDATE v2_ai_prompt_configs
+			SET model='gpt-5.6-luna', updated_at=NOW()
+			WHERE provider='openai'
+				AND status='active'
+				AND model <> 'gpt-5.6-luna';
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
