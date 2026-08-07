@@ -42,7 +42,7 @@ assert_release_revision() {
 
   git -C "$repo" fetch --quiet origin main
   branch="$(git -C "$repo" branch --show-current)"
-  if [[ "$branch" != "main" ]]; then
+  if [[ -n "$branch" && "$branch" != "main" ]]; then
     echo "$label must be on main, current branch: $branch" >&2
     exit 1
   fi
