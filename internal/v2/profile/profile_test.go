@@ -3,11 +3,15 @@ package profile
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"reup-goals-backend/internal/config"
+	"reup-goals-backend/internal/subscriptions"
 	"reup-goals-backend/internal/v2/billing"
 )
 
@@ -121,6 +125,44 @@ func TestCheckoutRequestJSONContract(t *testing.T) {
 	}
 	if request.PlanCode != "team" || request.BillingPeriod != "quarterly" {
 		t.Fatalf("unexpected checkout request: %+v", request)
+	}
+}
+
+func TestCheckoutProviderPrefersCloudPayments(t *testing.T) {
+	cfg := &config.Config{
+		BillingPaymentsEnabled: true,
+		CloudPaymentsPublicID:  "pk_test_reup",
+		TopPaymentsCheckoutURL: "https://legacy-payments.example/checkout",
+	}
+	handler := NewHandler(nil, cfg, nil, subscriptions.NewCloudPaymentsClient(cfg))
+	if got := handler.checkoutProvider(); got != "cloudpayments" {
+		t.Fatalf("expected CloudPayments, got %q", got)
+	}
+}
+
+func TestCheckoutProviderFallsBackToRedirect(t *testing.T) {
+	cfg := &config.Config{
+		BillingPaymentsEnabled: true,
+		TopPaymentsCheckoutURL: "https://legacy-payments.example/checkout",
+	}
+	handler := NewHandler(nil, cfg, nil, subscriptions.NewCloudPaymentsClient(cfg))
+	if got := handler.checkoutProvider(); got != "toppayments" {
+		t.Fatalf("expected redirect fallback, got %q", got)
+	}
+}
+
+func TestInvoiceCreationIsDisabledInProduction(t *testing.T) {
+	handler := NewHandler(nil, &config.Config{Environment: "production"}, nil, nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/v2/profile/billing/invoices", nil)
+	response := httptest.NewRecorder()
+
+	handler.invoices(response, request, 1, Overview{}, nil)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected %d, got %d", http.StatusForbidden, response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "invoice_payments_disabled") {
+		t.Fatalf("unexpected response: %s", response.Body.String())
 	}
 }
 

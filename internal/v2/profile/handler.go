@@ -635,7 +635,23 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 	} else if request.BillingPeriod == billing.PeriodAnnual {
 		periodMonths = 12
 	}
-	if h.cfg.TopPaymentsCheckoutURL != "" {
+	if h.checkoutProvider() == "cloudpayments" {
+		now := time.Now().UTC()
+		startDate := now.AddDate(0, 0, h.payments.TrialDays())
+		api.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider": "cloudpayments",
+			"mode":     "widget",
+			"config": map[string]any{
+				"public_id": h.payments.PublicID(), "description": "REUP.goals · " + plan.Name,
+				"first_payment_amount": amount, "amount": amount,
+				"currency": plan.Currency, "account_id": "reup_user_" + strconv.Itoa(overview.Account.ID),
+				"email": overview.Account.Email, "trial_days": h.payments.TrialDays(),
+				"start_date": startDate.Format(time.RFC3339), "period_months": periodMonths,
+			},
+		})
+		return
+	}
+	if h.checkoutProvider() == "toppayments" {
 		checkoutURL, err := url.Parse(h.cfg.TopPaymentsCheckoutURL)
 		if err != nil || checkoutURL.Scheme != "https" {
 			api.WriteError(w, http.StatusServiceUnavailable, "checkout_not_configured")
@@ -655,23 +671,7 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 		})
 		return
 	}
-	if h.payments == nil || h.payments.PublicID() == "" {
-		api.WriteError(w, http.StatusServiceUnavailable, "checkout_not_configured")
-		return
-	}
-	now := time.Now().UTC()
-	startDate := now.AddDate(0, 0, h.payments.TrialDays())
-	api.WriteJSON(w, http.StatusOK, map[string]any{
-		"provider": "cloudpayments",
-		"mode":     "widget",
-		"config": map[string]any{
-			"public_id": h.payments.PublicID(), "description": "REUP.goals · " + plan.Name,
-			"first_payment_amount": amount, "amount": amount,
-			"currency": plan.Currency, "account_id": "reup_user_" + strconv.Itoa(overview.Account.ID),
-			"email": overview.Account.Email, "trial_days": h.payments.TrialDays(),
-			"start_date": startDate.Format(time.RFC3339), "period_months": periodMonths,
-		},
-	})
+	api.WriteError(w, http.StatusServiceUnavailable, "checkout_not_configured")
 }
 
 func (h *Handler) billingOrganization(w http.ResponseWriter, r *http.Request, userID, workspaceID int) {
@@ -715,6 +715,10 @@ func (h *Handler) invoices(w http.ResponseWriter, r *http.Request, userID int, o
 			}
 			api.WriteJSON(w, http.StatusOK, map[string]any{"invoices": items})
 		case http.MethodPost:
+			if h.cfg.Environment == "production" {
+				api.WriteError(w, http.StatusForbidden, "invoice_payments_disabled")
+				return
+			}
 			request := InvoiceRequest{
 				PlanCode: overview.Subscription.PlanCode, BillingPeriod: billing.PeriodMonthly,
 				OrderKind: billing.OrderSubscription,
@@ -886,10 +890,20 @@ func (h *Handler) about(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) checkoutAvailable() bool {
+	return h.checkoutProvider() != ""
+}
+
+func (h *Handler) checkoutProvider() string {
 	if !h.cfg.BillingPaymentsEnabled {
-		return false
+		return ""
 	}
-	return h.cfg.TopPaymentsCheckoutURL != "" || (h.payments != nil && h.payments.PublicID() != "")
+	if h.payments != nil && h.payments.PublicID() != "" {
+		return "cloudpayments"
+	}
+	if h.cfg.TopPaymentsCheckoutURL != "" {
+		return "toppayments"
+	}
+	return ""
 }
 
 func (h *Handler) loadOverview(r *http.Request, userID int) (Overview, error) {
