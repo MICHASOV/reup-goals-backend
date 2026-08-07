@@ -132,6 +132,7 @@ echo "Running backend tests..."
 echo "Checking frontend..."
 (
   cd "$frontend_root"
+  npm ci
   npm run typecheck
   npm run lint
   npm audit --omit=dev --audit-level=high
