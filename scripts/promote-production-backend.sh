@@ -1,37 +1,290 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-artifact="/tmp/reup_goals_backend"
+backend_artifact="/tmp/reup_goals_backend"
+runtime_artifact="/tmp/reup_goals_agent_runtime.tar.gz"
+runtime_stage="$(mktemp -d /tmp/reup-goals-agent-runtime.XXXXXX)"
+node_version="${AGENT_NODE_VERSION:-v22.17.0}"
+release_id="production-$(git -C "$repo_root" rev-parse --short=12 HEAD)"
+
+cleanup() {
+  rm -rf "$runtime_stage"
+}
+trap cleanup EXIT
 
 cd "$repo_root"
 
 echo "Building production backend..."
 GOCACHE=/private/tmp/reup-release-cache \
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-  go build -trimpath -ldflags="-s -w" -o "$artifact" ./cmd/api
+  go build -trimpath -ldflags="-s -w" -o "$backend_artifact" ./cmd/api
 
-echo "Uploading backend..."
-scp "$artifact" reup:/tmp/reup_goals_backend
+echo "Building production agent runtime..."
+(
+  cd "$repo_root/agent-runtime"
+  npm ci
+  npm run typecheck
+  npm test
+  npm run build
+  npm prune --omit=dev
+  cp -R dist node_modules package.json package-lock.json "$runtime_stage/"
+)
 
-echo "Installing backend with automatic rollback..."
-ssh reup 'bash -s' <<'REMOTE'
-set -uo pipefail
+if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
+  cp "$(command -v node)" "$runtime_stage/node"
+else
+  node_archive="node-${node_version}-linux-x64.tar.xz"
+  node_download_dir="$runtime_stage/node-download"
+  mkdir -p "$node_download_dir"
+  curl --fail --show-error --silent --location \
+    "https://nodejs.org/dist/${node_version}/${node_archive}" \
+    -o "$node_download_dir/$node_archive"
+  curl --fail --show-error --silent --location \
+    "https://nodejs.org/dist/${node_version}/SHASUMS256.txt" \
+    -o "$node_download_dir/SHASUMS256.txt"
+  (
+    cd "$node_download_dir"
+    grep " ${node_archive}\$" SHASUMS256.txt > SHASUMS256.selected
+    test -s SHASUMS256.selected
+    shasum -a 256 -c SHASUMS256.selected
+    tar -xJf "$node_archive"
+  )
+  cp "$node_download_dir/node-${node_version}-linux-x64/bin/node" "$runtime_stage/node"
+  rm -rf "$node_download_dir"
+fi
+chmod 755 "$runtime_stage/node"
+tar -czf "$runtime_artifact" -C "$runtime_stage" .
 
+echo "Uploading backend and agent runtime..."
+scp "$backend_artifact" "$runtime_artifact" reup:/tmp/
+
+echo "Installing backend and agent runtime with automatic rollback..."
+ssh reup bash -s -- "$release_id" <<'REMOTE'
+set -Eeuo pipefail
+
+release_id=$1
+timestamp=$(date +%Y%m%d-%H%M%S)
+backend_service=reup-goals.service
+agent_service=reup-goals-agent-production.service
+backend_binary=/opt/reup-goals-backend/reup_goals_backend
+backend_rollback="${backend_binary}.rollback-${timestamp}"
+agent_root=/opt/reup-goals-agent-production
+agent_next="${agent_root}.next"
+agent_previous="${agent_root}.previous"
+agent_env=/etc/reup-goals/agent-production.env
+agent_env_backup="${agent_env}.rollback-${timestamp}"
+agent_unit=/etc/systemd/system/reup-goals-agent-production.service
+agent_unit_backup="${agent_unit}.rollback-${timestamp}"
 dropin_dir=/etc/systemd/system/reup-goals.service.d
 web_config=${dropin_dir}/web-security.conf
-web_config_backup=${dropin_dir}/web-security.conf.rollback
-current=/opt/reup-goals-backend/reup_goals_backend
-rollback="${current}.jwt-rollback-$(date +%Y%m%d-%H%M%S)"
+web_config_backup="${web_config}.rollback-${timestamp}"
+backend_env=
+backend_env_backup=
+backend_changed=false
+agent_changed=false
 
-mkdir -p "$dropin_dir"
-cp -a "$current" "$rollback"
-if [ -f "$web_config" ]; then
-  cp -a "$web_config" "$web_config_backup"
-else
-  rm -f "$web_config_backup"
+find_backend_env() {
+  local candidate
+  candidate=$(systemctl show "$backend_service" -p EnvironmentFiles --value \
+    | awk '{print $1}' | tail -1)
+  candidate=${candidate#-}
+  candidate=${candidate#\"}
+  candidate=${candidate%\"}
+  for candidate in "$candidate" /etc/reup-goals/backend.env /opt/reup-goals-backend/.env; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      backend_env=$candidate
+      return 0
+    fi
+  done
+  echo "Could not locate the production backend EnvironmentFile." >&2
+  return 1
+}
+
+read_env() {
+  local key=$1
+  grep -E "^${key}=" "$backend_env" | tail -1 | cut -d= -f2- || true
+}
+
+set_backend_env() {
+  local key=$1
+  local value=$2
+  if grep -qE "^${key}=" "$backend_env"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$backend_env"
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> "$backend_env"
+  fi
+}
+
+restore_file_or_remove() {
+  local backup=$1
+  local target=$2
+  if [ -f "$backup" ]; then
+    mv -f "$backup" "$target"
+  else
+    rm -f "$target"
+  fi
+}
+
+rollback() {
+  local exit_code=$?
+  trap - ERR
+  echo "Production deployment failed; restoring the previous backend and agent runtime." >&2
+
+  systemctl stop "$agent_service" >/dev/null 2>&1 || true
+  if [ "$agent_changed" = true ]; then
+    rm -rf "$agent_root"
+    if [ -d "$agent_previous" ]; then
+      mv "$agent_previous" "$agent_root"
+    fi
+    restore_file_or_remove "$agent_env_backup" "$agent_env"
+    restore_file_or_remove "$agent_unit_backup" "$agent_unit"
+  fi
+
+  if [ "$backend_changed" = true ]; then
+    systemctl stop "$backend_service" >/dev/null 2>&1 || true
+    if [ -f "$backend_rollback" ]; then
+      install -m 755 "$backend_rollback" "$backend_binary"
+    fi
+    if [ -n "$backend_env_backup" ] && [ -f "$backend_env_backup" ]; then
+      cp -a "$backend_env_backup" "$backend_env"
+    fi
+    restore_file_or_remove "$web_config_backup" "$web_config"
+  fi
+
+  systemctl daemon-reload
+  systemctl reset-failed "$backend_service" "$agent_service" >/dev/null 2>&1 || true
+  systemctl start "$backend_service" >/dev/null 2>&1 || true
+  if [ -d "$agent_root" ] && [ -f "$agent_unit" ]; then
+    systemctl start "$agent_service" >/dev/null 2>&1 || true
+  fi
+  journalctl -u "$backend_service" -u "$agent_service" -n 120 --no-pager || true
+  exit "$exit_code"
+}
+trap rollback ERR
+
+find_backend_env
+backend_env_backup="${backend_env}.rollback-${timestamp}"
+cp -a "$backend_env" "$backend_env_backup"
+
+service_user=$(systemctl show "$backend_service" -p User --value)
+service_group=$(systemctl show "$backend_service" -p Group --value)
+service_user=${service_user:-root}
+service_group=${service_group:-$service_user}
+
+openai_api_key=$(read_env OPENAI_API_KEY)
+if [ -z "$openai_api_key" ]; then
+  echo "OPENAI_API_KEY is required to start the production agent runtime." >&2
+  exit 1
 fi
+openai_proxy_url=$(read_env OPENAI_PROXY_URL)
+if [ -z "$openai_proxy_url" ]; then
+  openai_proxy_url=socks5://127.0.0.1:10808
+fi
+if [ "$(printf '%s' "$openai_proxy_url" | tr '[:upper:]' '[:lower:]')" = direct ]; then
+  openai_proxy_url=
+fi
+
+runtime_secret=$(read_env AGENT_RUNTIME_SECRET)
+if [ "${#runtime_secret}" -lt 32 ]; then
+  runtime_secret=$(openssl rand -hex 32)
+fi
+
+mkdir -p /etc/reup-goals "$dropin_dir"
+rm -rf "$agent_next"
+mkdir -p "$agent_next"
+tar -xzf /tmp/reup_goals_agent_runtime.tar.gz -C "$agent_next"
+test -x "$agent_next/node"
+test -f "$agent_next/dist/server.js"
+chown -R "$service_user:$service_group" "$agent_next"
+
+rm -rf "$agent_previous"
+if [ -d "$agent_root" ]; then
+  mv "$agent_root" "$agent_previous"
+fi
+mv "$agent_next" "$agent_root"
+agent_changed=true
+
+if [ -f "$agent_env" ]; then cp -a "$agent_env" "$agent_env_backup"; fi
+if [ -f "$agent_unit" ]; then cp -a "$agent_unit" "$agent_unit_backup"; fi
+
+{
+  printf 'PORT=8091\n'
+  printf 'GO_INTERNAL_URL=http://127.0.0.1:8080\n'
+  printf 'AGENT_RUNTIME_SECRET=%s\n' "$runtime_secret"
+  printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
+  printf 'AGENT_COMPACT_THRESHOLD=100000\n'
+  printf 'AGENT_REASONING_EFFORT=high\n'
+  if [ -n "$openai_proxy_url" ]; then
+    printf 'OPENAI_PROXY_URL=%s\n' "$openai_proxy_url"
+  fi
+} > "$agent_env"
+chown "$service_user:$service_group" "$agent_env"
+chmod 600 "$agent_env"
+
+cat > "$agent_unit" <<SERVICE
+[Unit]
+Description=REUP Goals Agent Runtime Production
+After=network-online.target ${backend_service}
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${agent_root}
+Environment=NODE_ENV=production
+EnvironmentFile=${agent_env}
+ExecStart=${agent_root}/node dist/server.js
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+User=${service_user}
+Group=${service_group}
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+UMask=0077
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+chmod 644 "$agent_unit"
+
+systemctl daemon-reload
+systemctl enable "$agent_service"
+systemctl restart "$agent_service"
+for attempt in $(seq 1 45); do
+  if curl --fail --silent http://127.0.0.1:8091/healthz >/dev/null; then
+    break
+  fi
+  if [ "$attempt" -eq 45 ]; then
+    echo "Production agent runtime failed its health check." >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+cp -a "$backend_binary" "$backend_rollback"
+if [ -f "$web_config" ]; then cp -a "$web_config" "$web_config_backup"; fi
+backend_changed=true
+
+set_backend_env AGENT_RUNTIME_SECRET "$runtime_secret"
+set_backend_env AGENT_RUNTIME_URL "http://127.0.0.1:8091"
+set_backend_env AGENT_RUNTIME_MAX_TURNS "12"
+set_backend_env AGENT_RELEASE_ID "$release_id"
+set_backend_env AGENT_RUNTIME_ENABLED "true"
 
 cat > "$web_config" <<'EOF'
 [Service]
@@ -45,47 +298,29 @@ Environment="OPENAI_ADVISOR_COMPACT_THRESHOLD=24000"
 EOF
 chmod 600 "$web_config"
 
+install -m 755 /tmp/reup_goals_backend "$backend_binary"
 systemctl daemon-reload
-systemctl reset-failed reup-goals.service || true
-systemctl stop reup-goals.service
-install -m 755 /tmp/reup_goals_backend "$current"
-systemctl start reup-goals.service
+systemctl reset-failed "$backend_service" || true
+systemctl restart "$backend_service"
 
-deployed=false
 for attempt in $(seq 1 45); do
-  health="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz || true)"
-  privacy="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v2/privacy/legal-documents || true)"
-
-  if [ "$health" = "200" ] && [ "$privacy" = "200" ]; then
-    deployed=true
+  health=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz || true)
+  privacy=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v2/privacy/legal-documents || true)
+  if [ "$health" = 200 ] && [ "$privacy" = 200 ]; then
     break
   fi
-
+  if [ "$attempt" -eq 45 ]; then
+    echo "Production backend failed its health check." >&2
+    exit 1
+  fi
   sleep 2
 done
 
-if [ "$deployed" = true ]; then
-  echo "BACKEND DEPLOYED"
-  rm -f "$web_config_backup"
-  systemctl status reup-goals.service --no-pager
-else
-  echo "DEPLOY FAILED"
-  journalctl -u reup-goals.service -n 80 --no-pager > /tmp/reup-goals-deploy-failure.log
-  systemctl stop reup-goals.service
-  install -m 755 "$rollback" "$current"
-  if [ -f "$web_config_backup" ]; then
-    mv "$web_config_backup" "$web_config"
-  else
-    rm -f "$web_config"
-  fi
-  systemctl daemon-reload
-  systemctl reset-failed reup-goals.service || true
-  systemctl start reup-goals.service
-  sleep 3
-  cat /tmp/reup-goals-deploy-failure.log
-  curl --fail --show-error --silent http://127.0.0.1:8080/healthz || true
-  exit 1
-fi
+trap - ERR
+rm -f "$backend_env_backup" "$web_config_backup" "$agent_env_backup" "$agent_unit_backup"
+rm -rf "$agent_previous"
+systemctl status "$backend_service" "$agent_service" --no-pager
+echo "BACKEND AND AGENT RUNTIME DEPLOYED"
 REMOTE
 
 echo "Checking public production endpoints..."
@@ -93,4 +328,4 @@ curl --fail --show-error --silent https://api.reupgoals.pro/healthz
 echo
 curl --fail --show-error --silent https://api.reupgoals.pro/api/v2/privacy/legal-documents
 echo
-echo "Production backend promotion completed."
+echo "Production backend and agent runtime promotion completed."

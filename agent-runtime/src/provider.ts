@@ -6,12 +6,17 @@ import { SocksProxyAgent } from "socks-proxy-agent";
 
 let configured = false;
 
+export function normalizeProxyURL(value: string | undefined): string {
+  const normalized = (value || "").trim();
+  return normalized.toLowerCase() === "direct" ? "" : normalized;
+}
+
 export function configureOpenAIProvider(): void {
   if (configured) return;
   const apiKey = (process.env.OPENAI_API_KEY || "").trim();
   if (!apiKey) throw new Error("OPENAI_API_KEY is required");
 
-  const proxyURL = (process.env.OPENAI_PROXY_URL || "").trim();
+  const proxyURL = normalizeProxyURL(process.env.OPENAI_PROXY_URL);
   const proxyAgent = proxyURL ? new SocksProxyAgent(proxyURL) : undefined;
   const proxiedFetch: typeof globalThis.fetch = async (url, init) => {
     const options = {
