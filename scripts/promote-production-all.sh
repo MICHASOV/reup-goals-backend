@@ -27,7 +27,7 @@ for command_name in "${required_commands[@]}"; do
   fi
 done
 
-if [[ ! -d "$frontend_root/.git" ]]; then
+if ! git -C "$frontend_root" rev-parse --git-dir >/dev/null 2>&1; then
   echo "Frontend repository not found: $frontend_root" >&2
   exit 1
 fi
