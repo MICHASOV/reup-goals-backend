@@ -8,6 +8,6 @@ require (
 	github.com/rs/cors v1.11.1
 )
 
-require golang.org/x/net v0.53.0
+require golang.org/x/net v0.57.0
 
-require github.com/go-pdf/fpdf v0.9.0 // indirect
+require github.com/go-pdf/fpdf v0.9.0
