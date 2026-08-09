@@ -251,11 +251,7 @@ func (s *Store) Get(ctx context.Context, workspaceID int, taskID int) (Task, err
 	if err != nil {
 		return Task{}, err
 	}
-	items, err := s.decorateTasks(ctx, workspaceID, []Task{task})
-	if err != nil {
-		return Task{}, err
-	}
-	return items[0], nil
+	return s.decorateTaskBestEffort(ctx, workspaceID, task), nil
 }
 
 func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input TaskInput) (Task, error) {
@@ -387,11 +383,7 @@ func (s *Store) Create(ctx context.Context, workspaceID int, userID int, input T
 			return Task{}, err
 		}
 	}
-	items, err := s.decorateTasks(ctx, workspaceID, []Task{task})
-	if err != nil {
-		return Task{}, err
-	}
-	return items[0], nil
+	return s.decorateTaskBestEffort(ctx, workspaceID, task), nil
 }
 
 func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID int, input TaskInput) (Task, error) {
@@ -613,11 +605,7 @@ func (s *Store) Update(ctx context.Context, workspaceID int, userID int, taskID 
 			return Task{}, err
 		}
 	}
-	items, err := s.decorateTasks(ctx, workspaceID, []Task{task})
-	if err != nil {
-		return Task{}, err
-	}
-	return items[0], nil
+	return s.decorateTaskBestEffort(ctx, workspaceID, task), nil
 }
 
 func (s *Store) validateOwner(ctx context.Context, workspaceID int, ownerUserID *int) error {
@@ -810,11 +798,7 @@ func (s *Store) UpdateStatus(ctx context.Context, workspaceID int, userID int, t
 	if err := tx.Commit(); err != nil {
 		return Task{}, err
 	}
-	items, err := s.decorateTasks(ctx, workspaceID, []Task{task})
-	if err != nil {
-		return Task{}, err
-	}
-	return items[0], nil
+	return s.decorateTaskBestEffort(ctx, workspaceID, task), nil
 }
 
 type currentContextData struct {
@@ -1631,6 +1615,16 @@ func (s *Store) decorateTasks(ctx context.Context, workspaceID int, tasks []Task
 		}
 	}
 	return tasks, nil
+}
+
+func (s *Store) decorateTaskBestEffort(ctx context.Context, workspaceID int, task Task) Task {
+	items, err := s.decorateTasks(ctx, workspaceID, []Task{task})
+	if err != nil || len(items) == 0 {
+		// Decoration only adds derived display data. A transient enrichment
+		// failure must never turn a successful read or committed write into a 5xx.
+		return task
+	}
+	return items[0]
 }
 
 func appendUniqueStrings(target []string, values ...string) []string {
