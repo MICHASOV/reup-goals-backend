@@ -3949,6 +3949,51 @@ var migrations = []Migration{
 				AND model <> 'gpt-5.6-luna';
 		`,
 	},
+	{
+		ID: "20260808_080_cloudpayments_orders_and_quota_resets",
+		SQL: `
+			ALTER TABLE workspace_billing_orders
+				ADD COLUMN IF NOT EXISTS quantity INTEGER NOT NULL DEFAULT 1;
+			ALTER TABLE workspace_billing_orders DROP CONSTRAINT IF EXISTS workspace_billing_orders_quantity_check;
+			ALTER TABLE workspace_billing_orders ADD CONSTRAINT workspace_billing_orders_quantity_check
+				CHECK (quantity BETWEEN 1 AND 20);
+
+			ALTER TABLE workspace_ai_quotas
+				ADD COLUMN IF NOT EXISTS purchased_reset_balance INTEGER NOT NULL DEFAULT 0;
+			ALTER TABLE workspace_ai_quotas DROP CONSTRAINT IF EXISTS workspace_ai_quotas_purchased_reset_balance_check;
+			ALTER TABLE workspace_ai_quotas ADD CONSTRAINT workspace_ai_quotas_purchased_reset_balance_check
+				CHECK (purchased_reset_balance >= 0);
+
+			ALTER TABLE subscriptions
+				ADD COLUMN IF NOT EXISTS pending_plan_code TEXT NULL REFERENCES billing_plans(code),
+				ADD COLUMN IF NOT EXISTS pending_plan_name TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS pending_billing_period TEXT NOT NULL DEFAULT '',
+				ADD COLUMN IF NOT EXISTS pending_amount NUMERIC(12,2) NULL,
+				ADD COLUMN IF NOT EXISTS pending_member_limit INTEGER NULL,
+				ADD COLUMN IF NOT EXISTS pending_period_start TIMESTAMPTZ NULL,
+				ADD COLUMN IF NOT EXISTS pending_period_end TIMESTAMPTZ NULL;
+
+			WITH duplicates AS (
+				SELECT id, ROW_NUMBER() OVER (PARTITION BY provider, external_id ORDER BY id) AS row_number
+				FROM workspace_billing_orders WHERE external_id <> ''
+			)
+			UPDATE workspace_billing_orders SET external_id=''
+			WHERE id IN (SELECT id FROM duplicates WHERE row_number > 1);
+			WITH duplicates AS (
+				SELECT id, ROW_NUMBER() OVER (PARTITION BY provider, external_id ORDER BY id) AS row_number
+				FROM workspace_billing_payments WHERE external_id <> ''
+			)
+			UPDATE workspace_billing_payments SET external_id=''
+			WHERE id IN (SELECT id FROM duplicates WHERE row_number > 1);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_billing_orders_provider_external
+				ON workspace_billing_orders (provider, external_id)
+				WHERE external_id <> '';
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_billing_payments_provider_external
+				ON workspace_billing_payments (provider, external_id)
+				WHERE external_id <> '';
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

@@ -67,6 +67,10 @@ type SubscriptionSummary struct {
 	PeriodEnd         *time.Time           `json:"period_end"`
 	NextRenewal       *time.Time           `json:"next_renewal"`
 	GraceUntil        *time.Time           `json:"grace_until"`
+	PendingPlanCode   string               `json:"pending_plan_code,omitempty"`
+	PendingPlanName   string               `json:"pending_plan_name,omitempty"`
+	PendingPeriod     string               `json:"pending_billing_period,omitempty"`
+	PendingStartsAt   *time.Time           `json:"pending_starts_at,omitempty"`
 	Access            bool                 `json:"access"`
 	DisplayStatus     string               `json:"display_status"`
 	CheckoutAvailable bool                 `json:"checkout_available"`
@@ -178,8 +182,21 @@ type InvoiceRequest struct {
 }
 
 type CheckoutRequest struct {
-	PlanCode      string `json:"plan_code"`
-	BillingPeriod string `json:"billing_period"`
+	PlanCode       string `json:"plan_code"`
+	BillingPeriod  string `json:"billing_period"`
+	OrderKind      string `json:"order_kind"`
+	Quantity       int    `json:"quantity"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+type CheckoutOrder struct {
+	ID            int64
+	OrderKind     string
+	PlanCode      string
+	BillingPeriod string
+	Quantity      int
+	Amount        float64
+	Currency      string
 }
 
 type BillingDocument struct {

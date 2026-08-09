@@ -2,8 +2,13 @@
 
 set -Eeuo pipefail
 
-backend_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-frontend_root="${FRONTEND_REPO:-$(cd "$backend_root/.." && pwd)/reup-goals-landing}"
+backend_source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+frontend_source_root="${FRONTEND_REPO:-$(cd "$backend_source_root/.." && pwd)/reup-goals-landing}"
+backend_root="$backend_source_root"
+frontend_root="$frontend_source_root"
+release_workspace=""
+release_backend_root=""
+release_frontend_root=""
 frontend_deploy_path="${FRONTEND_DEPLOY_PATH:-/var/www/reupgoals.pro}"
 release_id="$(date -u +%Y%m%d-%H%M%S)"
 frontend_backup="/var/backups/reup-goals/frontend-${release_id}.tar.gz"
@@ -27,15 +32,14 @@ for command_name in "${required_commands[@]}"; do
   fi
 done
 
-if ! git -C "$frontend_root" rev-parse --git-dir >/dev/null 2>&1; then
-  echo "Frontend repository not found: $frontend_root" >&2
+if ! git -C "$frontend_source_root" rev-parse --git-dir >/dev/null 2>&1; then
+  echo "Frontend repository not found: $frontend_source_root" >&2
   exit 1
 fi
 
 assert_release_revision() {
   local repo="$1"
   local label="$2"
-  shift 2
   local branch
   local head_revision
   local remote_revision
@@ -54,15 +58,20 @@ assert_release_revision() {
     exit 1
   fi
 
-  if ! git -C "$repo" diff --quiet -- "$@"; then
-    echo "$label has uncommitted release files." >&2
-    exit 1
+}
+
+cleanup_release_workspace() {
+  if [[ -n "$release_backend_root" ]]; then
+    git -C "$backend_source_root" worktree remove --force "$release_backend_root" >/dev/null 2>&1 || true
   fi
-  if ! git -C "$repo" diff --cached --quiet -- "$@"; then
-    echo "$label has staged but uncommitted release files." >&2
-    exit 1
+  if [[ -n "$release_frontend_root" ]]; then
+    git -C "$frontend_source_root" worktree remove --force "$release_frontend_root" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$release_workspace" ]]; then
+    rm -rf "$release_workspace"
   fi
 }
+trap cleanup_release_workspace EXIT
 
 wait_for_url() {
   local url="$1"
@@ -109,15 +118,24 @@ on_error() {
 }
 trap on_error ERR
 
-assert_release_revision "$backend_root" "Backend" .
-assert_release_revision "$frontend_root" "Frontend" . ":(exclude)next-env.d.ts"
+assert_release_revision "$backend_source_root" "Backend"
+assert_release_revision "$frontend_source_root" "Frontend"
 
-backend_revision="$(git -C "$backend_root" rev-parse --short=12 HEAD)"
-frontend_revision="$(git -C "$frontend_root" rev-parse --short=12 HEAD)"
+backend_revision="$(git -C "$backend_source_root" rev-parse --short=12 HEAD)"
+frontend_revision="$(git -C "$frontend_source_root" rev-parse --short=12 HEAD)"
+
+release_workspace="$(mktemp -d /private/tmp/reup-production-release.XXXXXX)"
+release_backend_root="$release_workspace/reup-goals-backend"
+release_frontend_root="$release_workspace/reup-goals-landing"
+git -C "$backend_source_root" worktree add --detach --quiet "$release_backend_root" "origin/main"
+git -C "$frontend_source_root" worktree add --detach --quiet "$release_frontend_root" "origin/main"
+backend_root="$release_backend_root"
+frontend_root="$release_frontend_root"
 
 echo "Release revisions:"
 echo "  backend:  $backend_revision"
 echo "  frontend: $frontend_revision"
+echo "Local uncommitted files are excluded from this release."
 
 echo "Checking staging..."
 wait_for_url "https://api-staging.reupgoals.pro/healthz"

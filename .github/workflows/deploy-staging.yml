@@ -244,6 +244,18 @@ jobs:
           else
             printf '\nDB_CONN_MAX_IDLE_TIME=1m\n' >> /etc/reup-goals-staging/backend.env
           fi
+
+          cloudpayments_public_id=$(grep '^CLOUDPAYMENTS_PUBLIC_ID=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
+          cloudpayments_secret=$(grep '^CLOUDPAYMENTS_API_SECRET=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
+          payments_enabled=false
+          if [ -n "$cloudpayments_public_id" ] && [ -n "$cloudpayments_secret" ]; then
+            payments_enabled=true
+          fi
+          if grep -q '^BILLING_PAYMENTS_ENABLED=' /etc/reup-goals-staging/backend.env; then
+            sed -i "s/^BILLING_PAYMENTS_ENABLED=.*/BILLING_PAYMENTS_ENABLED=${payments_enabled}/" /etc/reup-goals-staging/backend.env
+          else
+            printf '\nBILLING_PAYMENTS_ENABLED=%s\n' "$payments_enabled" >> /etc/reup-goals-staging/backend.env
+          fi
           for setting in \
             'BROWSER_AUTH_ONLY=true' \
             'FRONTEND_BASE_URL=https://staging.reupgoals.pro' \

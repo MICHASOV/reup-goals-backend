@@ -134,11 +134,13 @@ func (s *Store) Overview(ctx context.Context, userID int, checkoutAvailable bool
 
 func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, checkoutAvailable bool) (SubscriptionSummary, error) {
 	var result SubscriptionSummary
-	var periodEnd, nextRenewal, graceUntil sql.NullTime
+	var periodEnd, nextRenewal, graceUntil, pendingStartsAt sql.NullTime
+	var pendingPlanCode, pendingPlanName, pendingPeriod sql.NullString
 	err := s.dbx.QueryRowContext(ctx, `
 		SELECT plan_name, plan_code, billing_period, status, amount, currency,
 			payment_method, payment_provider, current_period_end, next_payment_at,
-			grace_until, member_limit
+			grace_until, member_limit, pending_plan_code, pending_plan_name,
+			pending_billing_period, pending_period_start
 		FROM subscriptions
 		WHERE workspace_id=$1 OR (workspace_id IS NULL AND user_id=$2)
 		ORDER BY CASE WHEN workspace_id=$1 THEN 0 ELSE 1 END, updated_at DESC
@@ -147,6 +149,7 @@ func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, 
 		&result.Plan, &result.PlanCode, &result.BillingPeriod, &result.Status,
 		&result.Amount, &result.Currency, &result.PaymentMethod, &result.PaymentProvider,
 		&periodEnd, &nextRenewal, &graceUntil, &result.MemberLimit,
+		&pendingPlanCode, &pendingPlanName, &pendingPeriod, &pendingStartsAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		plan, _ := billing.PlanByCode(billing.PlanFounder)
@@ -170,6 +173,10 @@ func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, 
 	result.PeriodEnd = nullableTime(periodEnd)
 	result.NextRenewal = nullableTime(nextRenewal)
 	result.GraceUntil = nullableTime(graceUntil)
+	result.PendingPlanCode = pendingPlanCode.String
+	result.PendingPlanName = pendingPlanName.String
+	result.PendingPeriod = pendingPeriod.String
+	result.PendingStartsAt = nullableTime(pendingStartsAt)
 	result.CheckoutAvailable = checkoutAvailable
 	result.DisplayStatus = subscriptionDisplayStatus(result.Status, result.PeriodEnd, result.GraceUntil)
 	now := time.Now().UTC()
@@ -179,25 +186,52 @@ func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, 
 	return result, nil
 }
 
-func (s *Store) PrepareCheckout(ctx context.Context, workspaceID, userID int, plan billing.Plan, period string, amount float64) error {
-	_, err := s.dbx.ExecContext(ctx, `
-		INSERT INTO subscriptions (
-			user_id, workspace_id, status, plan_name, plan_code, billing_period,
-			amount, currency, member_limit, payment_method, payment_provider
-		) VALUES ($1,$2,'inactive',$3,$4,$5,$6,$7,$8,'card','cloudpayments')
-		ON CONFLICT (user_id) DO UPDATE SET
-			workspace_id=EXCLUDED.workspace_id,
-			plan_name=EXCLUDED.plan_name,
-			plan_code=EXCLUDED.plan_code,
-			billing_period=EXCLUDED.billing_period,
-			amount=EXCLUDED.amount,
-			currency=EXCLUDED.currency,
-			member_limit=EXCLUDED.member_limit,
-			payment_method='card',
-			payment_provider='cloudpayments',
-			updated_at=NOW()
-	`, userID, workspaceID, plan.Name, plan.Code, period, amount, plan.Currency, plan.MemberLimit)
-	return err
+func (s *Store) CreateCheckoutOrder(ctx context.Context, workspaceID, userID int, request CheckoutRequest, plan billing.Plan, amount float64) (CheckoutOrder, error) {
+	if strings.TrimSpace(request.IdempotencyKey) == "" {
+		randomBytes := make([]byte, 16)
+		if _, err := rand.Read(randomBytes); err != nil {
+			return CheckoutOrder{}, err
+		}
+		request.IdempotencyKey = fmt.Sprintf(
+			"checkout:%d:%d:%s:%s:%s:%d:%s",
+			workspaceID, userID, plan.Code, request.BillingPeriod, request.OrderKind,
+			request.Quantity, hex.EncodeToString(randomBytes),
+		)
+	} else {
+		request.IdempotencyKey = normalizeInvoiceIdempotencyKey(
+			request.IdempotencyKey, workspaceID, userID, plan.Code, request.BillingPeriod, request.OrderKind,
+		)
+	}
+	var result CheckoutOrder
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO workspace_billing_orders (
+			workspace_id, created_by, order_kind, plan_code, billing_period,
+			quantity, amount, currency, status, provider, idempotency_key, metadata_json
+		) VALUES (
+			$1,$2,$3,$4,$5,$6,$7,$8,'waiting','cloudpayments',$9,
+			jsonb_build_object(
+				'replace_cloudpayments_subscription_id', CASE WHEN $3='subscription' THEN COALESCE((
+					SELECT subscription.cloudpayments_subscription_id
+					FROM subscriptions subscription
+					WHERE subscription.workspace_id=$1 OR (
+						subscription.workspace_id IS NULL AND subscription.user_id=$2
+					)
+					ORDER BY CASE WHEN subscription.workspace_id=$1 THEN 0 ELSE 1 END,
+						subscription.updated_at DESC LIMIT 1
+				), '') ELSE '' END,
+				'replacement_status', 'pending'
+			)
+		)
+		ON CONFLICT (workspace_id, idempotency_key) WHERE idempotency_key <> ''
+		DO UPDATE SET updated_at=NOW()
+		WHERE workspace_billing_orders.status='waiting'
+		RETURNING id, order_kind, plan_code, billing_period, quantity, amount, currency
+	`, workspaceID, userID, request.OrderKind, plan.Code, request.BillingPeriod,
+		request.Quantity, amount, plan.Currency, request.IdempotencyKey).Scan(
+		&result.ID, &result.OrderKind, &result.PlanCode, &result.BillingPeriod,
+		&result.Quantity, &result.Amount, &result.Currency,
+	)
+	return result, err
 }
 
 func (s *Store) UpdateAccount(ctx context.Context, userID int, name, avatarURL, companyRole string) (Account, error) {

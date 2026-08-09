@@ -96,7 +96,7 @@ func main() {
 	taskAI := tasks.New(aiClient, database)
 	emailService := auth.NewEmailService(cfg)
 	cloudPayments := subscriptions.NewCloudPaymentsClient(cfg)
-	subscriptionHandler := subscriptions.NewHandler(database, cloudPayments)
+	subscriptionHandler := subscriptions.NewHandler(database, cloudPayments, billingService)
 	audioHandler := audioapi.NewHandler(database, transcriptionAIClient)
 	aiActionsHandler := aiactions.NewHandler(database)
 	aiPlatformHandler := aiplatform.NewHandler(database, cfg.AIAdminKey)

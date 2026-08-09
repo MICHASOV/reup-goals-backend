@@ -41,6 +41,7 @@ type QuotaSummary struct {
 	WeeklyTokenLimit      int       `json:"weekly_token_limit"`
 	WeeklyTokensUsed      int       `json:"weekly_tokens_used"`
 	PurchasedTokenBalance int       `json:"purchased_token_balance"`
+	PurchasedResetBalance int       `json:"purchased_reset_balance"`
 	RemainingTokens       int       `json:"remaining_tokens"`
 	State                 string    `json:"state"`
 	WindowStartedAt       time.Time `json:"window_started_at"`
@@ -53,6 +54,7 @@ type QuotaSummary struct {
 	baseLimit        int
 	baseUsed         int
 	purchasedBalance int
+	purchasedResets  int
 }
 
 type Reservation struct {
@@ -76,6 +78,9 @@ func (s *Service) Summary(ctx context.Context, workspaceID int) (QuotaSummary, e
 	if workspaceID <= 0 {
 		return QuotaSummary{State: "available", AIAvailable: true, Timezone: "Europe/Moscow"}, nil
 	}
+	if err := s.ApplyPendingSubscription(ctx, workspaceID); err != nil {
+		return QuotaSummary{}, err
+	}
 	tx, err := s.dbx.BeginTx(ctx, nil)
 	if err != nil {
 		return QuotaSummary{}, err
@@ -94,6 +99,9 @@ func (s *Service) Summary(ctx context.Context, workspaceID int) (QuotaSummary, e
 func (s *Service) Reserve(ctx context.Context, workspaceID, userID int, module string) (Reservation, error) {
 	if workspaceID <= 0 {
 		return Reservation{}, nil
+	}
+	if err := s.ApplyPendingSubscription(ctx, workspaceID); err != nil {
+		return Reservation{}, errors.New("subscription_state_unavailable")
 	}
 	if s.enforce {
 		allowed, err := s.hasAIEntitlement(ctx, workspaceID, time.Now().UTC())
@@ -312,6 +320,7 @@ type quotaState struct {
 	baseLimit        int
 	baseUsed         int
 	purchasedBalance int
+	purchasedResets  int
 }
 
 func (s *Service) ensureQuota(ctx context.Context, tx *sql.Tx, workspaceID int, now time.Time) (quotaState, error) {
@@ -348,12 +357,14 @@ func (s *Service) ensureQuota(ctx context.Context, tx *sql.Tx, workspaceID int, 
 	var storedPlan string
 	var storedStart, storedEnd time.Time
 	err = tx.QueryRowContext(ctx, `
-		SELECT plan_code, window_started_at, window_ends_at, base_limit, base_used, purchased_balance
+		SELECT plan_code, window_started_at, window_ends_at, base_limit, base_used, purchased_balance,
+			purchased_reset_balance
 		FROM workspace_ai_quotas
 		WHERE workspace_id=$1
 		FOR UPDATE
 	`, workspaceID).Scan(
 		&storedPlan, &storedStart, &storedEnd, &state.baseLimit, &state.baseUsed, &state.purchasedBalance,
+		&state.purchasedResets,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = tx.ExecContext(ctx, `
@@ -508,6 +519,7 @@ func (state quotaState) summary() QuotaSummary {
 		UsedPercent: used, RemainingPercent: max(0, 100-used), State: status,
 		WeeklyTokenLimit: state.baseLimit, WeeklyTokensUsed: min(state.baseUsed, state.baseLimit),
 		PurchasedTokenBalance: state.purchasedBalance,
+		PurchasedResetBalance: state.purchasedResets,
 		RemainingTokens:       max(0, state.baseLimit-state.baseUsed) + state.purchasedBalance,
 		WindowStartedAt:       state.windowStartedAt, ResetsAt: state.windowEndsAt,
 		Timezone: state.timezone, ExtraCapacityActive: state.purchasedBalance > 0,

@@ -580,6 +580,8 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request, userID int, ov
 	switch segments[0] {
 	case "checkout":
 		h.checkout(w, r, overview)
+	case "quota-resets":
+		h.quotaResets(w, r, userID, overview, segments[1:])
 	case "organization":
 		h.billingOrganization(w, r, userID, overview.Workspace.ID)
 	case "invoices":
@@ -591,6 +593,35 @@ func (h *Handler) billing(w http.ResponseWriter, r *http.Request, userID int, ov
 	default:
 		api.WriteError(w, http.StatusNotFound, "not_found")
 	}
+}
+
+func (h *Handler) quotaResets(w http.ResponseWriter, r *http.Request, userID int, overview Overview, segments []string) {
+	if len(segments) != 1 || segments[0] != "activate" {
+		api.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	if h.quotaService == nil {
+		api.WriteError(w, http.StatusServiceUnavailable, "billing_unavailable")
+		return
+	}
+	if err := h.quotaService.ActivatePurchasedReset(r.Context(), overview.Workspace.ID, userID); err != nil {
+		if err.Error() == "no_purchased_resets" {
+			api.WriteError(w, http.StatusConflict, "no_purchased_resets")
+			return
+		}
+		api.WriteError(w, http.StatusInternalServerError, "quota_reset_activation_failed")
+		return
+	}
+	usage, err := h.quotaService.Summary(r.Context(), overview.Workspace.ID)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "ai_usage_load_failed")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, map[string]any{"ai_usage": usage})
 }
 
 func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Overview) {
@@ -606,12 +637,33 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 		api.WriteError(w, http.StatusForbidden, "subscription_management_forbidden")
 		return
 	}
-	if overview.Subscription.Access {
-		api.WriteError(w, http.StatusConflict, "checkout_requires_inactive_subscription")
+	request := CheckoutRequest{
+		PlanCode: overview.Subscription.PlanCode, BillingPeriod: overview.Subscription.BillingPeriod,
+		OrderKind: billing.OrderSubscription, Quantity: 1,
+	}
+	if r.ContentLength != 0 && !decodeJSON(w, r, &request) {
 		return
 	}
-	request := CheckoutRequest{PlanCode: overview.Subscription.PlanCode, BillingPeriod: overview.Subscription.BillingPeriod}
-	if r.ContentLength != 0 && !decodeJSON(w, r, &request) {
+	request.OrderKind = strings.ToLower(strings.TrimSpace(request.OrderKind))
+	if request.Quantity == 0 {
+		request.Quantity = 1
+	}
+	if request.Quantity < 1 || request.Quantity > 20 {
+		api.WriteError(w, http.StatusUnprocessableEntity, "billing_quantity_invalid")
+		return
+	}
+	if request.OrderKind == billing.OrderQuotaReset {
+		if !overview.Subscription.Access {
+			api.WriteError(w, http.StatusConflict, "active_subscription_required")
+			return
+		}
+		request.PlanCode = overview.Subscription.PlanCode
+		request.BillingPeriod = billing.PeriodMonthly
+	} else if request.OrderKind != billing.OrderSubscription {
+		api.WriteError(w, http.StatusUnprocessableEntity, "billing_order_kind_invalid")
+		return
+	} else if overview.Subscription.PendingPlanCode != "" {
+		api.WriteError(w, http.StatusConflict, "pending_subscription_change_exists")
 		return
 	}
 	plan, err := billing.PlanByCode(request.PlanCode)
@@ -625,7 +677,11 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	if err := h.store.PrepareCheckout(r.Context(), overview.Workspace.ID, overview.Account.ID, plan, request.BillingPeriod, amount); err != nil {
+	if request.OrderKind == billing.OrderQuotaReset {
+		amount = plan.ResetAmount * float64(request.Quantity)
+	}
+	order, err := h.store.CreateCheckoutOrder(r.Context(), overview.Workspace.ID, overview.Account.ID, request, plan, amount)
+	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "checkout_prepare_failed")
 		return
 	}
@@ -637,16 +693,26 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 	}
 	if h.checkoutProvider() == "cloudpayments" {
 		now := time.Now().UTC()
-		startDate := now.AddDate(0, 0, h.payments.TrialDays())
+		startDate := now.AddDate(0, periodMonths, 0)
+		if overview.Subscription.Access && overview.Subscription.PeriodEnd != nil && overview.Subscription.PeriodEnd.After(now) {
+			startDate = overview.Subscription.PeriodEnd.AddDate(0, periodMonths, 0)
+		}
+		description := "REUP.goals · " + plan.Name
+		if request.OrderKind == billing.OrderQuotaReset {
+			description = fmt.Sprintf("REUP.goals · %d сброс(а) AI-лимита", request.Quantity)
+		}
 		api.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider": "cloudpayments",
 			"mode":     "widget",
 			"config": map[string]any{
-				"public_id": h.payments.PublicID(), "description": "REUP.goals · " + plan.Name,
+				"public_id": h.payments.PublicID(), "description": description,
 				"first_payment_amount": amount, "amount": amount,
 				"currency": plan.Currency, "account_id": "reup_user_" + strconv.Itoa(overview.Account.ID),
-				"email": overview.Account.Email, "trial_days": h.payments.TrialDays(),
+				"email": overview.Account.Email, "trial_days": 0,
 				"start_date": startDate.Format(time.RFC3339), "period_months": periodMonths,
+				"invoice_id": strconv.FormatInt(order.ID, 10),
+				"recurrent":  request.OrderKind == billing.OrderSubscription,
+				"order_kind": request.OrderKind, "quantity": request.Quantity,
 			},
 		})
 		return
@@ -910,6 +976,19 @@ func (h *Handler) loadOverview(r *http.Request, userID int) (Overview, error) {
 	result, err := h.store.Overview(r.Context(), userID, h.checkoutAvailable())
 	if err != nil {
 		return Overview{}, err
+	}
+	if h.quotaService != nil {
+		if err := h.quotaService.ApplyPendingSubscription(r.Context(), result.Workspace.ID); err != nil {
+			return Overview{}, err
+		}
+		refreshed, refreshErr := h.store.Subscription(
+			r.Context(), result.Workspace.ID, result.Account.ID, h.checkoutAvailable(),
+		)
+		if refreshErr != nil {
+			return Overview{}, refreshErr
+		}
+		refreshed.SeatsUsed = result.Subscription.SeatsUsed
+		result.Subscription = refreshed
 	}
 	if result.Subscription.Amount <= 0 && h.payments != nil {
 		result.Subscription.Amount = h.payments.Amount()

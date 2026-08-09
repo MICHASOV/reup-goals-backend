@@ -1,6 +1,7 @@
 package subscriptions
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -25,12 +26,17 @@ const (
 )
 
 type Handler struct {
-	dbx *sql.DB
-	cp  *CloudPaymentsClient
+	dbx     *sql.DB
+	cp      *CloudPaymentsClient
+	billing *v2billing.Service
 }
 
-func NewHandler(dbx *sql.DB, cp *CloudPaymentsClient) *Handler {
-	return &Handler{dbx: dbx, cp: cp}
+func NewHandler(dbx *sql.DB, cp *CloudPaymentsClient, billing ...*v2billing.Service) *Handler {
+	result := &Handler{dbx: dbx, cp: cp}
+	if len(billing) > 0 {
+		result.billing = billing[0]
+	}
+	return result
 }
 
 func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +209,16 @@ func (h *Handler) validateCheck(form url.Values) bool {
 	if !exists {
 		return false
 	}
+	if orderID, ok := cloudPaymentsOrderID(form); ok {
+		if h.billing == nil {
+			return false
+		}
+		valid, err := h.billing.ValidateCloudPaymentOrder(
+			context.Background(), orderID, uid,
+			parseAmount(formValue(form, "Amount")), formValue(form, "Currency"),
+		)
+		return err == nil && valid
+	}
 
 	selection, err := h.checkoutSelection(uid)
 	if err != nil {
@@ -226,6 +242,38 @@ func (h *Handler) applyWebhook(eventType string, form url.Values) error {
 	if !ok {
 		return errors.New("invalid_account_id")
 	}
+	if orderID, hasOrder := cloudPaymentsOrderID(form); hasOrder {
+		if h.billing == nil {
+			return errors.New("billing_service_unavailable")
+		}
+		amount := parseAmount(formValue(form, "Amount"))
+		currency := formValue(form, "Currency")
+		transactionID := formValue(form, "TransactionId")
+		// Ordered widget payments expose the recurrent subscription explicitly.
+		// `Id` belongs to other CloudPayments notifications and must not be used
+		// when deciding which existing subscription to replace.
+		cpSubscriptionID := formValue(form, "SubscriptionId")
+		if eventType == "pay" {
+			confirmation, err := h.billing.ConfirmCloudPaymentOrder(
+				context.Background(), orderID, uid, transactionID, cpSubscriptionID,
+				formValue(form, "Token"), amount, currency,
+			)
+			if err != nil {
+				return err
+			}
+			if confirmation.SubscriptionIDToCancel != "" {
+				if err := h.cp.CancelSubscription(confirmation.SubscriptionIDToCancel); err != nil {
+					return err
+				}
+				if err := h.billing.MarkCloudPaymentSubscriptionReplaced(
+					context.Background(), orderID, confirmation.SubscriptionIDToCancel,
+				); err != nil {
+					return err
+				}
+			}
+		}
+		return h.storeEvent(eventType, uid, 0, transactionID, cpSubscriptionID, accountID, amount, currency, form)
+	}
 
 	selection, err := h.checkoutSelection(uid)
 	if err != nil {
@@ -244,6 +292,20 @@ func (h *Handler) applyWebhook(eventType string, form url.Values) error {
 		formValue(form, "SubscriptionId"),
 		formValue(form, "Id"),
 	)
+	if eventType != "pay" && cpSubscriptionID != "" {
+		var activeSubscriptionID sql.NullString
+		queryErr := h.dbx.QueryRow(`
+			SELECT cloudpayments_subscription_id FROM subscriptions WHERE user_id=$1
+		`, uid).Scan(&activeSubscriptionID)
+		if queryErr != nil && !errors.Is(queryErr, sql.ErrNoRows) {
+			return queryErr
+		}
+		if activeSubscriptionID.Valid && activeSubscriptionID.String != "" && activeSubscriptionID.String != cpSubscriptionID {
+			return h.storeEvent(
+				eventType, uid, 0, transactionID, cpSubscriptionID, accountID, amount, currency, form,
+			)
+		}
+	}
 	token := formValue(form, "Token")
 	now := time.Now().UTC()
 	trialEndsAt := now.AddDate(0, 0, h.cp.TrialDays())
@@ -535,10 +597,19 @@ func (h *Handler) storeEvent(eventType string, uid int, subscriptionID int, tran
 			event_type, user_id, subscription_id, cloudpayments_transaction_id,
 			cloudpayments_subscription_id, account_id, amount, currency, payload
 		)
-		VALUES ($1,$2,$3,nullif($4,''),nullif($5,''),nullif($6,''),$7,nullif($8,''),$9)
+		VALUES ($1,$2,NULLIF($3,0),nullif($4,''),nullif($5,''),nullif($6,''),$7,nullif($8,''),$9)
 	`, eventType, uid, subscriptionID, transactionID, cpSubscriptionID, accountID, amount, currency, string(rawPayload))
 
 	return err
+}
+
+func cloudPaymentsOrderID(form url.Values) (int64, bool) {
+	raw := strings.TrimSpace(formValue(form, "InvoiceId"))
+	if raw == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	return value, err == nil && value > 0
 }
 
 func safePaymentEventField(key string) bool {

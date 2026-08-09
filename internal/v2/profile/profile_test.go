@@ -118,12 +118,12 @@ func TestInvoiceRequestJSONContract(t *testing.T) {
 
 func TestCheckoutRequestJSONContract(t *testing.T) {
 	var request CheckoutRequest
-	decoder := json.NewDecoder(strings.NewReader(`{"plan_code":"team","billing_period":"quarterly"}`))
+	decoder := json.NewDecoder(strings.NewReader(`{"plan_code":"team","billing_period":"quarterly","order_kind":"quota_reset","quantity":3,"idempotency_key":"checkout-test-1"}`))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		t.Fatalf("decode checkout request: %v", err)
 	}
-	if request.PlanCode != "team" || request.BillingPeriod != "quarterly" {
+	if request.PlanCode != "team" || request.BillingPeriod != "quarterly" || request.OrderKind != "quota_reset" || request.Quantity != 3 || request.IdempotencyKey != "checkout-test-1" {
 		t.Fatalf("unexpected checkout request: %+v", request)
 	}
 }
