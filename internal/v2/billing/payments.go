@@ -16,19 +16,21 @@ type CloudPaymentConfirmation struct {
 
 func (s *Service) ValidateCloudPaymentOrder(ctx context.Context, orderID int64, userID int, amount float64, currency string) (bool, error) {
 	var createdBy int
-	var status, expectedCurrency string
+	var kind, status, expectedCurrency string
 	var expectedAmount float64
 	err := s.dbx.QueryRowContext(ctx, `
 		SELECT COALESCE(billing_order.created_by, workspace.owner_user_id),
-			billing_order.status, billing_order.amount, billing_order.currency
+			billing_order.order_kind, billing_order.status,
+			billing_order.amount, billing_order.currency
 		FROM workspace_billing_orders billing_order
 		JOIN workspaces workspace ON workspace.id=billing_order.workspace_id
 		WHERE billing_order.id=$1 AND billing_order.provider='cloudpayments'
-	`, orderID).Scan(&createdBy, &status, &expectedAmount, &expectedCurrency)
+	`, orderID).Scan(&createdBy, &kind, &status, &expectedAmount, &expectedCurrency)
 	if err != nil {
 		return false, err
 	}
-	return createdBy == userID && status == "waiting" &&
+	payable := status == "waiting" || (status == "paid" && kind == OrderSubscription)
+	return createdBy == userID && payable &&
 		strings.EqualFold(expectedCurrency, currency) && math.Abs(expectedAmount-amount) <= 0.009, nil
 }
 
@@ -43,13 +45,14 @@ func (s *Service) ConfirmCloudPaymentOrder(ctx context.Context, orderID int64, u
 	defer tx.Rollback()
 
 	var workspaceID, ownerUserID, createdBy, quantity int
-	var kind, planCode, period, status, expectedCurrency, replacedSubscriptionID, replacementStatus, storedSubscriptionID string
+	var kind, planCode, period, status, expectedCurrency, externalID, replacedSubscriptionID, replacementStatus, storedSubscriptionID string
 	var expectedAmount float64
 	err = tx.QueryRowContext(ctx, `
 		SELECT billing_order.workspace_id, workspace.owner_user_id,
 			COALESCE(billing_order.created_by, workspace.owner_user_id), billing_order.quantity,
 			billing_order.order_kind, billing_order.plan_code, billing_order.billing_period,
 			billing_order.status, billing_order.amount, billing_order.currency,
+			COALESCE(billing_order.external_id,''),
 			COALESCE(billing_order.metadata_json->>'replace_cloudpayments_subscription_id',''),
 			COALESCE(billing_order.metadata_json->>'replacement_status',''),
 			COALESCE(billing_order.metadata_json->>'cloudpayments_subscription_id','')
@@ -59,7 +62,7 @@ func (s *Service) ConfirmCloudPaymentOrder(ctx context.Context, orderID int64, u
 		FOR UPDATE OF billing_order
 	`, orderID).Scan(
 		&workspaceID, &ownerUserID, &createdBy, &quantity, &kind, &planCode, &period,
-		&status, &expectedAmount, &expectedCurrency, &replacedSubscriptionID, &replacementStatus,
+		&status, &expectedAmount, &expectedCurrency, &externalID, &replacedSubscriptionID, &replacementStatus,
 		&storedSubscriptionID,
 	)
 	if err != nil {
@@ -69,6 +72,17 @@ func (s *Service) ConfirmCloudPaymentOrder(ctx context.Context, orderID int64, u
 		return CloudPaymentConfirmation{}, errors.New("cloudpayments_order_mismatch")
 	}
 	if status == "paid" {
+		if externalID != transactionID {
+			if kind != OrderSubscription || storedSubscriptionID == "" || cloudSubscriptionID == "" || storedSubscriptionID != cloudSubscriptionID {
+				return CloudPaymentConfirmation{}, errors.New("cloudpayments_paid_order_mismatch")
+			}
+			if err := confirmRecurringCloudPayment(
+				ctx, tx, workspaceID, ownerUserID, planCode, period,
+				transactionID, amount, expectedCurrency, cloudSubscriptionID, token,
+			); err != nil {
+				return CloudPaymentConfirmation{}, err
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return CloudPaymentConfirmation{}, err
 		}
@@ -174,6 +188,96 @@ func (s *Service) ConfirmCloudPaymentOrder(ctx context.Context, orderID int64, u
 		return CloudPaymentConfirmation{}, err
 	}
 	return replacementConfirmation(replacedSubscriptionID, cloudSubscriptionID, replacementStatus), nil
+}
+
+func confirmRecurringCloudPayment(
+	ctx context.Context,
+	tx *sql.Tx,
+	workspaceID, ownerUserID int,
+	planCode, period, transactionID string,
+	amount float64,
+	currency, cloudSubscriptionID, token string,
+) error {
+	plan, err := PlanByCode(planCode)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO workspace_billing_payments (
+			workspace_id, provider, external_id, method, amount, currency, status, paid_at
+		) VALUES ($1,'cloudpayments',$2,'card',$3,$4,'paid',$5)
+		ON CONFLICT (provider, external_id) WHERE external_id <> '' DO NOTHING
+	`, workspaceID, transactionID, amount, currency, now)
+	if err != nil {
+		return err
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if inserted == 0 {
+		return nil
+	}
+
+	// A queued plan is already paid for. Activate it before extending the next
+	// recurrent period so a webhook does not depend on the user opening the app.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE subscriptions SET
+			status='active', plan_code=pending_plan_code, plan_name=pending_plan_name,
+			billing_period=pending_billing_period, amount=pending_amount,
+			member_limit=pending_member_limit, current_period_start=pending_period_start,
+			current_period_end=pending_period_end, next_payment_at=pending_period_end,
+			quota_anchor_at=pending_period_start, pending_plan_code=NULL,
+			pending_plan_name='', pending_billing_period='', pending_amount=NULL,
+			pending_member_limit=NULL, pending_period_start=NULL, pending_period_end=NULL,
+			updated_at=NOW()
+		WHERE (workspace_id=$1 OR (workspace_id IS NULL AND user_id=$2))
+			AND pending_plan_code IS NOT NULL AND pending_period_start <= $3
+	`, workspaceID, ownerUserID, now); err != nil {
+		return err
+	}
+
+	var subscriptionID int
+	var currentEnd sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id, current_period_end
+		FROM subscriptions
+		WHERE workspace_id=$1 OR (workspace_id IS NULL AND user_id=$2)
+		ORDER BY CASE WHEN workspace_id=$1 THEN 0 ELSE 1 END, updated_at DESC
+		LIMIT 1 FOR UPDATE
+	`, workspaceID, ownerUserID).Scan(&subscriptionID, &currentEnd); err != nil {
+		return err
+	}
+	start := now
+	if currentEnd.Valid && currentEnd.Time.After(start) {
+		start = currentEnd.Time
+	}
+	end := start.AddDate(0, billingPeriodMonths(period), 0)
+	result, err = tx.ExecContext(ctx, `
+		UPDATE subscriptions SET status='active', plan_code=$2, plan_name=$3,
+			billing_period=$4, amount=$5, currency=$6, member_limit=$7,
+			current_period_start=$8, current_period_end=$9, next_payment_at=$9,
+			last_payment_at=$10, grace_until=NULL, cancelled_at=NULL,
+			last_failed_at=NULL, failed_attempts=0, payment_method='card',
+			payment_provider='cloudpayments',
+			cloudpayments_subscription_id=$11,
+			cloudpayments_token=COALESCE(NULLIF($12,''),cloudpayments_token),
+			updated_at=NOW()
+		WHERE id=$1
+	`, subscriptionID, plan.Code, plan.Name, period, amount, currency,
+		plan.MemberLimit, start, end, now, cloudSubscriptionID, token)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated == 0 {
+		return errors.New("cloudpayments_subscription_not_found")
+	}
+	return nil
 }
 
 func replacementConfirmation(previousID, currentID, status string) CloudPaymentConfirmation {
