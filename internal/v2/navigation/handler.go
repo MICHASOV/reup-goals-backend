@@ -29,6 +29,7 @@ type response struct {
 	Workspace              workspace           `json:"workspace"`
 	ContextReady           bool                `json:"context_ready"`
 	SubscriptionAccess     bool                `json:"subscription_access"`
+	OnboardingProgress     onboardingProgress  `json:"onboarding_progress"`
 	Strategy               *strategy           `json:"strategy,omitempty"`
 	StrategySessionActive  bool                `json:"strategy_session_active"`
 	StrategySessionOwnerID *int                `json:"strategy_session_owner_id,omitempty"`
@@ -38,6 +39,14 @@ type response struct {
 	Departments            []department        `json:"departments"`
 	WorkspaceDocuments     []workspaceDocument `json:"workspace_documents"`
 	KnowledgeDocuments     []knowledgeDocument `json:"knowledge_documents"`
+}
+
+type onboardingProgress struct {
+	ContextComplete    bool `json:"context_complete"`
+	GoalComplete       bool `json:"goal_complete"`
+	DirectionsComplete bool `json:"directions_complete"`
+	TasksComplete      bool `json:"tasks_complete"`
+	Complete           bool `json:"complete"`
 }
 
 type account struct {
@@ -159,7 +168,8 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		code string
 		err  error
 	}
-	loadResults := make(chan loadResult, 8)
+	loadResults := make(chan loadResult, 9)
+	var directedTaskExists bool
 	go func() {
 		loadResults <- loadResult{"navigation_account_failed", h.loadAccount(r, userID, &result.Account)}
 	}()
@@ -211,8 +221,13 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		result.ContextReady = pipeline.OnboardingConfirmedAt != nil
 		loadResults <- loadResult{"navigation_context_failed", nil}
 	}()
+	go func() {
+		var loadErr error
+		directedTaskExists, loadErr = h.hasDirectedTask(r, currentWorkspace.ID)
+		loadResults <- loadResult{"navigation_onboarding_tasks_failed", loadErr}
+	}()
 
-	for range 8 {
+	for range 9 {
 		load := <-loadResults
 		if load.err != nil {
 			api.WriteError(w, http.StatusInternalServerError, load.code)
@@ -222,6 +237,9 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 	if result.Strategy != nil && result.Strategy.Status == "active" {
 		result.ContextReady = true
 	}
+	result.OnboardingProgress = deriveOnboardingProgress(
+		result.ContextReady, result.Strategy, result.Departments, directedTaskExists,
+	)
 	if result.ContextReady && !result.SubscriptionAccess {
 		result.Strategy = nil
 		result.MainTask = nil
@@ -231,6 +249,49 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		result.KnowledgeDocuments = []knowledgeDocument{}
 	}
 	api.WriteJSON(w, http.StatusOK, result)
+}
+
+func deriveOnboardingProgress(
+	contextReady bool,
+	currentStrategy *strategy,
+	departments []department,
+	directedTaskExists bool,
+) onboardingProgress {
+	goalComplete := currentStrategy != nil && (strings.TrimSpace(currentStrategy.Summary) != "" ||
+		strings.TrimSpace(currentStrategy.TargetSignal) != "" ||
+		strings.TrimSpace(currentStrategy.TargetStage) != "")
+	progress := onboardingProgress{
+		ContextComplete:    contextReady,
+		GoalComplete:       goalComplete,
+		DirectionsComplete: hasBusinessDirection(departments),
+		TasksComplete:      directedTaskExists,
+	}
+	progress.Complete = progress.ContextComplete && progress.GoalComplete &&
+		progress.DirectionsComplete && progress.TasksComplete
+	return progress
+}
+
+func hasBusinessDirection(departments []department) bool {
+	for _, item := range departments {
+		if !strings.EqualFold(strings.TrimSpace(item.Name), "Компания") {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) hasDirectedTask(r *http.Request, workspaceID int) (bool, error) {
+	var exists bool
+	err := h.dbx.QueryRowContext(r.Context(), `
+		SELECT EXISTS (
+			SELECT 1
+			FROM v2_tasks
+			WHERE workspace_id=$1
+				AND department_id IS NOT NULL
+				AND archived_at IS NULL
+		)
+	`, workspaceID).Scan(&exists)
+	return exists, err
 }
 
 func (h *Handler) loadAccount(r *http.Request, userID int, target *account) error {
