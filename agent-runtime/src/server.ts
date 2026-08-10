@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { MaxTurnsExceededError } from "@openai/agents";
 import { ZodError } from "zod";
 
 import { configureOpenAIProvider } from "./provider.js";
@@ -72,7 +73,9 @@ const server = createServer(async (request, response) => {
       ? 413
       : error instanceof SyntaxError || error instanceof ZodError
         ? 400
-        : 500;
+        : error instanceof MaxTurnsExceededError
+          ? 422
+          : 500;
     writeJSON(response, status, { error: message.slice(0, 1000) });
   }
 });

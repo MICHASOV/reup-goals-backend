@@ -1,5 +1,6 @@
 import {
   Agent,
+  MaxTurnsExceededError,
   RunState,
   fileSearchTool,
   run,
@@ -68,6 +69,27 @@ export function reasoningEffort(raw = process.env.AGENT_REASONING_EFFORT): Advis
   const value = (raw || "").trim().toLowerCase();
   if (value === "low" || value === "medium" || value === "high") return value;
   return "high";
+}
+
+function failureEvent(error: unknown, approval = false): AgentRuntimeEvent {
+  if (error instanceof MaxTurnsExceededError) {
+    return {
+      type: "run_failed",
+      stage: "failed",
+      title: "Не удалось завершить анализ за один проход",
+      detail: "Советник выполнил слишком много проверок. Запрос сохранён и его можно повторить.",
+      created_at: now(),
+    };
+  }
+  return {
+    type: "run_failed",
+    stage: "failed",
+    title: approval ? "Не удалось завершить подтверждение" : "Не удалось завершить запрос",
+    detail: approval
+      ? "Решение сохранено. Продолжение можно повторить."
+      : "Запрос сохранён. Его можно повторить без потери сообщения.",
+    created_at: now(),
+  };
 }
 
 function createAgent(model: string, vectorStoreId?: string): AdvisorAgent {
@@ -272,20 +294,14 @@ export async function executeRun(request: ExecuteRunRequest): Promise<AgentRunti
     const stream = await run(agent, currentInput(request.message, request.continuity_context), {
       context,
       stream: true,
-      maxTurns: request.max_turns || 12,
+      maxTurns: request.max_turns || 30,
       previousResponseId: request.previous_response_id || undefined,
       conversationId: request.conversation_id || undefined,
     });
     const partialOutput = await consumeStream(request.run_id, stream, events);
     return await finalize(request.run_id, stream, partialOutput, events);
   } catch (error) {
-    const failed: AgentRuntimeEvent = {
-      type: "run_failed",
-      stage: "failed",
-      title: "Не удалось завершить запрос",
-      detail: "Запрос сохранён. Можно повторить его после восстановления соединения.",
-      created_at: now(),
-    };
+    const failed = failureEvent(error);
     events.push(failed);
     await publishEvent(request.run_id, failed);
     throw error;
@@ -309,18 +325,12 @@ export async function resumeRun(request: ResumeRunRequest): Promise<AgentRuntime
     }
     const stream = await run(agent, state, {
       stream: true,
-      maxTurns: request.max_turns || 12,
+      maxTurns: request.max_turns || 30,
     });
     const partialOutput = await consumeStream(request.run_id, stream, events);
     return await finalize(request.run_id, stream, partialOutput, events);
   } catch (error) {
-    const failed: AgentRuntimeEvent = {
-      type: "run_failed",
-      stage: "failed",
-      title: "Не удалось завершить подтверждение",
-      detail: "Решение сохранено. Продолжение можно повторить после восстановления соединения.",
-      created_at: now(),
-    };
+    const failed = failureEvent(error, true);
     events.push(failed);
     await publishEvent(request.run_id, failed);
     throw error;

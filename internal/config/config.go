@@ -231,7 +231,7 @@ func Load() *Config {
 		AgentRuntimeEnabled:           parseBoolEnv("AGENT_RUNTIME_ENABLED"),
 		AgentRuntimeURL:               agentRuntimeURL,
 		AgentRuntimeSecret:            strings.TrimSpace(os.Getenv("AGENT_RUNTIME_SECRET")),
-		AgentRuntimeMaxTurns:          parseIntEnv("AGENT_RUNTIME_MAX_TURNS", 12),
+		AgentRuntimeMaxTurns:          parseIntEnv("AGENT_RUNTIME_MAX_TURNS", 30),
 		AgentReleaseID:                strings.TrimSpace(os.Getenv("AGENT_RELEASE_ID")),
 
 		JWTSecret:                     jwtSecret,

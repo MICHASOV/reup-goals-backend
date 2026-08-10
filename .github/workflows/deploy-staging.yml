@@ -410,7 +410,7 @@ jobs:
           }
           set_backend_env AGENT_RUNTIME_SECRET "$runtime_secret"
           set_backend_env AGENT_RUNTIME_URL "http://127.0.0.1:8091"
-          set_backend_env AGENT_RUNTIME_MAX_TURNS "12"
+          set_backend_env AGENT_RUNTIME_MAX_TURNS "30"
           set_backend_env AGENT_RELEASE_ID "staging-${{ hashFiles('agent-runtime/src/**', 'agent-runtime/package-lock.json') }}"
           restore_previous_backend_release() {
             set_backend_env AGENT_RELEASE_ID "$previous_agent_release_id"

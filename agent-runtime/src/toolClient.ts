@@ -3,13 +3,31 @@ import type { AgentRuntimeEvent } from "./types.js";
 type RunAccess = {
   token: string;
   internalBaseURL: string;
+  readCache: Map<string, unknown>;
+  pendingReads: Map<string, Promise<unknown>>;
+  readCounts: Map<string, number>;
 };
 
 const runAccess = new Map<string, RunAccess>();
+const cacheableTools = new Set([
+  "get_business_brief",
+  "list_entities",
+  "get_entity",
+  "list_workspace_members",
+  "get_priority_view",
+  "search_metric_catalog",
+]);
+const metricSearchLimit = 8;
 
 export function setRunAccess(runId: string, token: string): void {
   const internalBaseURL = (process.env.GO_INTERNAL_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
-  runAccess.set(runId, { token, internalBaseURL });
+  runAccess.set(runId, {
+    token,
+    internalBaseURL,
+    readCache: new Map(),
+    pendingReads: new Map(),
+    readCounts: new Map(),
+  });
 }
 
 export function clearRunAccess(runId: string): void {
@@ -31,6 +49,45 @@ export async function callBusinessTool(
   input: Record<string, unknown>,
 ): Promise<unknown> {
   const access = accessFor(runId);
+  if (!cacheableTools.has(toolName)) {
+    return callBusinessToolUncached(access, runId, toolName, callId, input);
+  }
+
+  const cacheKey = `${toolName}:${stableStringify(input)}`;
+  if (access.readCache.has(cacheKey)) {
+    return access.readCache.get(cacheKey);
+  }
+  const pending = access.pendingReads.get(cacheKey);
+  if (pending) return pending;
+
+  if (toolName === "search_metric_catalog") {
+    const searches = access.readCounts.get(toolName) || 0;
+    if (searches >= metricSearchLimit) {
+      return {
+        search_limit_reached: true,
+        instruction: "Use the metric catalog results already returned in this run and continue with the requested result.",
+      };
+    }
+    access.readCounts.set(toolName, searches + 1);
+  }
+
+  const request = callBusinessToolUncached(access, runId, toolName, callId, input)
+    .then((result) => {
+      access.readCache.set(cacheKey, result);
+      return result;
+    })
+    .finally(() => access.pendingReads.delete(cacheKey));
+  access.pendingReads.set(cacheKey, request);
+  return request;
+}
+
+async function callBusinessToolUncached(
+  access: RunAccess,
+  runId: string,
+  toolName: string,
+  callId: string,
+  input: Record<string, unknown>,
+): Promise<unknown> {
   const url = `${access.internalBaseURL}/internal/agent/tools/${encodeURIComponent(toolName)}`;
   const body = JSON.stringify({
     run_id: runId,
@@ -67,6 +124,19 @@ export async function callBusinessTool(
     await retryPause(attempt);
   }
   throw lastError instanceof Error ? lastError : new Error("business_tool_failed");
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 function retryPause(attempt: number): Promise<void> {

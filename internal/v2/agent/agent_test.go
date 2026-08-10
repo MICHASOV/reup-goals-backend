@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +10,26 @@ import (
 
 	"reup-goals-backend/internal/v2/tactics"
 )
+
+func TestPermanentRuntimeErrors(t *testing.T) {
+	for _, status := range []string{"400", "401", "403", "404", "409", "413", "422"} {
+		if !isPermanentRuntimeError(errors.New("agent_runtime_http_" + status + ":failed")) {
+			t.Fatalf("status %s must be terminal", status)
+		}
+	}
+	for _, message := range []string{
+		"agent_runtime_http_429:rate limited",
+		"agent_runtime_http_500:temporary",
+		"connection reset by peer",
+	} {
+		if isPermanentRuntimeError(errors.New(message)) {
+			t.Fatalf("transient error %q must remain retryable", message)
+		}
+	}
+	if isPermanentRuntimeError(nil) {
+		t.Fatal("nil error must not be permanent")
+	}
+}
 
 func TestRunTokenRejectsTamperingAndExpiry(t *testing.T) {
 	run := Run{PublicID: "run_test", WorkspaceID: 12, UserID: 34}

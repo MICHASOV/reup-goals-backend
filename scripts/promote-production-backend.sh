@@ -308,7 +308,7 @@ cat > "$agent_backend_config" <<EOF
 [Service]
 Environment="AGENT_RUNTIME_SECRET=${runtime_secret}"
 Environment="AGENT_RUNTIME_URL=http://127.0.0.1:8091"
-Environment="AGENT_RUNTIME_MAX_TURNS=12"
+Environment="AGENT_RUNTIME_MAX_TURNS=30"
 Environment="AGENT_RELEASE_ID=${release_id}"
 Environment="AGENT_RUNTIME_ENABLED=true"
 EOF

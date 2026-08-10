@@ -90,7 +90,7 @@ func NewService(
 		contextIndex: contextIndex, runtime: runtime, jobs: jobManager, billing: quota,
 	}
 	if service.maxTurns <= 0 {
-		service.maxTurns = 12
+		service.maxTurns = 30
 	}
 	if service.releaseID == "" {
 		service.releaseID = DefaultRelease
@@ -759,7 +759,7 @@ func (s *Service) failAttempt(
 	runErr error,
 ) error {
 	s.settleReservation(ctx, reservationID, false, 0)
-	terminal := job.Attempts >= job.MaxAttempts
+	terminal := isPermanentRuntimeError(runErr) || job.Attempts >= job.MaxAttempts
 	_ = s.store.SetFailed(context.WithoutCancel(ctx), run.ID, runErr.Error(), terminal)
 	if terminal {
 		_ = s.store.InsertEvent(context.WithoutCancel(ctx), run.ID, RuntimeEvent{
@@ -777,7 +777,7 @@ func (s *Service) failBeforeReservation(
 	job jobs.Job,
 	runErr error,
 ) error {
-	terminal := job.Attempts >= job.MaxAttempts
+	terminal := isPermanentRuntimeError(runErr) || job.Attempts >= job.MaxAttempts
 	_ = s.store.SetFailed(context.WithoutCancel(ctx), run.ID, runErr.Error(), terminal)
 	if terminal {
 		_ = s.store.InsertEvent(context.WithoutCancel(ctx), run.ID, RuntimeEvent{
@@ -787,6 +787,19 @@ func (s *Service) failBeforeReservation(
 		return nil
 	}
 	return runErr
+}
+
+func isPermanentRuntimeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	for _, status := range []string{"400", "401", "403", "404", "409", "413", "422"} {
+		if strings.Contains(message, "agent_runtime_http_"+status+":") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) finishRuntimeResult(

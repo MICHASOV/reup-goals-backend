@@ -41,3 +41,87 @@ test("business tools do not retry validation or permission failures", async () =
     globalThis.fetch = originalFetch;
   }
 });
+
+test("identical read tools reuse the result within one run", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ title: "Company context" }), { status: 200 });
+  }) as typeof fetch;
+  setRunAccess("run_cached", "signed-token");
+  try {
+    const first = await callBusinessTool("run_cached", "get_business_brief", "call_1", { include_open_questions: true });
+    const second = await callBusinessTool("run_cached", "get_business_brief", "call_2", { include_open_questions: true });
+    assert.deepEqual(second, first);
+    assert.equal(calls, 1);
+  } finally {
+    clearRunAccess("run_cached");
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("concurrent identical reads share one in-flight request", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return new Response(JSON.stringify({ entities: [] }), { status: 200 });
+  }) as typeof fetch;
+  setRunAccess("run_pending", "signed-token");
+  try {
+    const input = { entity_type: "task", limit: 20 };
+    const [first, second] = await Promise.all([
+      callBusinessTool("run_pending", "list_entities", "call_1", input),
+      callBusinessTool("run_pending", "list_entities", "call_2", input),
+    ]);
+    assert.deepEqual(second, first);
+    assert.equal(calls, 1);
+  } finally {
+    clearRunAccess("run_pending");
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("write tools are never cached", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }) as typeof fetch;
+  setRunAccess("run_writes", "signed-token");
+  try {
+    await callBusinessTool("run_writes", "propose_task", "call_1", { title: "Task" });
+    await callBusinessTool("run_writes", "propose_task", "call_2", { title: "Task" });
+    assert.equal(calls, 2);
+  } finally {
+    clearRunAccess("run_writes");
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("metric catalog searches stop after the per-run safety limit", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ metrics: [`metric-${calls}`] }), { status: 200 });
+  }) as typeof fetch;
+  setRunAccess("run_metrics", "signed-token");
+  try {
+    for (let index = 0; index < 8; index += 1) {
+      await callBusinessTool("run_metrics", "search_metric_catalog", `call_${index}`, { query: `metric ${index}` });
+    }
+    const limited = await callBusinessTool("run_metrics", "search_metric_catalog", "call_9", { query: "another metric" });
+    assert.deepEqual(limited, {
+      search_limit_reached: true,
+      instruction: "Use the metric catalog results already returned in this run and continue with the requested result.",
+    });
+    assert.equal(calls, 8);
+  } finally {
+    clearRunAccess("run_metrics");
+    globalThis.fetch = originalFetch;
+  }
+});
