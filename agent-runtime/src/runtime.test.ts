@@ -27,9 +27,11 @@ test("compactionThreshold defaults to 100k and rejects unsafe extremes", () => {
   assert.equal(compactionThreshold("invalid"), 100_000);
 });
 
-test("reasoningEffort defaults to high and accepts supported overrides", () => {
-  assert.equal(reasoningEffort(), "high");
+test("reasoningEffort defaults to max and accepts supported overrides", () => {
+  assert.equal(reasoningEffort(), "max");
+  assert.equal(reasoningEffort("max"), "max");
+  assert.equal(reasoningEffort("high"), "high");
   assert.equal(reasoningEffort("medium"), "medium");
   assert.equal(reasoningEffort("low"), "low");
-  assert.equal(reasoningEffort("unsupported"), "high");
+  assert.equal(reasoningEffort("unsupported"), "max");
 });

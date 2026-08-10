@@ -90,7 +90,7 @@ func NewService(
 		contextIndex: contextIndex, runtime: runtime, jobs: jobManager, billing: quota,
 	}
 	if service.maxTurns <= 0 {
-		service.maxTurns = 30
+		service.maxTurns = 120
 	}
 	if service.releaseID == "" {
 		service.releaseID = DefaultRelease

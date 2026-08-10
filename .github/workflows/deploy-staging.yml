@@ -410,7 +410,7 @@ jobs:
           }
           set_backend_env AGENT_RUNTIME_SECRET "$runtime_secret"
           set_backend_env AGENT_RUNTIME_URL "http://127.0.0.1:8091"
-          set_backend_env AGENT_RUNTIME_MAX_TURNS "30"
+          set_backend_env AGENT_RUNTIME_MAX_TURNS "120"
           set_backend_env AGENT_RELEASE_ID "staging-${{ hashFiles('agent-runtime/src/**', 'agent-runtime/package-lock.json') }}"
           restore_previous_backend_release() {
             set_backend_env AGENT_RELEASE_ID "$previous_agent_release_id"
@@ -446,7 +446,7 @@ jobs:
             printf 'AGENT_RUNTIME_SECRET=%s\n' "$runtime_secret"
             printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
             printf 'AGENT_COMPACT_THRESHOLD=100000\n'
-            printf 'AGENT_REASONING_EFFORT=high\n'
+            printf 'AGENT_REASONING_EFFORT=max\n'
             if [ -n "$openai_proxy_url" ]; then
               printf 'OPENAI_PROXY_URL=%s\n' "$openai_proxy_url"
             fi

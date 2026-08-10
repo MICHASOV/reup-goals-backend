@@ -231,7 +231,7 @@ func Load() *Config {
 		AgentRuntimeEnabled:           parseBoolEnv("AGENT_RUNTIME_ENABLED"),
 		AgentRuntimeURL:               agentRuntimeURL,
 		AgentRuntimeSecret:            strings.TrimSpace(os.Getenv("AGENT_RUNTIME_SECRET")),
-		AgentRuntimeMaxTurns:          parseIntEnv("AGENT_RUNTIME_MAX_TURNS", 30),
+		AgentRuntimeMaxTurns:          parseIntEnv("AGENT_RUNTIME_MAX_TURNS", 120),
 		AgentReleaseID:                strings.TrimSpace(os.Getenv("AGENT_RELEASE_ID")),
 
 		JWTSecret:                     jwtSecret,
@@ -440,8 +440,8 @@ func (c *Config) Validate() error {
 		if err != nil || runtimeURL.Scheme == "" || runtimeURL.Host == "" {
 			return fmt.Errorf("AGENT_RUNTIME_URL must be a valid absolute URL")
 		}
-		if c.AgentRuntimeMaxTurns < 2 || c.AgentRuntimeMaxTurns > 30 {
-			return fmt.Errorf("AGENT_RUNTIME_MAX_TURNS must be between 2 and 30")
+		if c.AgentRuntimeMaxTurns < 2 || c.AgentRuntimeMaxTurns > 120 {
+			return fmt.Errorf("AGENT_RUNTIME_MAX_TURNS must be between 2 and 120")
 		}
 	}
 	return nil

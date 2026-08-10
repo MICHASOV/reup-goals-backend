@@ -57,7 +57,7 @@ ${message}
 
 type AdvisorAgent = Agent<AgentRunContext, any>;
 type AdvisorStream = StreamedRunResult<AgentRunContext, any>;
-type AdvisorReasoningEffort = "low" | "medium" | "high";
+type AdvisorReasoningEffort = "low" | "medium" | "high" | "max";
 
 export function compactionThreshold(raw = process.env.AGENT_COMPACT_THRESHOLD): number {
   const parsed = Number.parseInt(raw || "", 10);
@@ -67,8 +67,8 @@ export function compactionThreshold(raw = process.env.AGENT_COMPACT_THRESHOLD): 
 
 export function reasoningEffort(raw = process.env.AGENT_REASONING_EFFORT): AdvisorReasoningEffort {
   const value = (raw || "").trim().toLowerCase();
-  if (value === "low" || value === "medium" || value === "high") return value;
-  return "high";
+  if (value === "low" || value === "medium" || value === "high" || value === "max") return value;
+  return "max";
 }
 
 function failureEvent(error: unknown, approval = false): AgentRuntimeEvent {
@@ -105,10 +105,11 @@ function createAgent(model: string, vectorStoreId?: string): AdvisorAgent {
     instructions: (context) => buildInstructions(context.context),
     model,
     modelSettings: {
-      reasoning: { effort: reasoningEffort(), summary: "auto" },
+      reasoning: { summary: "auto" },
       text: { verbosity: "medium" },
       parallelToolCalls: true,
       providerData: {
+        reasoning: { effort: reasoningEffort() },
         context_management: [{
           type: "compaction",
           compact_threshold: compactionThreshold(),
@@ -294,7 +295,7 @@ export async function executeRun(request: ExecuteRunRequest): Promise<AgentRunti
     const stream = await run(agent, currentInput(request.message, request.continuity_context), {
       context,
       stream: true,
-      maxTurns: request.max_turns || 30,
+      maxTurns: request.max_turns || 120,
       previousResponseId: request.previous_response_id || undefined,
       conversationId: request.conversation_id || undefined,
     });
@@ -325,7 +326,7 @@ export async function resumeRun(request: ResumeRunRequest): Promise<AgentRuntime
     }
     const stream = await run(agent, state, {
       stream: true,
-      maxTurns: request.max_turns || 30,
+      maxTurns: request.max_turns || 120,
     });
     const partialOutput = await consumeStream(request.run_id, stream, events);
     return await finalize(request.run_id, stream, partialOutput, events);

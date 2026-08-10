@@ -241,7 +241,7 @@ if [ -f "$agent_unit" ]; then cp -a "$agent_unit" "$agent_unit_backup"; fi
   printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
   printf 'OPENAI_PROXY_URL=%s\n' "$openai_proxy_url"
   printf 'AGENT_COMPACT_THRESHOLD=100000\n'
-  printf 'AGENT_REASONING_EFFORT=high\n'
+  printf 'AGENT_REASONING_EFFORT=max\n'
 } > "$agent_env"
 chown "$service_user:$service_group" "$agent_env"
 chmod 600 "$agent_env"
@@ -308,7 +308,7 @@ cat > "$agent_backend_config" <<EOF
 [Service]
 Environment="AGENT_RUNTIME_SECRET=${runtime_secret}"
 Environment="AGENT_RUNTIME_URL=http://127.0.0.1:8091"
-Environment="AGENT_RUNTIME_MAX_TURNS=30"
+Environment="AGENT_RUNTIME_MAX_TURNS=120"
 Environment="AGENT_RELEASE_ID=${release_id}"
 Environment="AGENT_RUNTIME_ENABLED=true"
 EOF
