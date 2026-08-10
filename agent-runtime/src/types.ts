@@ -116,7 +116,7 @@ export const executeRunRequestSchema = z.object({
   continuity_context: z.string().max(120_000).optional(),
   vector_store_id: z.string().max(300).optional(),
   run_token: z.string().min(1).max(8192),
-  max_turns: z.number().int().min(1).max(64).optional(),
+  max_turns: z.number().int().min(1).max(120).optional(),
 }).strict();
 
 export const resumeRunRequestSchema = z.object({
@@ -129,5 +129,5 @@ export const resumeRunRequestSchema = z.object({
     call_id: z.string().min(1).max(300),
     approved: z.boolean(),
   }).strict()).min(1).max(64),
-  max_turns: z.number().int().min(1).max(64).optional(),
+  max_turns: z.number().int().min(1).max(120).optional(),
 }).strict();

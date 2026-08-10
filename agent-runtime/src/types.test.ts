@@ -16,6 +16,30 @@ test("execute request accepts a valid scoped message", () => {
   assert.equal(result.success, true);
 });
 
+test("execute and resume requests accept the configured 120 turn limit", () => {
+  const execute = executeRunRequestSchema.safeParse({
+    run_id: "run_123",
+    workspace_id: 1,
+    user_id: 2,
+    scope: { type: "strategy", id: 0, label: "Стратегия" },
+    message: "Проведи полный анализ",
+    model: "gpt-5.6-luna",
+    run_token: "signed-token",
+    max_turns: 120,
+  });
+  const resume = resumeRunRequestSchema.safeParse({
+    run_id: "run_123",
+    model: "gpt-5.6-luna",
+    state: "serialized",
+    run_token: "signed-token",
+    decisions: [{ call_id: "call_123", approved: true }],
+    max_turns: 120,
+  });
+
+  assert.equal(execute.success, true);
+  assert.equal(resume.success, true);
+});
+
 test("execute request rejects unknown fields and invalid scope ids", () => {
   const result = executeRunRequestSchema.safeParse({
     run_id: "run_123",
