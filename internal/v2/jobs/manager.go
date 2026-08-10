@@ -21,6 +21,7 @@ const (
 	StatusRunning   = "running"
 	StatusCompleted = "completed"
 	StatusFailed    = "failed"
+	StatusCanceled  = "canceled"
 )
 
 type Handler func(context.Context, Job) error
@@ -49,11 +50,12 @@ type Manager struct {
 	pollInterval time.Duration
 	staleAfter   time.Duration
 
-	mu       sync.RWMutex
-	handlers map[string]Handler
-	timeouts map[string]time.Duration
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	mu         sync.RWMutex
+	handlers   map[string]Handler
+	timeouts   map[string]time.Duration
+	jobCancels map[int64]context.CancelFunc
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 func NewManager(dbx *sql.DB) *Manager {
@@ -71,6 +73,7 @@ func NewManagerWithNamespace(dbx *sql.DB, namespace string) *Manager {
 		staleAfter:   2 * time.Minute,
 		handlers:     make(map[string]Handler),
 		timeouts:     make(map[string]time.Duration),
+		jobCancels:   make(map[int64]context.CancelFunc),
 	}
 }
 
@@ -292,11 +295,19 @@ func (m *Manager) runOne(ctx context.Context, minimumPriority int, maximumPriori
 		return true, m.fail(ctx, job, fmt.Errorf("no handler registered for %s", job.Type))
 	}
 
-	jobCtx := ctx
-	cancel := func() {}
+	jobCtx, cancelJob := context.WithCancel(ctx)
+	cancel := cancelJob
 	if timeout > 0 {
-		jobCtx, cancel = context.WithTimeout(ctx, timeout)
+		var timeoutCancel context.CancelFunc
+		jobCtx, timeoutCancel = context.WithTimeout(jobCtx, timeout)
+		cancel = func() {
+			timeoutCancel()
+			cancelJob()
+		}
 	}
+	m.mu.Lock()
+	m.jobCancels[job.ID] = cancelJob
+	m.mu.Unlock()
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
 	heartbeatDone := make(chan struct{})
 	go func() {
@@ -305,6 +316,9 @@ func (m *Manager) runOne(ctx context.Context, minimumPriority int, maximumPriori
 	}()
 	err = invokeHandler(jobCtx, handler, job)
 	cancel()
+	m.mu.Lock()
+	delete(m.jobCancels, job.ID)
+	m.mu.Unlock()
 	stopHeartbeat()
 	<-heartbeatDone
 	finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -400,12 +414,60 @@ func (m *Manager) fail(ctx context.Context, job Job, jobErr error) error {
 	_, err := m.dbx.ExecContext(ctx, `
 		UPDATE v2_background_jobs
 		SET status=$2, not_before=$3, locked_at=NULL, locked_by='', last_error=$4, updated_at=NOW()
-		WHERE id=$1 AND queue_name=$5
-	`, job.ID, status, notBefore, truncateError(jobErr), m.namespace)
+		WHERE id=$1 AND queue_name=$5 AND status <> $6
+	`, job.ID, status, notBefore, truncateError(jobErr), m.namespace, StatusCanceled)
 	if status == StatusFailed {
 		log.Printf("[ERROR] background job failed permanently id=%d type=%s attempts=%d: %v", job.ID, job.Type, job.Attempts, jobErr)
 	}
 	return err
+}
+
+// CancelByDedupeKey prevents queued retries and interrupts a matching job that
+// is currently running in this process. A worker finishing after cancellation
+// cannot overwrite the canceled database state.
+func (m *Manager) CancelByDedupeKey(
+	ctx context.Context,
+	workspaceID int,
+	dedupeKey string,
+	jobTypes ...string,
+) error {
+	if strings.TrimSpace(dedupeKey) == "" || len(jobTypes) == 0 {
+		return nil
+	}
+	rows, err := m.dbx.QueryContext(ctx, `
+		UPDATE v2_background_jobs
+		SET status=$1, locked_at=NULL, locked_by='', last_error='Canceled by user.', updated_at=NOW()
+		WHERE queue_name=$2 AND workspace_id=$3 AND dedupe_key=$4
+			AND job_type=ANY($5) AND status IN ($6, $7)
+		RETURNING id
+	`, StatusCanceled, m.namespace, workspaceID, dedupeKey, pq.Array(jobTypes), StatusQueued, StatusRunning)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	m.mu.RLock()
+	cancels := make([]context.CancelFunc, 0, len(ids))
+	for _, id := range ids {
+		if cancel := m.jobCancels[id]; cancel != nil {
+			cancels = append(cancels, cancel)
+		}
+	}
+	m.mu.RUnlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return nil
 }
 
 func retryDelay(attempt int) time.Duration {

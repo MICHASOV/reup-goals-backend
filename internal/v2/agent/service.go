@@ -65,7 +65,10 @@ type agentJobPayload struct {
 	RunID string `json:"run_id"`
 }
 
-const InteractiveJobPriority = 100
+const (
+	InteractiveJobPriority = 100
+	agentJobMaxAttempts    = 12
+)
 
 func NewService(
 	dbx *sql.DB,
@@ -111,11 +114,15 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 		return Run{}, errors.New("agent_runtime_disabled")
 	}
 	request.Message = strings.TrimSpace(request.Message)
+	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.ThreadID <= 0 || request.Message == "" {
 		return Run{}, errors.New("invalid_agent_run")
 	}
 	if len([]rune(request.Message)) > 50000 || len(request.Attachments) > 24 {
 		return Run{}, errors.New("invalid_agent_input_size")
+	}
+	if len(request.RequestID) > 120 {
+		return Run{}, errors.New("invalid_agent_request_id")
 	}
 	for _, attachment := range request.Attachments {
 		if !validAttachment(attachment) {
@@ -129,6 +136,17 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	thread, err := s.tactics.AdvisorThread(ctx, workspace.ID, userID, request.ThreadID)
 	if err != nil {
 		return Run{}, err
+	}
+	if request.RequestID != "" {
+		existing, existingErr := s.store.ByRequestID(
+			ctx, workspace.ID, userID, thread.ID, request.RequestID,
+		)
+		if existingErr == nil {
+			return s.Hydrate(ctx, existing, 0)
+		}
+		if !errors.Is(existingErr, sql.ErrNoRows) {
+			return Run{}, existingErr
+		}
 	}
 	if err := s.releaseStaleActiveRun(ctx, workspace.ID, userID, thread.ID); err != nil {
 		return Run{}, err
@@ -193,7 +211,7 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	run, err := s.store.Create(
 		ctx, workspace.ID, userID, thread.ID, userMessageID, scope, s.model,
 		s.releaseID, sessionGeneration, migratedFrom, continuityContext,
-		agentInput(request.Message, request.Attachments),
+		agentInput(request.Message, request.Attachments), request.RequestID,
 	)
 	if err != nil {
 		return Run{}, err
@@ -212,7 +230,7 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 		Title: "Запрос принят, готовлю рабочий контекст",
 	})
 	if _, err := s.jobs.EnqueuePriority(
-		ctx, workspace.ID, JobTypeExecute, run.PublicID, agentJobPayload{RunID: run.PublicID}, 3, time.Time{},
+		ctx, workspace.ID, JobTypeExecute, run.PublicID, agentJobPayload{RunID: run.PublicID}, agentJobMaxAttempts, time.Time{},
 		InteractiveJobPriority,
 	); err != nil {
 		_ = s.store.SetFailed(ctx, run.ID, "agent_job_enqueue_failed", true)
@@ -312,6 +330,38 @@ func (s *Service) ActiveRunForThread(ctx context.Context, userID int, threadID i
 	return s.Hydrate(ctx, run, 0)
 }
 
+func (s *Service) CancelRun(ctx context.Context, userID int, publicID string) (Run, error) {
+	workspace, _, err := s.workspaces.GetOrCreateDefault(ctx, userID)
+	if err != nil {
+		return Run{}, err
+	}
+	run, err := s.store.ByPublicIDForUser(ctx, publicID, workspace.ID, userID)
+	if err != nil {
+		return Run{}, err
+	}
+	if run.Status == StatusCompleted || run.Status == StatusCanceled {
+		return s.Hydrate(ctx, run, 0)
+	}
+	reservationID, err := s.store.SetCanceled(ctx, run.ID)
+	if err != nil {
+		return Run{}, err
+	}
+	s.settleReservation(ctx, reservationID, false, 0)
+	if err := s.jobs.CancelByDedupeKey(
+		ctx, workspace.ID, run.PublicID, JobTypeExecute, JobTypeResume,
+	); err != nil {
+		return Run{}, err
+	}
+	_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
+		Type: "run_canceled", Stage: "canceled", Title: "Работа остановлена пользователем",
+	})
+	run, err = s.store.ByPublicIDForUser(ctx, publicID, workspace.ID, userID)
+	if err != nil {
+		return Run{}, err
+	}
+	return s.Hydrate(ctx, run, 0)
+}
+
 func (s *Service) reconcileOrphanedRun(ctx context.Context, run Run) (Run, error) {
 	if run.Status == StatusWaitingApproval {
 		return s.reconcileWaitingApprovalRun(ctx, run)
@@ -319,20 +369,35 @@ func (s *Service) reconcileOrphanedRun(ctx context.Context, run Run) (Run, error
 	if run.Status != StatusQueued && run.Status != StatusRunning {
 		return run, nil
 	}
-	if time.Since(run.UpdatedAt) < 3*time.Second {
+	if time.Since(run.UpdatedAt) < 30*time.Second {
 		return run, nil
 	}
 	active, err := s.store.HasActiveJob(ctx, run, s.jobs.Namespace())
 	if err != nil || active {
 		return run, err
 	}
-	if err := s.store.SetFailed(ctx, run.ID, "agent_background_job_missing", true); err != nil {
-		return Run{}, err
+	if run.Status == StatusRunning {
+		s.settleReservation(ctx, run.ReservationID, false, 0)
+		if err := s.store.RequeueInterrupted(ctx, run.ID); err != nil {
+			return Run{}, err
+		}
+		run.Status = StatusQueued
+		run.ReservationID = ""
 	}
 	_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
-		Type: "run_failed", Stage: "recovery", Title: "Предыдущий запуск остановлен",
-		Detail: "Сообщение сохранено: отправьте его повторно.",
+		Type: "run_recovered", Stage: "recovery", Title: "Восстанавливаю фоновую работу",
+		Detail: "Запрос продолжится с сохранённого состояния.",
 	})
+	jobType := JobTypeExecute
+	if strings.TrimSpace(run.StateCiphertext) != "" {
+		jobType = JobTypeResume
+	}
+	if _, err := s.jobs.EnqueuePriority(
+		ctx, run.WorkspaceID, jobType, run.PublicID, agentJobPayload{RunID: run.PublicID},
+		agentJobMaxAttempts, time.Time{}, InteractiveJobPriority,
+	); err != nil {
+		return Run{}, err
+	}
 	return s.store.ByPublicIDForUser(ctx, run.PublicID, run.WorkspaceID, run.UserID)
 }
 
@@ -667,6 +732,14 @@ func (s *Service) handleExecuteJob(ctx context.Context, job jobs.Job) error {
 		s.logCall(ctx, run, time.Since(started), RuntimeUsage{}, err)
 		return s.failAttempt(ctx, run, reservationID, job, err)
 	}
+	latest, latestErr := s.store.ByPublicID(ctx, run.PublicID)
+	if latestErr != nil {
+		return s.failAttempt(ctx, run, reservationID, job, latestErr)
+	}
+	if latest.Status == StatusCanceled {
+		s.settleReservation(ctx, reservationID, false, 0)
+		return nil
+	}
 	return s.finishRuntimeResult(ctx, run, reservationID, result, time.Since(started))
 }
 
@@ -732,6 +805,13 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 	if err != nil {
 		s.logCall(ctx, run, time.Since(started), RuntimeUsage{}, err)
 		return s.failAttempt(ctx, run, "", job, err)
+	}
+	latest, latestErr := s.store.ByPublicID(ctx, run.PublicID)
+	if latestErr != nil {
+		return s.failAttempt(ctx, run, "", job, latestErr)
+	}
+	if latest.Status == StatusCanceled {
+		return nil
 	}
 	return s.finishRuntimeResult(ctx, run, "", result, time.Since(started))
 }

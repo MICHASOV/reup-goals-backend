@@ -31,6 +31,7 @@ func (s *Store) Create(
 	migratedFrom string,
 	continuityContext string,
 	input string,
+	requestID string,
 ) (Run, error) {
 	publicID, err := randomPublicID()
 	if err != nil {
@@ -49,11 +50,11 @@ func (s *Store) Create(
 			public_id, workspace_id, user_id, thread_id, user_message_id,
 			scope_type, scope_id, scope_label, status, model, prompt_version,
 			agent_release_id, session_generation, migrated_from_release_id,
-			continuity_context, input_text
+			continuity_context, input_text, client_request_id
 		)
 		VALUES (
 			$1, $2, $3, $4, NULLIF($5, 0), $6, $7, $8, $9, $10, $11,
-			$12, $13, $14, $15, $16
+			$12, $13, $14, $15, $16, $17
 		)
 		RETURNING
 			id, public_id, workspace_id, user_id, thread_id,
@@ -66,8 +67,20 @@ func (s *Store) Create(
 			usage_total_tokens, started_at, completed_at, created_at, updated_at
 	`, publicID, workspaceID, userID, threadID, userMessageID, scope.Type, scope.ID,
 		scope.Label, StatusQueued, model, PromptVersion, releaseID, sessionGeneration,
-		migratedFrom, continuityContext, strings.TrimSpace(input))
+		migratedFrom, continuityContext, strings.TrimSpace(input), strings.TrimSpace(requestID))
 	return scanRun(row)
+}
+
+func (s *Store) ByRequestID(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	threadID int,
+	requestID string,
+) (Run, error) {
+	return scanRun(s.dbx.QueryRowContext(ctx, runSelect+`
+		WHERE workspace_id=$1 AND user_id=$2 AND thread_id=$3 AND client_request_id=$4
+	`, workspaceID, userID, threadID, strings.TrimSpace(requestID)))
 }
 
 func (s *Store) ByPublicID(ctx context.Context, publicID string) (Run, error) {
@@ -150,9 +163,10 @@ func (s *Store) SetWaiting(
 			usage_output_tokens=usage_output_tokens+$8,
 			usage_total_tokens=usage_total_tokens+$9,
 			reservation_id='', error_text='', updated_at=NOW()
-		WHERE id=$1
+		WHERE id=$1 AND status=$10
 	`, runID, StatusWaitingApproval, truncate(partialOutput, 120000), previousResponseID,
-		stateCiphertext, usage.Requests, usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+		stateCiphertext, usage.Requests, usage.InputTokens, usage.OutputTokens, usage.TotalTokens,
+		StatusRunning)
 	return err
 }
 
@@ -172,10 +186,10 @@ func (s *Store) SetCompleted(
 			usage_requests=usage_requests+$7, usage_input_tokens=usage_input_tokens+$8,
 			usage_output_tokens=usage_output_tokens+$9, usage_total_tokens=usage_total_tokens+$10,
 			error_text='', completed_at=NOW(), updated_at=NOW()
-		WHERE id=$1
+		WHERE id=$1 AND status IN ($11, $12)
 	`, runID, StatusCompleted, truncate(output, 120000), truncate(partialOutput, 120000),
 		previousResponseID, assistantMessageID, usage.Requests, usage.InputTokens,
-		usage.OutputTokens, usage.TotalTokens)
+		usage.OutputTokens, usage.TotalTokens, StatusRunning, StatusWaitingApproval)
 	return err
 }
 
@@ -189,9 +203,31 @@ func (s *Store) SetFailed(ctx context.Context, runID int64, errorText string, te
 		SET status=$2, error_text=$3, reservation_id='',
 			completed_at=CASE WHEN $2=$4 THEN NOW() ELSE completed_at END,
 			updated_at=NOW()
-		WHERE id=$1
-	`, runID, status, truncate(errorText, 4000), StatusFailed)
+		WHERE id=$1 AND status NOT IN ($5, $6)
+	`, runID, status, truncate(errorText, 4000), StatusFailed, StatusCanceled, StatusCompleted)
 	return err
+}
+
+func (s *Store) SetCanceled(ctx context.Context, runID int64) (string, error) {
+	var reservationID string
+	err := s.dbx.QueryRowContext(ctx, `
+		WITH current AS (
+			SELECT id, reservation_id FROM v2_agent_runs
+			WHERE id=$1 AND status IN ($3, $4, $5, $6)
+			FOR UPDATE
+		), updated AS (
+			UPDATE v2_agent_runs run
+			SET status=$2, reservation_id='', error_text='', completed_at=NOW(), updated_at=NOW()
+			FROM current WHERE run.id=current.id
+			RETURNING current.reservation_id
+		)
+		SELECT COALESCE(reservation_id, '') FROM updated
+	`, runID, StatusCanceled, StatusQueued, StatusRunning, StatusWaitingApproval, StatusFailed).
+		Scan(&reservationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return reservationID, err
 }
 
 func (s *Store) QueueResume(ctx context.Context, runID int64) error {

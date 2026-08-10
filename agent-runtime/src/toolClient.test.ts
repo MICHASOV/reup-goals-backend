@@ -22,6 +22,30 @@ test("business tools retry transient server failures", async () => {
   }
 });
 
+test("canceling a run aborts an in-flight business tool without retries", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  let calls = 0;
+  globalThis.fetch = (async (_input, init) => {
+    calls += 1;
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        reject(init.signal?.reason ?? new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    });
+  }) as typeof fetch;
+  setRunAccess("run_canceled", "signed-token", controller.signal);
+  try {
+    const pending = callBusinessTool("run_canceled", "get_business_brief", "call_1", {});
+    controller.abort(new DOMException("Stopped by user", "AbortError"));
+    await assert.rejects(pending, /Stopped by user|AbortError/);
+    assert.equal(calls, 1);
+  } finally {
+    clearRunAccess("run_canceled");
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("business tools do not retry validation or permission failures", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;

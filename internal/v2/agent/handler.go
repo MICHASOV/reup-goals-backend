@@ -86,6 +86,19 @@ func (h *Handler) Runs(w http.ResponseWriter, r *http.Request) {
 		api.WriteJSON(w, http.StatusAccepted, map[string]any{"run": run})
 		return
 	}
+	if len(parts) == 2 && parts[1] == "cancel" {
+		if r.Method != http.MethodPost {
+			api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		run, err := h.service.CancelRun(r.Context(), userID, publicID)
+		if err != nil {
+			writeServiceError(w, err, "agent_cancel_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusOK, map[string]any{"run": run})
+		return
+	}
 	if len(parts) != 1 || r.Method != http.MethodGet {
 		api.WriteError(w, http.StatusNotFound, "not_found")
 		return

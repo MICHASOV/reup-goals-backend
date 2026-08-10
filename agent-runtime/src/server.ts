@@ -47,12 +47,14 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "POST" && request.url === "/v1/runs/execute") {
       const input = executeRunRequestSchema.parse(await readJSON<unknown>(request));
-      writeJSON(response, 200, await executeRun(input));
+      const controller = requestAbortController(request, response);
+      writeJSON(response, 200, await executeRun(input, controller.signal));
       return;
     }
     if (request.method === "POST" && request.url === "/v1/runs/resume") {
       const input = resumeRunRequestSchema.parse(await readJSON<unknown>(request));
-      writeJSON(response, 200, await resumeRun(input));
+      const controller = requestAbortController(request, response);
+      writeJSON(response, 200, await resumeRun(input, controller.signal));
       return;
     }
     writeJSON(response, 404, { error: "not_found" });
@@ -79,6 +81,15 @@ const server = createServer(async (request, response) => {
     writeJSON(response, status, { error: message.slice(0, 1000) });
   }
 });
+
+function requestAbortController(request: IncomingMessage, response: ServerResponse): AbortController {
+  const controller = new AbortController();
+  request.once("aborted", () => controller.abort());
+  response.once("close", () => {
+    if (!response.writableEnded) controller.abort();
+  });
+  return controller;
+}
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`REUP.goals agent runtime listening on 127.0.0.1:${port}`);

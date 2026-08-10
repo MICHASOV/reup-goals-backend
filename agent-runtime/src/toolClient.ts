@@ -6,6 +6,7 @@ type RunAccess = {
   readCache: Map<string, unknown>;
   pendingReads: Map<string, Promise<unknown>>;
   readCounts: Map<string, number>;
+  signal?: AbortSignal;
 };
 
 const runAccess = new Map<string, RunAccess>();
@@ -19,7 +20,7 @@ const cacheableTools = new Set([
 ]);
 const metricSearchLimit = 8;
 
-export function setRunAccess(runId: string, token: string): void {
+export function setRunAccess(runId: string, token: string, signal?: AbortSignal): void {
   const internalBaseURL = (process.env.GO_INTERNAL_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
   runAccess.set(runId, {
     token,
@@ -27,6 +28,7 @@ export function setRunAccess(runId: string, token: string): void {
     readCache: new Map(),
     pendingReads: new Map(),
     readCounts: new Map(),
+    signal,
   });
 }
 
@@ -105,12 +107,12 @@ async function callBusinessToolUncached(
           "Content-Type": "application/json",
         },
         body,
-        signal: AbortSignal.timeout(30_000),
+        signal: requestSignal(access.signal, 30_000),
       });
     } catch (error) {
       lastError = error;
       if (attempt === 2) throw error;
-      await retryPause(attempt);
+      await retryPause(attempt, access.signal);
       continue;
     }
     const raw = await response.text();
@@ -121,7 +123,7 @@ async function callBusinessToolUncached(
     if (response.status !== 429 && response.status < 500) throw error;
     lastError = error;
     if (attempt === 2) throw error;
-    await retryPause(attempt);
+    await retryPause(attempt, access.signal);
   }
   throw lastError instanceof Error ? lastError : new Error("business_tool_failed");
 }
@@ -139,8 +141,23 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-function retryPause(attempt: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 250 : 750));
+function retryPause(attempt: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const timer = setTimeout(resolve, attempt === 0 ? 250 : 750);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    }, { once: true });
+  });
+}
+
+function requestSignal(signal: AbortSignal | undefined, timeoutMilliseconds: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMilliseconds);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
 export async function publishEvent(runId: string, event: AgentRuntimeEvent): Promise<void> {
@@ -153,7 +170,7 @@ export async function publishEvent(runId: string, event: AgentRuntimeEvent): Pro
         "Content-Type": "application/json",
       },
       body: JSON.stringify(event),
-      signal: AbortSignal.timeout(5_000),
+      signal: requestSignal(access.signal, 5_000),
     });
     if (!response.ok) {
       throw new Error(`event_publish_failed:${response.status}`);

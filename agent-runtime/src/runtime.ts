@@ -271,8 +271,8 @@ async function finalize(
   };
 }
 
-export async function executeRun(request: ExecuteRunRequest): Promise<AgentRuntimeResult> {
-  setRunAccess(request.run_id, request.run_token);
+export async function executeRun(request: ExecuteRunRequest, signal?: AbortSignal): Promise<AgentRuntimeResult> {
+  setRunAccess(request.run_id, request.run_token, signal);
   const events: AgentRuntimeEvent[] = [];
   try {
     const started: AgentRuntimeEvent = {
@@ -298,10 +298,12 @@ export async function executeRun(request: ExecuteRunRequest): Promise<AgentRunti
       maxTurns: request.max_turns || 120,
       previousResponseId: request.previous_response_id || undefined,
       conversationId: request.conversation_id || undefined,
+      signal,
     });
     const partialOutput = await consumeStream(request.run_id, stream, events);
     return await finalize(request.run_id, stream, partialOutput, events);
   } catch (error) {
+    if (signal?.aborted) throw error;
     const failed = failureEvent(error);
     events.push(failed);
     await publishEvent(request.run_id, failed);
@@ -311,8 +313,8 @@ export async function executeRun(request: ExecuteRunRequest): Promise<AgentRunti
   }
 }
 
-export async function resumeRun(request: ResumeRunRequest): Promise<AgentRuntimeResult> {
-  setRunAccess(request.run_id, request.run_token);
+export async function resumeRun(request: ResumeRunRequest, signal?: AbortSignal): Promise<AgentRuntimeResult> {
+  setRunAccess(request.run_id, request.run_token, signal);
   const events: AgentRuntimeEvent[] = [];
   try {
     const agent = createAgent(request.model, request.vector_store_id);
@@ -327,10 +329,12 @@ export async function resumeRun(request: ResumeRunRequest): Promise<AgentRuntime
     const stream = await run(agent, state, {
       stream: true,
       maxTurns: request.max_turns || 120,
+      signal,
     });
     const partialOutput = await consumeStream(request.run_id, stream, events);
     return await finalize(request.run_id, stream, partialOutput, events);
   } catch (error) {
+    if (signal?.aborted) throw error;
     const failed = failureEvent(error, true);
     events.push(failed);
     await publishEvent(request.run_id, failed);

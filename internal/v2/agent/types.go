@@ -94,6 +94,7 @@ type Approval struct {
 
 type CreateRunRequest struct {
 	ThreadID    int          `json:"thread_id"`
+	RequestID   string       `json:"request_id,omitempty"`
 	Message     string       `json:"message"`
 	Scope       Scope        `json:"scope"`
 	Attachments []Attachment `json:"attachments"`

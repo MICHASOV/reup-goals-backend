@@ -3994,6 +3994,16 @@ var migrations = []Migration{
 				WHERE external_id <> '';
 		`,
 	},
+	{
+		ID: "20260810_081_agent_run_idempotency",
+		SQL: `
+			ALTER TABLE v2_agent_runs
+				ADD COLUMN IF NOT EXISTS client_request_id TEXT NOT NULL DEFAULT '';
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_agent_runs_client_request
+				ON v2_agent_runs (workspace_id, user_id, thread_id, client_request_id)
+				WHERE client_request_id <> '';
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {
