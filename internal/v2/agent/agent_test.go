@@ -31,6 +31,23 @@ func TestPermanentRuntimeErrors(t *testing.T) {
 	}
 }
 
+func TestRequestLockKeyIsScopedAndStable(t *testing.T) {
+	base := requestLockKey(1, 2, 3, " request-1 ")
+	if base != requestLockKey(1, 2, 3, "request-1") {
+		t.Fatal("request lock key must ignore surrounding whitespace")
+	}
+	for _, other := range []string{
+		requestLockKey(9, 2, 3, "request-1"),
+		requestLockKey(1, 9, 3, "request-1"),
+		requestLockKey(1, 2, 9, "request-1"),
+		requestLockKey(1, 2, 3, "request-2"),
+	} {
+		if base == other {
+			t.Fatalf("request lock key is not fully scoped: %q", other)
+		}
+	}
+}
+
 func TestRunTokenRejectsTamperingAndExpiry(t *testing.T) {
 	run := Run{PublicID: "run_test", WorkspaceID: 12, UserID: 34}
 	token, err := signRunToken(strings.Repeat("s", 40), run, time.Minute)

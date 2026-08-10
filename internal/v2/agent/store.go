@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 )
 
 type Store struct {
@@ -16,6 +18,35 @@ type Store struct {
 
 func NewStore(dbx *sql.DB) *Store {
 	return &Store{dbx: dbx}
+}
+
+func requestLockKey(workspaceID int, userID int, threadID int, requestID string) string {
+	return fmt.Sprintf("agent-run:%d:%d:%d:%s", workspaceID, userID, threadID, strings.TrimSpace(requestID))
+}
+
+// LockRequest serializes the idempotency check and run creation across backend instances.
+func (s *Store) LockRequest(
+	ctx context.Context,
+	workspaceID int,
+	userID int,
+	threadID int,
+	requestID string,
+) (func(), error) {
+	key := requestLockKey(workspaceID, userID, threadID, requestID)
+	conn, err := s.dbx.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, key); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(releaseCtx, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, key)
+		_ = conn.Close()
+	}, nil
 }
 
 func (s *Store) Create(

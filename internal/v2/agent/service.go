@@ -138,6 +138,11 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 		return Run{}, err
 	}
 	if request.RequestID != "" {
+		unlock, lockErr := s.store.LockRequest(ctx, workspace.ID, userID, thread.ID, request.RequestID)
+		if lockErr != nil {
+			return Run{}, lockErr
+		}
+		defer unlock()
 		existing, existingErr := s.store.ByRequestID(
 			ctx, workspace.ID, userID, thread.ID, request.RequestID,
 		)
