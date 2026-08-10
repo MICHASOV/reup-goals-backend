@@ -57,6 +57,17 @@ const server = createServer(async (request, response) => {
     writeJSON(response, 404, { error: "not_found" });
   } catch (error) {
     const message = error instanceof Error ? error.message : "agent_runtime_failed";
+    const cause = error instanceof Error && error.cause instanceof Error
+      ? error.cause.message
+      : "";
+    console.error(JSON.stringify({
+      level: "error",
+      event: "agent_runtime_request_failed",
+      method: request.method || "",
+      path: request.url || "",
+      error: message.slice(0, 1000),
+      cause: cause.slice(0, 1000),
+    }));
     const status = message === "request_too_large"
       ? 413
       : error instanceof SyntaxError || error instanceof ZodError

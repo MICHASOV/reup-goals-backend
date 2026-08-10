@@ -184,6 +184,38 @@ if [ "${#runtime_secret}" -lt 32 ]; then
   runtime_secret=$(openssl rand -hex 32)
 fi
 
+# Production can still run on the legacy host where direct OpenAI egress is
+# unavailable. Select the route by making an authenticated provider request;
+# a process-only health check cannot detect this failure mode.
+openai_status() {
+  local route=$1
+  local -a proxy_args=()
+  if [ "$route" != direct ]; then
+    proxy_args=(--socks5-hostname 127.0.0.1:10808)
+  fi
+  curl --silent --show-error --output /dev/null \
+    --connect-timeout 10 --max-time 30 \
+    --retry 1 --retry-all-errors \
+    "${proxy_args[@]}" \
+    --header "Authorization: Bearer ${openai_api_key}" \
+    --write-out '%{http_code}' \
+    https://api.openai.com/v1/models/gpt-5.6-luna || true
+}
+
+direct_status=$(openai_status direct)
+if [ "$direct_status" = 200 ]; then
+  openai_proxy_url=direct
+  echo "OpenAI production egress: direct"
+else
+  proxy_status=$(openai_status proxy)
+  if [ "$proxy_status" != 200 ]; then
+    echo "OpenAI is unavailable from production (direct HTTP ${direct_status:-000}, protected route HTTP ${proxy_status:-000})." >&2
+    exit 1
+  fi
+  openai_proxy_url=socks5://127.0.0.1:10808
+  echo "OpenAI production egress: protected route"
+fi
+
 mkdir -p /etc/reup-goals "$dropin_dir"
 rm -rf "$agent_next"
 mkdir -p "$agent_next"
@@ -207,7 +239,7 @@ if [ -f "$agent_unit" ]; then cp -a "$agent_unit" "$agent_unit_backup"; fi
   printf 'GO_INTERNAL_URL=http://127.0.0.1:8080\n'
   printf 'AGENT_RUNTIME_SECRET=%s\n' "$runtime_secret"
   printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
-  printf 'OPENAI_PROXY_URL=direct\n'
+  printf 'OPENAI_PROXY_URL=%s\n' "$openai_proxy_url"
   printf 'AGENT_COMPACT_THRESHOLD=100000\n'
   printf 'AGENT_REASONING_EFFORT=high\n'
 } > "$agent_env"
@@ -293,7 +325,7 @@ Environment="OPENAI_MODEL=gpt-5.6-luna"
 Environment="OPENAI_AUDITOR_MODEL=gpt-5.6-luna"
 Environment="OPENAI_ADVISOR_MODEL=gpt-5.6-luna"
 Environment="OPENAI_TASK_MODEL=gpt-5.6-luna"
-Environment="OPENAI_PROXY_URL=direct"
+Environment="OPENAI_PROXY_URL=${openai_proxy_url}"
 Environment="OPENAI_AUDITOR_COMPACT_THRESHOLD=24000"
 Environment="OPENAI_ADVISOR_COMPACT_THRESHOLD=24000"
 EOF
