@@ -84,6 +84,13 @@ for env_file in "$primary_env" "$legacy_env"; do
     set_env "$env_file" AGENT_RUNTIME_SECRET "$runtime_secret"
     set_env "$env_file" OPENAI_BASE_URL https://ai.reupgoals.pro/openai/v1
     set_env "$env_file" OPENAI_GATEWAY_SECRET "$gateway_secret"
+    # Keep enough PostgreSQL capacity for interactive API traffic. The worker
+    # count must remain below the pool cap because every user request shares
+    # the same process-level pool.
+    set_env "$env_file" DB_MAX_OPEN_CONNS 10
+    set_env "$env_file" DB_MAX_IDLE_CONNS 3
+    set_env "$env_file" AI_JOB_WORKERS 2
+    set_env "$env_file" AI_AGENT_JOB_WORKERS 4
     chmod 600 "$env_file"
   fi
 done
