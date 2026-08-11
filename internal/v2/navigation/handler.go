@@ -464,8 +464,18 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, boo
 				LIMIT 1
 			), '')
 		FROM v2_strategies strategy
-		WHERE strategy.workspace_id=$1 AND strategy.archived_at IS NULL
-		ORDER BY (strategy.status='active') DESC, strategy.version DESC, strategy.id DESC
+		WHERE strategy.workspace_id=$1
+			AND strategy.archived_at IS NULL
+			AND strategy.status IN ('draft', 'ready_for_review', 'active')
+		ORDER BY
+			CASE strategy.status
+				WHEN 'draft' THEN 1
+				WHEN 'ready_for_review' THEN 1
+				ELSE 3
+			END,
+			strategy.version DESC,
+			strategy.created_at DESC,
+			strategy.id DESC
 		LIMIT 1
 	`, workspaceID).Scan(&item.ID, &item.Status, &item.Version, &item.Title, &item.Summary, &item.CurrentStage)
 	if errors.Is(err, sql.ErrNoRows) {
