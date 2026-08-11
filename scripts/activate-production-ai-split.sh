@@ -6,9 +6,15 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 germany_target="${REUP_AI_SSH_TARGET:-root@167.233.230.212}"
 production_target="${REUP_PRODUCTION_SSH_TARGET:-reup}"
 secrets_file="$(mktemp)"
+release_worktree_parent="$(mktemp -d)"
+release_worktree="${release_worktree_parent}/release"
 
 cleanup() {
   rm -f "$secrets_file"
+  if [ -d "$release_worktree" ]; then
+    git -C "$repo_root" worktree remove --force "$release_worktree" >/dev/null 2>&1 || true
+  fi
+  rmdir "$release_worktree_parent" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 chmod 600 "$secrets_file"
@@ -91,7 +97,8 @@ gateway_secret=
 : > "$secrets_file"
 
 echo "Promoting the Russian backend and switching production AI traffic..."
+git -C "$repo_root" worktree add --detach "$release_worktree" HEAD >/dev/null
 REUP_PRODUCTION_SSH_TARGET="$production_target" \
-  "$repo_root/scripts/promote-production-backend.sh"
+  "$release_worktree/scripts/promote-production-backend.sh"
 
 echo "Production AI split is active."
