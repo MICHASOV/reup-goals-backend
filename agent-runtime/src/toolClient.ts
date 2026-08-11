@@ -1,6 +1,8 @@
 import type { AgentRuntimeEvent } from "./types.js";
+import { randomUUID } from "node:crypto";
 
 type RunAccess = {
+  runId: string;
   token: string;
   internalBaseURL: string;
   readCache: Map<string, unknown>;
@@ -20,9 +22,11 @@ const cacheableTools = new Set([
 ]);
 const metricSearchLimit = 8;
 
-export function setRunAccess(runId: string, token: string, signal?: AbortSignal): void {
+export function setRunAccess(runId: string, token: string, signal?: AbortSignal): string {
   const internalBaseURL = (process.env.GO_INTERNAL_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
-  runAccess.set(runId, {
+  const accessKey = `${runId}:${randomUUID()}`;
+  runAccess.set(accessKey, {
+    runId,
     token,
     internalBaseURL,
     readCache: new Map(),
@@ -30,14 +34,15 @@ export function setRunAccess(runId: string, token: string, signal?: AbortSignal)
     readCounts: new Map(),
     signal,
   });
+  return accessKey;
 }
 
-export function clearRunAccess(runId: string): void {
-  runAccess.delete(runId);
+export function clearRunAccess(accessKey: string): void {
+  runAccess.delete(accessKey);
 }
 
-function accessFor(runId: string): RunAccess {
-  const access = runAccess.get(runId);
+function accessFor(accessKey: string): RunAccess {
+  const access = runAccess.get(accessKey);
   if (!access) {
     throw new Error("agent_run_access_missing");
   }
@@ -45,14 +50,14 @@ function accessFor(runId: string): RunAccess {
 }
 
 export async function callBusinessTool(
-  runId: string,
+  accessKey: string,
   toolName: string,
   callId: string,
   input: Record<string, unknown>,
 ): Promise<unknown> {
-  const access = accessFor(runId);
+  const access = accessFor(accessKey);
   if (!cacheableTools.has(toolName)) {
-    return callBusinessToolUncached(access, runId, toolName, callId, input);
+    return callBusinessToolUncached(access, toolName, callId, input);
   }
 
   const cacheKey = `${toolName}:${stableStringify(input)}`;
@@ -73,7 +78,7 @@ export async function callBusinessTool(
     access.readCounts.set(toolName, searches + 1);
   }
 
-  const request = callBusinessToolUncached(access, runId, toolName, callId, input)
+  const request = callBusinessToolUncached(access, toolName, callId, input)
     .then((result) => {
       access.readCache.set(cacheKey, result);
       return result;
@@ -85,14 +90,13 @@ export async function callBusinessTool(
 
 async function callBusinessToolUncached(
   access: RunAccess,
-  runId: string,
   toolName: string,
   callId: string,
   input: Record<string, unknown>,
 ): Promise<unknown> {
   const url = `${access.internalBaseURL}/internal/agent/tools/${encodeURIComponent(toolName)}`;
   const body = JSON.stringify({
-    run_id: runId,
+    run_id: access.runId,
     tool_call_id: callId,
     input,
   });
@@ -160,10 +164,10 @@ function requestSignal(signal: AbortSignal | undefined, timeoutMilliseconds: num
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-export async function publishEvent(runId: string, event: AgentRuntimeEvent): Promise<void> {
-  const access = accessFor(runId);
+export async function publishEvent(accessKey: string, event: AgentRuntimeEvent): Promise<void> {
+  const access = accessFor(accessKey);
   try {
-    const response = await fetch(`${access.internalBaseURL}/internal/agent/runs/${encodeURIComponent(runId)}/events`, {
+    const response = await fetch(`${access.internalBaseURL}/internal/agent/runs/${encodeURIComponent(access.runId)}/events`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${access.token}`,

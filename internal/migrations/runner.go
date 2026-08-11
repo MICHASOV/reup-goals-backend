@@ -4004,6 +4004,56 @@ var migrations = []Migration{
 				WHERE client_request_id <> '';
 		`,
 	},
+	{
+		ID: "20260811_082_agent_execution_fencing",
+		SQL: `
+			ALTER TABLE v2_agent_runs
+				ADD COLUMN IF NOT EXISTS execution_generation INTEGER NOT NULL DEFAULT 0;
+
+			WITH duplicate_jobs AS (
+				SELECT id,
+					ROW_NUMBER() OVER (
+						PARTITION BY queue_name, job_type, workspace_id, dedupe_key
+						ORDER BY CASE WHEN status='running' THEN 0 ELSE 1 END, id
+					) AS row_number
+				FROM v2_background_jobs
+				WHERE dedupe_key <> '' AND status IN ('queued', 'running')
+			)
+			UPDATE v2_background_jobs
+			SET status='canceled', locked_at=NULL, locked_by='',
+				last_error='Canceled duplicate active job during execution fencing migration.',
+				updated_at=NOW()
+			WHERE id IN (SELECT id FROM duplicate_jobs WHERE row_number > 1);
+
+			DROP INDEX IF EXISTS idx_v2_background_jobs_active_dedupe;
+			CREATE UNIQUE INDEX idx_v2_background_jobs_active_dedupe
+				ON v2_background_jobs (queue_name, job_type, workspace_id, dedupe_key)
+				WHERE dedupe_key <> '' AND status='queued';
+
+			WITH duplicate_messages AS (
+				SELECT message.id,
+					ROW_NUMBER() OVER (
+						PARTITION BY message.workspace_id, message.metadata_json->>'agent_run_id'
+						ORDER BY
+							CASE WHEN message.id=run.assistant_message_id THEN 0 ELSE 1 END,
+							message.id DESC
+					) AS row_number
+				FROM v2_tactics_chat_messages message
+				LEFT JOIN v2_agent_runs run
+					ON run.workspace_id=message.workspace_id
+					AND run.public_id=message.metadata_json->>'agent_run_id'
+				WHERE message.role='assistant'
+					AND COALESCE(message.metadata_json->>'agent_run_id', '') <> ''
+			)
+			UPDATE v2_tactics_chat_messages
+			SET metadata_json=metadata_json-'agent_run_id'
+			WHERE id IN (SELECT id FROM duplicate_messages WHERE row_number > 1);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_tactics_chat_messages_agent_run
+				ON v2_tactics_chat_messages (workspace_id, (metadata_json->>'agent_run_id'))
+				WHERE role='assistant' AND COALESCE(metadata_json->>'agent_run_id', '') <> '';
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

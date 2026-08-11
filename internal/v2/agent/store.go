@@ -118,7 +118,7 @@ func (s *Store) Create(
 			agent_release_id, session_generation, migrated_from_release_id, continuity_context,
 			input_text, output_text, partial_output, previous_response_id,
 			conversation_id, vector_store_id, state_ciphertext, error_text,
-			reservation_id, usage_requests, usage_input_tokens, usage_output_tokens,
+			reservation_id, execution_generation, usage_requests, usage_input_tokens, usage_output_tokens,
 			usage_total_tokens, started_at, completed_at, created_at, updated_at
 	`, publicID, workspaceID, userID, threadID, userMessageID, scope.Type, scope.ID,
 		scope.Label, StatusQueued, model, PromptVersion, releaseID, sessionGeneration,
@@ -173,23 +173,20 @@ func (s *Store) HasActiveJob(ctx context.Context, run Run, queueName string) (bo
 	return active, err
 }
 
-func (s *Store) SetRunning(ctx context.Context, runID int64, reservationID string) error {
-	result, err := s.dbx.ExecContext(ctx, `
+func (s *Store) SetRunning(ctx context.Context, runID int64, reservationID string) (int, error) {
+	var generation int
+	err := s.dbx.QueryRowContext(ctx, `
 		UPDATE v2_agent_runs
-		SET status=$2, reservation_id=$3, error_text='', started_at=COALESCE(started_at, NOW()), updated_at=NOW()
+		SET status=$2, reservation_id=$3, error_text='',
+			execution_generation=execution_generation+1,
+			started_at=COALESCE(started_at, NOW()), updated_at=NOW()
 		WHERE id=$1 AND status IN ($4, $5)
-	`, runID, StatusRunning, reservationID, StatusQueued, StatusFailed)
-	if err != nil {
-		return err
+		RETURNING execution_generation
+	`, runID, StatusRunning, reservationID, StatusQueued, StatusFailed).Scan(&generation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, errors.New("agent_run_not_claimable")
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected != 1 {
-		return errors.New("agent_run_not_claimable")
-	}
-	return nil
+	return generation, err
 }
 
 func (s *Store) RequeueInterrupted(ctx context.Context, runID int64) error {
@@ -202,15 +199,27 @@ func (s *Store) RequeueInterrupted(ctx context.Context, runID int64) error {
 	return err
 }
 
-func (s *Store) SetWaiting(
+func (s *Store) IsCurrentExecution(ctx context.Context, runID int64, generation int) (bool, error) {
+	var current bool
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM v2_agent_runs
+			WHERE id=$1 AND status=$2 AND execution_generation=$3
+		)
+	`, runID, StatusRunning, generation).Scan(&current)
+	return current, err
+}
+
+func (s *Store) SetWaitingExecution(
 	ctx context.Context,
 	runID int64,
+	generation int,
 	partialOutput string,
 	previousResponseID string,
 	stateCiphertext string,
 	usage RuntimeUsage,
 ) error {
-	_, err := s.dbx.ExecContext(ctx, `
+	result, err := s.dbx.ExecContext(ctx, `
 		UPDATE v2_agent_runs
 		SET status=$2, partial_output=$3, previous_response_id=$4,
 			state_ciphertext=$5, usage_requests=usage_requests+$6,
@@ -218,11 +227,21 @@ func (s *Store) SetWaiting(
 			usage_output_tokens=usage_output_tokens+$8,
 			usage_total_tokens=usage_total_tokens+$9,
 			reservation_id='', error_text='', updated_at=NOW()
-		WHERE id=$1 AND status=$10
+		WHERE id=$1 AND status=$10 AND execution_generation=$11
 	`, runID, StatusWaitingApproval, truncate(partialOutput, 120000), previousResponseID,
 		stateCiphertext, usage.Requests, usage.InputTokens, usage.OutputTokens, usage.TotalTokens,
-		StatusRunning)
-	return err
+		StatusRunning, generation)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return ErrExecutionSuperseded
+	}
+	return nil
 }
 
 func (s *Store) SetCompleted(
@@ -248,6 +267,39 @@ func (s *Store) SetCompleted(
 	return err
 }
 
+func (s *Store) SetCompletedExecution(
+	ctx context.Context,
+	runID int64,
+	generation int,
+	output string,
+	partialOutput string,
+	previousResponseID string,
+	usage RuntimeUsage,
+) error {
+	result, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_agent_runs
+		SET status=$2, output_text=$3, partial_output=$4, previous_response_id=$5,
+			state_ciphertext='', reservation_id='',
+			usage_requests=usage_requests+$6, usage_input_tokens=usage_input_tokens+$7,
+			usage_output_tokens=usage_output_tokens+$8, usage_total_tokens=usage_total_tokens+$9,
+			error_text='', completed_at=NOW(), updated_at=NOW()
+		WHERE id=$1 AND status=$10 AND execution_generation=$11
+	`, runID, StatusCompleted, truncate(output, 120000), truncate(partialOutput, 120000),
+		previousResponseID, usage.Requests, usage.InputTokens, usage.OutputTokens,
+		usage.TotalTokens, StatusRunning, generation)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return ErrExecutionSuperseded
+	}
+	return nil
+}
+
 func (s *Store) SetFailed(ctx context.Context, runID int64, errorText string, terminal bool) error {
 	status := StatusQueued
 	if terminal {
@@ -260,6 +312,25 @@ func (s *Store) SetFailed(ctx context.Context, runID int64, errorText string, te
 			updated_at=NOW()
 		WHERE id=$1 AND status NOT IN ($5, $6)
 	`, runID, status, truncate(errorText, 4000), StatusFailed, StatusCanceled, StatusCompleted)
+	return err
+}
+
+func (s *Store) SetFailedExecution(
+	ctx context.Context,
+	runID int64,
+	generation int,
+	errorText string,
+	terminal bool,
+) error {
+	status := StatusQueued
+	if terminal {
+		status = StatusFailed
+	}
+	_, err := s.dbx.ExecContext(ctx, `
+		UPDATE v2_agent_runs
+		SET status=$2, error_text=$3, reservation_id='', updated_at=NOW()
+		WHERE id=$1 AND status=$4 AND execution_generation=$5
+	`, runID, status, truncate(errorText, 4000), StatusRunning, generation)
 	return err
 }
 
@@ -499,7 +570,7 @@ const runSelect = `
 			agent_release_id, session_generation, migrated_from_release_id, continuity_context,
 			input_text, output_text, partial_output, previous_response_id,
 		conversation_id, vector_store_id, state_ciphertext, error_text,
-		reservation_id, usage_requests, usage_input_tokens, usage_output_tokens,
+		reservation_id, execution_generation, usage_requests, usage_input_tokens, usage_output_tokens,
 		usage_total_tokens, started_at, completed_at, created_at, updated_at
 	FROM v2_agent_runs
 `
@@ -518,6 +589,7 @@ func scanRun(row rowScanner) (Run, error) {
 		&item.ContinuityContext, &item.InputText,
 		&item.OutputText, &item.PartialOutput, &item.PreviousResponseID, &item.ConversationID,
 		&item.VectorStoreID, &item.StateCiphertext, &item.ErrorText, &item.ReservationID,
+		&item.ExecutionGeneration,
 		&item.UsageRequests, &item.UsageInputTokens, &item.UsageOutputTokens,
 		&item.UsageTotalTokens, &item.StartedAt, &item.CompletedAt, &item.CreatedAt, &item.UpdatedAt,
 	)

@@ -2,10 +2,13 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"reup-goals-backend/internal/v2/tactics"
 )
+
+var ErrExecutionSuperseded = errors.New("agent_execution_superseded")
 
 const (
 	StatusQueued          = "queued"
@@ -29,42 +32,43 @@ type Scope struct {
 }
 
 type Run struct {
-	ID                 int64                        `json:"-"`
-	PublicID           string                       `json:"id"`
-	WorkspaceID        int                          `json:"workspace_id"`
-	UserID             int                          `json:"user_id"`
-	ThreadID           int                          `json:"thread_id"`
-	UserMessageID      int                          `json:"user_message_id,omitempty"`
-	AssistantMessageID int                          `json:"assistant_message_id,omitempty"`
-	Scope              Scope                        `json:"scope"`
-	Status             string                       `json:"status"`
-	Model              string                       `json:"model"`
-	PromptVersion      string                       `json:"prompt_version"`
-	AgentReleaseID     string                       `json:"agent_release_id"`
-	SessionGeneration  int                          `json:"session_generation"`
-	MigratedFrom       string                       `json:"migrated_from_release_id,omitempty"`
-	ContinuityContext  string                       `json:"-"`
-	InputText          string                       `json:"-"`
-	OutputText         string                       `json:"output_text"`
-	PartialOutput      string                       `json:"partial_output"`
-	PreviousResponseID string                       `json:"-"`
-	ConversationID     string                       `json:"-"`
-	VectorStoreID      string                       `json:"-"`
-	StateCiphertext    string                       `json:"-"`
-	ErrorText          string                       `json:"error,omitempty"`
-	ReservationID      string                       `json:"-"`
-	UsageRequests      int                          `json:"usage_requests"`
-	UsageInputTokens   int                          `json:"usage_input_tokens"`
-	UsageOutputTokens  int                          `json:"usage_output_tokens"`
-	UsageTotalTokens   int                          `json:"usage_total_tokens"`
-	StartedAt          *time.Time                   `json:"started_at,omitempty"`
-	CompletedAt        *time.Time                   `json:"completed_at,omitempty"`
-	CreatedAt          time.Time                    `json:"created_at"`
-	UpdatedAt          time.Time                    `json:"updated_at"`
-	Events             []Event                      `json:"events"`
-	Approvals          []Approval                   `json:"approvals"`
-	ProposalMessageID  int                          `json:"proposal_message_id,omitempty"`
-	ProposedChanges    []tactics.TacticsDraftChange `json:"proposed_changes"`
+	ID                  int64                        `json:"-"`
+	PublicID            string                       `json:"id"`
+	WorkspaceID         int                          `json:"workspace_id"`
+	UserID              int                          `json:"user_id"`
+	ThreadID            int                          `json:"thread_id"`
+	UserMessageID       int                          `json:"user_message_id,omitempty"`
+	AssistantMessageID  int                          `json:"assistant_message_id,omitempty"`
+	Scope               Scope                        `json:"scope"`
+	Status              string                       `json:"status"`
+	Model               string                       `json:"model"`
+	PromptVersion       string                       `json:"prompt_version"`
+	AgentReleaseID      string                       `json:"agent_release_id"`
+	SessionGeneration   int                          `json:"session_generation"`
+	MigratedFrom        string                       `json:"migrated_from_release_id,omitempty"`
+	ContinuityContext   string                       `json:"-"`
+	InputText           string                       `json:"-"`
+	OutputText          string                       `json:"output_text"`
+	PartialOutput       string                       `json:"partial_output"`
+	PreviousResponseID  string                       `json:"-"`
+	ConversationID      string                       `json:"-"`
+	VectorStoreID       string                       `json:"-"`
+	StateCiphertext     string                       `json:"-"`
+	ErrorText           string                       `json:"error,omitempty"`
+	ReservationID       string                       `json:"-"`
+	ExecutionGeneration int                          `json:"-"`
+	UsageRequests       int                          `json:"usage_requests"`
+	UsageInputTokens    int                          `json:"usage_input_tokens"`
+	UsageOutputTokens   int                          `json:"usage_output_tokens"`
+	UsageTotalTokens    int                          `json:"usage_total_tokens"`
+	StartedAt           *time.Time                   `json:"started_at,omitempty"`
+	CompletedAt         *time.Time                   `json:"completed_at,omitempty"`
+	CreatedAt           time.Time                    `json:"created_at"`
+	UpdatedAt           time.Time                    `json:"updated_at"`
+	Events              []Event                      `json:"events"`
+	Approvals           []Approval                   `json:"approvals"`
+	ProposalMessageID   int                          `json:"proposal_message_id,omitempty"`
+	ProposedChanges     []tactics.TacticsDraftChange `json:"proposed_changes"`
 }
 
 type Event struct {

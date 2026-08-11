@@ -16,16 +16,21 @@ import (
 )
 
 type runTokenClaims struct {
-	RunID       string `json:"run_id"`
-	WorkspaceID int    `json:"workspace_id"`
-	UserID      int    `json:"user_id"`
-	ExpiresAt   int64  `json:"expires_at"`
+	RunID               string `json:"run_id"`
+	WorkspaceID         int    `json:"workspace_id"`
+	UserID              int    `json:"user_id"`
+	ExecutionGeneration int    `json:"execution_generation"`
+	ExpiresAt           int64  `json:"expires_at"`
 }
 
 func signRunToken(secret string, run Run, ttl time.Duration) (string, error) {
+	if run.ExecutionGeneration <= 0 {
+		return "", errors.New("invalid_agent_execution_generation")
+	}
 	claims := runTokenClaims{
 		RunID: run.PublicID, WorkspaceID: run.WorkspaceID, UserID: run.UserID,
-		ExpiresAt: time.Now().Add(ttl).Unix(),
+		ExecutionGeneration: run.ExecutionGeneration,
+		ExpiresAt:           time.Now().Add(ttl).Unix(),
 	}
 	raw, err := json.Marshal(claims)
 	if err != nil {
@@ -58,7 +63,8 @@ func verifyRunToken(secret string, token string, expectedRunID string) (runToken
 	if err := json.Unmarshal(raw, &claims); err != nil {
 		return runTokenClaims{}, errors.New("invalid_agent_run_token")
 	}
-	if claims.RunID == "" || claims.RunID != expectedRunID || claims.WorkspaceID <= 0 || claims.UserID <= 0 {
+	if claims.RunID == "" || claims.RunID != expectedRunID || claims.WorkspaceID <= 0 ||
+		claims.UserID <= 0 || claims.ExecutionGeneration <= 0 {
 		return runTokenClaims{}, errors.New("invalid_agent_run_token")
 	}
 	if time.Now().Unix() >= claims.ExpiresAt {

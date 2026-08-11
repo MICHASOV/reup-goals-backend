@@ -687,7 +687,10 @@ func (s *Service) handleExecuteJob(ctx context.Context, job jobs.Job) error {
 	if err != nil {
 		return err
 	}
-	if run.Status == StatusCompleted || run.Status == StatusWaitingApproval || run.Status == StatusCanceled {
+	if run.Status == StatusCompleted {
+		return s.repairCompletedMessage(ctx, run)
+	}
+	if run.Status == StatusWaitingApproval || run.Status == StatusCanceled {
 		return nil
 	}
 	if run.Status == StatusRunning {
@@ -714,11 +717,13 @@ func (s *Service) handleExecuteJob(ctx context.Context, job jobs.Job) error {
 	if stop {
 		return nil
 	}
-	if err := s.store.SetRunning(ctx, run.ID, reservationID); err != nil {
+	generation, err := s.store.SetRunning(ctx, run.ID, reservationID)
+	if err != nil {
 		_ = s.billing.Settle(context.WithoutCancel(ctx), reservationID, false, 0)
 		return s.failBeforeReservation(ctx, run, job, err)
 	}
 	run.ReservationID = reservationID
+	run.ExecutionGeneration = generation
 
 	vectorStoreID := run.VectorStoreID
 	if vectorStoreID == "" && s.contextIndex != nil {
@@ -773,11 +778,11 @@ func (s *Service) handleExecuteJob(ctx context.Context, job jobs.Job) error {
 	if latestErr != nil {
 		return s.failAttempt(ctx, run, reservationID, job, latestErr)
 	}
-	if latest.Status == StatusCanceled {
+	if latest.Status == StatusCanceled || latest.ExecutionGeneration != run.ExecutionGeneration {
 		s.settleReservation(ctx, reservationID, false, 0)
 		return nil
 	}
-	return s.finishRuntimeResult(ctx, run, reservationID, result, time.Since(started))
+	return s.finishRuntimeResult(ctx, run, reservationID, result, time.Since(started), generation)
 }
 
 func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
@@ -789,7 +794,10 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 	if err != nil {
 		return err
 	}
-	if run.Status == StatusCompleted || run.Status == StatusWaitingApproval || run.Status == StatusCanceled {
+	if run.Status == StatusCompleted {
+		return s.repairCompletedMessage(ctx, run)
+	}
+	if run.Status == StatusWaitingApproval || run.Status == StatusCanceled {
 		return nil
 	}
 	if run.Status == StatusRunning {
@@ -819,9 +827,11 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 	}
 	// Approval is a continuation of an already counted user message. It may
 	// invoke the provider again, but must not consume a second weekly allowance.
-	if err := s.store.SetRunning(ctx, run.ID, ""); err != nil {
+	generation, err := s.store.SetRunning(ctx, run.ID, "")
+	if err != nil {
 		return err
 	}
+	run.ExecutionGeneration = generation
 	approvals, err := s.store.Approvals(ctx, run.ID)
 	if err != nil {
 		return s.failAttempt(ctx, run, "", job, err)
@@ -847,10 +857,10 @@ func (s *Service) handleResumeJob(ctx context.Context, job jobs.Job) error {
 	if latestErr != nil {
 		return s.failAttempt(ctx, run, "", job, latestErr)
 	}
-	if latest.Status == StatusCanceled {
+	if latest.Status == StatusCanceled || latest.ExecutionGeneration != run.ExecutionGeneration {
 		return nil
 	}
-	return s.finishRuntimeResult(ctx, run, "", result, time.Since(started))
+	return s.finishRuntimeResult(ctx, run, "", result, time.Since(started), generation)
 }
 
 func (s *Service) startBillableRun(ctx context.Context, run Run) (string, bool, error) {
@@ -876,8 +886,19 @@ func (s *Service) failAttempt(
 	runErr error,
 ) error {
 	s.settleReservation(ctx, reservationID, false, 0)
+	current, currentErr := s.store.IsCurrentExecution(
+		context.WithoutCancel(ctx), run.ID, run.ExecutionGeneration,
+	)
+	if currentErr != nil {
+		return currentErr
+	}
+	if !current {
+		return nil
+	}
 	terminal := isPermanentRuntimeError(runErr) || job.Attempts >= job.MaxAttempts
-	_ = s.store.SetFailed(context.WithoutCancel(ctx), run.ID, runErr.Error(), terminal)
+	_ = s.store.SetFailedExecution(
+		context.WithoutCancel(ctx), run.ID, run.ExecutionGeneration, runErr.Error(), terminal,
+	)
 	if terminal {
 		_ = s.store.InsertEvent(context.WithoutCancel(ctx), run.ID, RuntimeEvent{
 			Type: "run_failed", Stage: "failed", Title: "Не удалось завершить запрос",
@@ -925,7 +946,16 @@ func (s *Service) finishRuntimeResult(
 	reservationID string,
 	result RuntimeResult,
 	duration time.Duration,
+	generation int,
 ) error {
+	current, err := s.store.IsCurrentExecution(ctx, run.ID, generation)
+	if err != nil {
+		return err
+	}
+	if !current {
+		s.settleReservation(ctx, reservationID, false, 0)
+		return nil
+	}
 	if reservationID != "" {
 		settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
 		settleErr := s.billing.Settle(settleCtx, reservationID, true, quotaTokenUsage(result.Usage))
@@ -942,25 +972,53 @@ func (s *Service) finishRuntimeResult(
 		}
 	}
 	if result.Status == StatusWaitingApproval {
-		return s.saveApprovalTurn(ctx, run, result)
+		return s.saveApprovalTurn(ctx, run, result, generation)
 	}
 	if result.Status != StatusCompleted {
 		return errors.New("invalid_agent_runtime_status")
-	}
-	thread, err := s.tactics.AdvisorThread(ctx, run.WorkspaceID, run.UserID, run.ThreadID)
-	if err != nil {
-		return err
 	}
 	output := strings.TrimSpace(result.Output)
 	if output == "" {
 		output = "Готово. Я проверил контекст, но не сформировал содержательный ответ. Повторите запрос."
 	}
-	assistantMessageID, err := s.tactics.CreateScopedChatMessage(
-		ctx, run.WorkspaceID, nil, "assistant", output,
+	if err := s.store.SetCompletedExecution(
+		ctx, run.ID, generation, output, result.PartialOutput,
+		result.PreviousResponseID, result.Usage,
+	); err != nil {
+		if errors.Is(err, ErrExecutionSuperseded) {
+			return nil
+		}
+		return err
+	}
+	run.Status = StatusCompleted
+	run.OutputText = output
+	return s.repairCompletedMessage(ctx, run)
+}
+
+func (s *Service) repairCompletedMessage(ctx context.Context, run Run) error {
+	if run.AssistantMessageID > 0 {
+		return nil
+	}
+	output := strings.TrimSpace(run.OutputText)
+	if output == "" {
+		return errors.New("agent_completed_output_missing")
+	}
+	thread, err := s.tactics.AdvisorThread(ctx, run.WorkspaceID, run.UserID, run.ThreadID)
+	if err != nil {
+		return err
+	}
+	assistantMessageID, err := s.tactics.CreateScopedAgentChatMessage(
+		ctx,
+		run.WorkspaceID,
+		output,
 		map[string]any{"agent_runtime": true, "agent_run_id": run.PublicID},
 		thread.ConversationScope(),
+		run.PublicID,
 	)
 	if err != nil {
+		return err
+	}
+	if err := s.store.SetAssistantMessageID(ctx, run.ID, assistantMessageID); err != nil {
 		return err
 	}
 	if run.Scope.Type == "strategy" && s.strategy != nil {
@@ -969,16 +1027,18 @@ func (s *Service) finishRuntimeResult(
 			"agent_run_id":       run.PublicID,
 			"tactics_message_id": assistantMessageID,
 		}); err != nil {
-			return err
+			log.Printf("[WARN] agent strategy mirror failed run_id=%s: %v", run.PublicID, err)
 		}
 	}
-	return s.store.SetCompleted(
-		ctx, run.ID, output, result.PartialOutput, result.PreviousResponseID,
-		assistantMessageID, result.Usage,
-	)
+	return nil
 }
 
-func (s *Service) saveApprovalTurn(ctx context.Context, run Run, result RuntimeResult) error {
+func (s *Service) saveApprovalTurn(
+	ctx context.Context,
+	run Run,
+	result RuntimeResult,
+	generation int,
+) error {
 	if len(result.Interruptions) == 0 || strings.TrimSpace(result.State) == "" {
 		return errors.New("agent_approval_state_incomplete")
 	}
@@ -1039,12 +1099,13 @@ func (s *Service) saveApprovalTurn(ctx context.Context, run Run, result RuntimeR
 	if message == "" {
 		message = "Подготовил изменения. Проверьте их перед добавлением в рабочее пространство."
 	}
-	assistantMessageID, err := s.tactics.CreateScopedChatMessage(
-		ctx, run.WorkspaceID, nil, "assistant", message,
+	assistantMessageID, err := s.tactics.CreateScopedAgentChatMessage(
+		ctx, run.WorkspaceID, message,
 		map[string]any{
 			"agent_runtime": true, "agent_run_id": run.PublicID, "draft_changes": changes,
 		},
 		thread.ConversationScope(),
+		run.PublicID,
 	)
 	if err != nil {
 		return err
@@ -1086,8 +1147,9 @@ func (s *Service) saveApprovalTurn(ctx context.Context, run Run, result RuntimeR
 	`, run.ID, assistantMessageID); err != nil {
 		return err
 	}
-	return s.store.SetWaiting(
-		ctx, run.ID, result.PartialOutput, result.PreviousResponseID, ciphertext, result.Usage,
+	return s.store.SetWaitingExecution(
+		ctx, run.ID, generation, result.PartialOutput, result.PreviousResponseID,
+		ciphertext, result.Usage,
 	)
 }
 
@@ -1347,6 +1409,9 @@ func (s *Service) internalRun(ctx context.Context, publicID string, token string
 	}
 	if run.WorkspaceID != claims.WorkspaceID || run.UserID != claims.UserID {
 		return Run{}, errors.New("invalid_agent_run_token")
+	}
+	if run.Status != StatusRunning || run.ExecutionGeneration != claims.ExecutionGeneration {
+		return Run{}, ErrExecutionSuperseded
 	}
 	return run, nil
 }

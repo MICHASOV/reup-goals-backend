@@ -414,8 +414,8 @@ func (m *Manager) fail(ctx context.Context, job Job, jobErr error) error {
 	_, err := m.dbx.ExecContext(ctx, `
 		UPDATE v2_background_jobs
 		SET status=$2, not_before=$3, locked_at=NULL, locked_by='', last_error=$4, updated_at=NOW()
-		WHERE id=$1 AND queue_name=$5 AND status <> $6
-	`, job.ID, status, notBefore, truncateError(jobErr), m.namespace, StatusCanceled)
+		WHERE id=$1 AND queue_name=$5 AND status=$6 AND locked_by=$7
+	`, job.ID, status, notBefore, truncateError(jobErr), m.namespace, StatusRunning, m.workerID)
 	if status == StatusFailed {
 		log.Printf("[ERROR] background job failed permanently id=%d type=%s attempts=%d: %v", job.ID, job.Type, job.Attempts, jobErr)
 	}

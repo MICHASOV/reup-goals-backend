@@ -147,14 +147,14 @@ function itemTool(event: RunItemStreamEvent): { name: string; callId: string } {
 }
 
 async function consumeStream(
-  runId: string,
+  accessKey: string,
   stream: AdvisorStream,
   events: AgentRuntimeEvent[],
 ): Promise<string> {
   let partialOutput = "";
   const emit = async (event: AgentRuntimeEvent) => {
     events.push(event);
-    await publishEvent(runId, event);
+    await publishEvent(accessKey, event);
   };
 
   for await (const event of stream as AsyncIterable<RunStreamEvent>) {
@@ -234,7 +234,7 @@ function usageResult(stream: AdvisorStream) {
 }
 
 async function finalize(
-  runId: string,
+  accessKey: string,
   stream: AdvisorStream,
   partialOutput: string,
   events: AgentRuntimeEvent[],
@@ -259,7 +259,7 @@ async function finalize(
     created_at: now(),
   };
   events.push(completedEvent);
-  await publishEvent(runId, completedEvent);
+  await publishEvent(accessKey, completedEvent);
   return {
     status: "completed",
     output: String(stream.finalOutput || partialOutput || "").trim(),
@@ -272,7 +272,7 @@ async function finalize(
 }
 
 export async function executeRun(request: ExecuteRunRequest, signal?: AbortSignal): Promise<AgentRuntimeResult> {
-  setRunAccess(request.run_id, request.run_token, signal);
+  const accessKey = setRunAccess(request.run_id, request.run_token, signal);
   const events: AgentRuntimeEvent[] = [];
   try {
     const started: AgentRuntimeEvent = {
@@ -282,9 +282,10 @@ export async function executeRun(request: ExecuteRunRequest, signal?: AbortSigna
       created_at: now(),
     };
     events.push(started);
-    await publishEvent(request.run_id, started);
+    await publishEvent(accessKey, started);
     const context: AgentRunContext = {
       runId: request.run_id,
+      accessKey,
       workspaceId: request.workspace_id,
       userId: request.user_id,
       participantRole: request.participant_role || "member",
@@ -300,25 +301,27 @@ export async function executeRun(request: ExecuteRunRequest, signal?: AbortSigna
       conversationId: request.conversation_id || undefined,
       signal,
     });
-    const partialOutput = await consumeStream(request.run_id, stream, events);
-    return await finalize(request.run_id, stream, partialOutput, events);
+    const partialOutput = await consumeStream(accessKey, stream, events);
+    return await finalize(accessKey, stream, partialOutput, events);
   } catch (error) {
     if (signal?.aborted) throw error;
     const failed = failureEvent(error);
     events.push(failed);
-    await publishEvent(request.run_id, failed);
+    await publishEvent(accessKey, failed);
     throw error;
   } finally {
-    clearRunAccess(request.run_id);
+    clearRunAccess(accessKey);
   }
 }
 
 export async function resumeRun(request: ResumeRunRequest, signal?: AbortSignal): Promise<AgentRuntimeResult> {
-  setRunAccess(request.run_id, request.run_token, signal);
+  const accessKey = setRunAccess(request.run_id, request.run_token, signal);
   const events: AgentRuntimeEvent[] = [];
   try {
     const agent = createAgent(request.model, request.vector_store_id);
     const state = await RunState.fromString<AgentRunContext, AdvisorAgent>(agent, request.state);
+    state._context.context.runId = request.run_id;
+    state._context.context.accessKey = accessKey;
     const decisions = new Map(request.decisions.map((decision) => [decision.call_id, decision.approved]));
     for (const interruption of state.getInterruptions() as RunToolApprovalItem[]) {
       const data = interruptionData(interruption);
@@ -331,15 +334,15 @@ export async function resumeRun(request: ResumeRunRequest, signal?: AbortSignal)
       maxTurns: request.max_turns || 120,
       signal,
     });
-    const partialOutput = await consumeStream(request.run_id, stream, events);
-    return await finalize(request.run_id, stream, partialOutput, events);
+    const partialOutput = await consumeStream(accessKey, stream, events);
+    return await finalize(accessKey, stream, partialOutput, events);
   } catch (error) {
     if (signal?.aborted) throw error;
     const failed = failureEvent(error, true);
     events.push(failed);
-    await publishEvent(request.run_id, failed);
+    await publishEvent(accessKey, failed);
     throw error;
   } finally {
-    clearRunAccess(request.run_id);
+    clearRunAccess(accessKey);
   }
 }

@@ -9,11 +9,11 @@ const scopedEntityType = z.enum(["workspace", "strategy", "department", "task"])
 
 function executeTool(toolName: string) {
   return async (input: unknown, context?: RunContext<AgentRunContext>, details?: { toolCall: { callId: string } }) => {
-    if (!context?.context.runId || !details?.toolCall.callId) {
+    if (!context?.context.accessKey || !details?.toolCall.callId) {
       throw new Error("agent_tool_context_missing");
     }
     return callBusinessTool(
-      context.context.runId,
+      context.context.accessKey,
       toolName,
       details.toolCall.callId,
       (input && typeof input === "object" ? input : {}) as Record<string, unknown>,

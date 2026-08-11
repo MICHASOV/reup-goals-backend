@@ -8,6 +8,7 @@ export type AgentScope = {
 
 export type AgentRunContext = {
   runId: string;
+  accessKey?: string;
   workspaceId: number;
   userId: number;
   participantRole: string;

@@ -74,7 +74,7 @@ func TestAgentRequestTextKeepsInterfaceCommandOutOfVisibleMessage(t *testing.T) 
 }
 
 func TestRunTokenRejectsTamperingAndExpiry(t *testing.T) {
-	run := Run{PublicID: "run_test", WorkspaceID: 12, UserID: 34}
+	run := Run{PublicID: "run_test", WorkspaceID: 12, UserID: 34, ExecutionGeneration: 7}
 	token, err := signRunToken(strings.Repeat("s", 40), run, time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +83,8 @@ func TestRunTokenRejectsTamperingAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claims.WorkspaceID != run.WorkspaceID || claims.UserID != run.UserID {
+	if claims.WorkspaceID != run.WorkspaceID || claims.UserID != run.UserID ||
+		claims.ExecutionGeneration != run.ExecutionGeneration {
 		t.Fatalf("unexpected claims: %#v", claims)
 	}
 	if _, err := verifyRunToken(strings.Repeat("x", 40), token, run.PublicID); err == nil {
@@ -98,6 +99,11 @@ func TestRunTokenRejectsTamperingAndExpiry(t *testing.T) {
 	}
 	if _, err := verifyRunToken(strings.Repeat("s", 40), expired, run.PublicID); err == nil {
 		t.Fatal("expired token must be rejected")
+	}
+	if _, err := signRunToken(strings.Repeat("s", 40), Run{
+		PublicID: "run_missing_generation", WorkspaceID: 12, UserID: 34,
+	}, time.Minute); err == nil {
+		t.Fatal("token without an execution generation must be rejected")
 	}
 }
 

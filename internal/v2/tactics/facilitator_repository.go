@@ -224,6 +224,52 @@ func (s *Store) CreateScopedChatMessage(ctx context.Context, workspaceID int, us
 	return id, err
 }
 
+// CreateScopedAgentChatMessage gives one agent run exactly one visible assistant
+// message. A retried queue job returns the already persisted message instead of
+// appending another model answer to the conversation.
+func (s *Store) CreateScopedAgentChatMessage(
+	ctx context.Context,
+	workspaceID int,
+	content string,
+	metadata map[string]any,
+	scope *TacticsMessageScope,
+	agentRunID string,
+) (int, error) {
+	agentRunID = strings.TrimSpace(agentRunID)
+	if agentRunID == "" {
+		return 0, errors.New("agent_run_id_required")
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["agent_run_id"] = agentRunID
+	scopeType, scopeID := tacticsScopeKey(scope)
+	var id int
+	err := s.dbx.QueryRowContext(ctx, `
+		INSERT INTO v2_tactics_chat_messages (
+			workspace_id, user_id, role, content, metadata_json, scope_type, scope_id
+		)
+		VALUES ($1, NULL, 'assistant', $2, $3, $4, $5)
+		ON CONFLICT DO NOTHING
+		RETURNING id
+	`, workspaceID, strings.TrimSpace(content), tacticsJSON(metadata), scopeType, scopeID).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	err = s.dbx.QueryRowContext(ctx, `
+		SELECT id
+		FROM v2_tactics_chat_messages
+		WHERE workspace_id=$1 AND role='assistant'
+			AND metadata_json->>'agent_run_id'=$2
+		ORDER BY id DESC
+		LIMIT 1
+	`, workspaceID, agentRunID).Scan(&id)
+	return id, err
+}
+
 func (s *Store) ChatMessages(ctx context.Context, workspaceID int, limit int) ([]TacticsChatMessage, error) {
 	return s.ScopedChatMessages(ctx, workspaceID, nil, limit)
 }
