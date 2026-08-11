@@ -4025,11 +4025,6 @@ var migrations = []Migration{
 				updated_at=NOW()
 			WHERE id IN (SELECT id FROM duplicate_jobs WHERE row_number > 1);
 
-			DROP INDEX IF EXISTS idx_v2_background_jobs_active_dedupe;
-			CREATE UNIQUE INDEX idx_v2_background_jobs_active_dedupe
-				ON v2_background_jobs (queue_name, job_type, workspace_id, dedupe_key)
-				WHERE dedupe_key <> '' AND status='queued';
-
 			WITH duplicate_messages AS (
 				SELECT message.id,
 					ROW_NUMBER() OVER (

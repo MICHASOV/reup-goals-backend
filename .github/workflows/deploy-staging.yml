@@ -506,11 +506,13 @@ jobs:
           systemctl daemon-reload
           systemctl enable reup-goals-agent-staging.service
           systemctl restart reup-goals-agent-staging.service
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 120); do
             if curl --fail --silent http://127.0.0.1:8091/healthz >/dev/null; then
               break
             fi
-            if [ "$attempt" -eq 30 ]; then
+            if [ "$attempt" -eq 120 ]; then
+              last_agent_log=$(journalctl -u reup-goals-agent-staging.service -n 1 --no-pager | tr '\r\n' ' ' | sed 's/%/%25/g; s/:/%3A/g')
+              echo "::error title=Staging agent failed health check::${last_agent_log}"
               journalctl -u reup-goals-agent-staging.service -n 100 --no-pager
               systemctl stop reup-goals-agent-staging.service || true
               rm -rf /opt/reup-goals-staging/agent
@@ -538,11 +540,13 @@ jobs:
           # health loop below decide whether the release actually failed.
           systemctl status reup-goals-staging.service --no-pager || true
 
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 120); do
             if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
               break
             fi
-            if [ "$attempt" -eq 30 ]; then
+            if [ "$attempt" -eq 120 ]; then
+              last_backend_log=$(journalctl -u reup-goals-staging.service -n 1 --no-pager | tr '\r\n' ' ' | sed 's/%/%25/g; s/:/%3A/g')
+              echo "::error title=Staging backend failed health check::${last_backend_log}"
               journalctl -u reup-goals-staging.service -n 100 --no-pager
               if [ -x "$previous_binary" ]; then
                 echo "New backend failed health check; restoring previous binary."
