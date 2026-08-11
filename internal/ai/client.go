@@ -25,6 +25,7 @@ import (
 type OpenAIClient struct {
 	APIKey          string
 	Model           string
+	BaseURL         string
 	ProxyURL        string
 	MaxOutputTokens int
 	governance      Governance
@@ -38,6 +39,7 @@ type openAIClientRuntime struct {
 }
 
 const maxOpenAIResponseBytes = 8 << 20
+const defaultOpenAIBaseURL = "https://api.openai.com/v1"
 
 func (c *OpenAIClient) ModelName() string {
 	return c.Model
@@ -62,9 +64,27 @@ func New(apiKey, model string, proxyURL ...string) *OpenAIClient {
 	return &OpenAIClient{
 		APIKey:   apiKey,
 		Model:    model,
+		BaseURL:  defaultOpenAIBaseURL,
 		ProxyURL: selectedProxyURL,
 		runtime:  &openAIClientRuntime{},
 	}
+}
+
+func (c *OpenAIClient) WithBaseURL(baseURL string) *OpenAIClient {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		baseURL = defaultOpenAIBaseURL
+	}
+	c.BaseURL = baseURL
+	return c
+}
+
+func (c *OpenAIClient) endpoint(path string) string {
+	baseURL := strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = defaultOpenAIBaseURL
+	}
+	return baseURL + "/" + strings.TrimLeft(path, "/")
 }
 
 func (c *OpenAIClient) WithMaxOutputTokens(maxOutputTokens int) *OpenAIClient {
@@ -353,7 +373,7 @@ func (c *OpenAIClient) TranscribeAudio(ctx context.Context, filename string, lan
 		"prompt": resolved.Instructions,
 	})
 	defer body.Close()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, "https://api.openai.com/v1/audio/transcriptions", body)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, c.endpoint("audio/transcriptions"), body)
 	if err != nil {
 		return "", fmt.Errorf("request error: %w", err)
 	}
@@ -468,7 +488,7 @@ func (c *OpenAIClient) generateResponseTextWithOptions(ctx context.Context, inst
 	req, err := http.NewRequestWithContext(
 		requestCtx,
 		http.MethodPost,
-		"https://api.openai.com/v1/responses",
+		c.endpoint("responses"),
 		bytes.NewBuffer(body),
 	)
 	if err != nil {
@@ -615,7 +635,7 @@ func (c *OpenAIClient) waitForBackgroundResponse(ctx context.Context, responseID
 	if responseID == "" {
 		return responsesResponse{}, fmt.Errorf("background response has no id")
 	}
-	endpoint := "https://api.openai.com/v1/responses/" + url.PathEscape(responseID)
+	endpoint := c.endpoint("responses/" + url.PathEscape(responseID))
 	consecutiveFailures := 0
 	for {
 		timer := time.NewTimer(2 * time.Second)
@@ -658,7 +678,7 @@ func (c *OpenAIClient) cancelBackgroundResponseAsync(responseID string) {
 		_ = c.doJSON(
 			ctx,
 			http.MethodPost,
-			"https://api.openai.com/v1/responses/"+url.PathEscape(responseID)+"/cancel",
+			c.endpoint("responses/"+url.PathEscape(responseID)+"/cancel"),
 			nil,
 			nil,
 		)
@@ -692,7 +712,7 @@ func (c *OpenAIClient) pruneConversationBeforeCompaction(ctx context.Context, co
 	items := conversationItemList{}
 	after := ""
 	for page := 0; page < 20; page++ {
-		endpoint := "https://api.openai.com/v1/conversations/" + url.PathEscape(conversationID) + "/items?limit=100&order=asc"
+		endpoint := c.endpoint("conversations/" + url.PathEscape(conversationID) + "/items?limit=100&order=asc")
 		if after != "" {
 			endpoint += "&after=" + url.QueryEscape(after)
 		}
@@ -709,8 +729,8 @@ func (c *OpenAIClient) pruneConversationBeforeCompaction(ctx context.Context, co
 	for _, itemID := range conversationItemIDsBeforeCompaction(items, compactionID) {
 		if err := c.deleteResource(
 			ctx,
-			"https://api.openai.com/v1/conversations/"+
-				url.PathEscape(conversationID)+"/items/"+url.PathEscape(itemID),
+			c.endpoint("conversations/"+
+				url.PathEscape(conversationID)+"/items/"+url.PathEscape(itemID)),
 		); err != nil {
 			return err
 		}
@@ -762,7 +782,7 @@ func normalizePromptCacheKey(value string) string {
 func (c *OpenAIClient) createConversation(ctx context.Context, resolved ResolvedCall) (string, error) {
 	payload := buildConversationRequest(resolved)
 	var parsed conversationResponse
-	if err := c.doJSON(ctx, http.MethodPost, "https://api.openai.com/v1/conversations", payload, &parsed); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, c.endpoint("conversations"), payload, &parsed); err != nil {
 		return "", fmt.Errorf("create conversation: %w", err)
 	}
 	if strings.TrimSpace(parsed.ID) == "" {
@@ -805,7 +825,7 @@ func (c *OpenAIClient) UploadFile(ctx context.Context, filename string, purpose 
 	defer cancel()
 	body, contentType := streamingMultipartBody(safeAudioFilename(filename), file, map[string]string{"purpose": purpose})
 	defer body.Close()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, "https://api.openai.com/v1/files", body)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, c.endpoint("files"), body)
 	if err != nil {
 		return OpenAIFile{}, fmt.Errorf("request error: %w", err)
 	}
@@ -839,7 +859,7 @@ func (c *OpenAIClient) UploadFile(ctx context.Context, filename string, purpose 
 func (c *OpenAIClient) CreateVectorStore(ctx context.Context, name string) (OpenAIVectorStore, error) {
 	payload := map[string]string{"name": strings.TrimSpace(name)}
 	var parsed OpenAIVectorStore
-	if err := c.doJSON(ctx, http.MethodPost, "https://api.openai.com/v1/vector_stores", payload, &parsed); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, c.endpoint("vector_stores"), payload, &parsed); err != nil {
 		return OpenAIVectorStore{}, err
 	}
 	if strings.TrimSpace(parsed.ID) == "" {
@@ -853,7 +873,7 @@ func (c *OpenAIClient) DeleteFile(ctx context.Context, fileID string) error {
 	if fileID == "" {
 		return nil
 	}
-	return c.deleteResource(ctx, "https://api.openai.com/v1/files/"+url.PathEscape(fileID))
+	return c.deleteResource(ctx, c.endpoint("files/"+url.PathEscape(fileID)))
 }
 
 func (c *OpenAIClient) DeleteVectorStore(ctx context.Context, vectorStoreID string) error {
@@ -861,7 +881,7 @@ func (c *OpenAIClient) DeleteVectorStore(ctx context.Context, vectorStoreID stri
 	if vectorStoreID == "" {
 		return nil
 	}
-	return c.deleteResource(ctx, "https://api.openai.com/v1/vector_stores/"+url.PathEscape(vectorStoreID))
+	return c.deleteResource(ctx, c.endpoint("vector_stores/"+url.PathEscape(vectorStoreID)))
 }
 
 func (c *OpenAIClient) DeleteConversation(ctx context.Context, conversationID string) error {
@@ -869,7 +889,7 @@ func (c *OpenAIClient) DeleteConversation(ctx context.Context, conversationID st
 	if conversationID == "" {
 		return nil
 	}
-	return c.deleteResource(ctx, "https://api.openai.com/v1/conversations/"+url.PathEscape(conversationID))
+	return c.deleteResource(ctx, c.endpoint("conversations/"+url.PathEscape(conversationID)))
 }
 
 func (c *OpenAIClient) DeleteVectorStoreFile(ctx context.Context, vectorStoreID string, fileID string) error {
@@ -878,7 +898,7 @@ func (c *OpenAIClient) DeleteVectorStoreFile(ctx context.Context, vectorStoreID 
 	if vectorStoreID == "" || fileID == "" {
 		return nil
 	}
-	return c.deleteResource(ctx, "https://api.openai.com/v1/vector_stores/"+url.PathEscape(vectorStoreID)+"/files/"+url.PathEscape(fileID))
+	return c.deleteResource(ctx, c.endpoint("vector_stores/"+url.PathEscape(vectorStoreID)+"/files/"+url.PathEscape(fileID)))
 }
 
 func (c *OpenAIClient) deleteResource(ctx context.Context, endpoint string) error {
@@ -912,7 +932,7 @@ func (c *OpenAIClient) deleteResource(ctx context.Context, endpoint string) erro
 }
 
 func (c *OpenAIClient) AddFileToVectorStore(ctx context.Context, vectorStoreID string, fileID string) (OpenAIVectorStoreFile, error) {
-	endpoint := "https://api.openai.com/v1/vector_stores/" + url.PathEscape(vectorStoreID) + "/files"
+	endpoint := c.endpoint("vector_stores/" + url.PathEscape(vectorStoreID) + "/files")
 	payload := map[string]string{"file_id": strings.TrimSpace(fileID)}
 	var parsed OpenAIVectorStoreFile
 	if err := c.doJSON(ctx, http.MethodPost, endpoint, payload, &parsed); err != nil {
@@ -922,7 +942,7 @@ func (c *OpenAIClient) AddFileToVectorStore(ctx context.Context, vectorStoreID s
 }
 
 func (c *OpenAIClient) ListVectorStoreFiles(ctx context.Context, vectorStoreID string) ([]OpenAIVectorStoreFile, error) {
-	endpoint := "https://api.openai.com/v1/vector_stores/" + url.PathEscape(vectorStoreID) + "/files"
+	endpoint := c.endpoint("vector_stores/" + url.PathEscape(vectorStoreID) + "/files")
 	var parsed struct {
 		Data []OpenAIVectorStoreFile `json:"data"`
 	}

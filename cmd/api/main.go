@@ -80,17 +80,25 @@ func main() {
 		DailyBudgetUSD:    cfg.AIDailyBudgetUSD,
 		MonthlyBudgetUSD:  cfg.AIMonthlyBudgetUSD,
 	}, billingService)
-	aiClient := ai.New(cfg.OpenAIKey, cfg.OpenAIModel, cfg.OpenAIProxyURL).WithGovernance(aiGovernance)
-	auditorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIAuditorModel, cfg.OpenAIProxyURL).
+	openAIAuthToken := cfg.OpenAIAuthToken()
+	aiClient := ai.New(openAIAuthToken, cfg.OpenAIModel, cfg.OpenAIProxyURL).
+		WithBaseURL(cfg.OpenAIBaseURL).
+		WithGovernance(aiGovernance)
+	auditorAIClient := ai.New(openAIAuthToken, cfg.OpenAIAuditorModel, cfg.OpenAIProxyURL).
+		WithBaseURL(cfg.OpenAIBaseURL).
 		WithMaxOutputTokens(cfg.OpenAIAuditorMaxOutputTokens).
 		WithGovernance(aiGovernance)
-	advisorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAIAdvisorModel, cfg.OpenAIProxyURL).
+	advisorAIClient := ai.New(openAIAuthToken, cfg.OpenAIAdvisorModel, cfg.OpenAIProxyURL).
+		WithBaseURL(cfg.OpenAIBaseURL).
 		WithMaxOutputTokens(2600).
 		WithGovernance(aiGovernance)
-	taskEvaluatorAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITaskModel, cfg.OpenAIProxyURL).
+	taskEvaluatorAIClient := ai.New(openAIAuthToken, cfg.OpenAITaskModel, cfg.OpenAIProxyURL).
+		WithBaseURL(cfg.OpenAIBaseURL).
 		WithMaxOutputTokens(900).
 		WithGovernance(aiGovernance)
-	transcriptionAIClient := ai.New(cfg.OpenAIKey, cfg.OpenAITranscriptionModel, cfg.OpenAIProxyURL).WithGovernance(aiGovernance)
+	transcriptionAIClient := ai.New(openAIAuthToken, cfg.OpenAITranscriptionModel, cfg.OpenAIProxyURL).
+		WithBaseURL(cfg.OpenAIBaseURL).
+		WithGovernance(aiGovernance)
 	jobManager := jobs.NewManagerWithNamespace(database, cfg.JobQueueNamespace)
 	strategicSourceRecorder := strategicmemory.NewSourceRecorder(database, jobManager)
 	taskAI := tasks.New(aiClient, database)

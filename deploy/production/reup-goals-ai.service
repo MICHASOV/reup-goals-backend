@@ -1,5 +1,5 @@
 [Unit]
-Description=REUP.goals Agent Runtime (%i)
+Description=REUP.goals German AI Runtime and Gateway
 After=network-online.target
 Wants=network-online.target
 
@@ -7,17 +7,17 @@ Wants=network-online.target
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/opt/reup-goals-agent-%i
+WorkingDirectory=/opt/reup-goals-ai
 Environment=NODE_ENV=production
-EnvironmentFile=/etc/reup-goals/agent-%i.env
-ExecStart=/usr/bin/node dist/server.js
-Restart=on-failure
+EnvironmentFile=/etc/reup-goals/ai-production.env
+ExecStart=/opt/reup-goals-ai/node dist/server.js
+Restart=always
 RestartSec=3
-TimeoutStartSec=30
 TimeoutStopSec=30
 KillSignal=SIGTERM
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectHome=true
 ProtectSystem=strict
 ProtectKernelTunables=true

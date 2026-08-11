@@ -102,6 +102,49 @@ func TestLoadSecureCookieOverride(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsProductionAIGatewayWithoutOpenAIKey(t *testing.T) {
+	config := &Config{
+		DBHost: "127.0.0.1", DBUser: "user", DBPassword: "secret", DBName: "reup", DBSSLMode: "disable",
+		JWTSecret: strings.Repeat("x", 32), Environment: "production", CORSAllowedOrigins: []string{"https://reupgoals.pro"},
+		PrivacyMode: "ru_152fz", DataResidencyRegion: "ru-msk", PrivacyContactEmail: "privacy@example.com",
+		CrossBorderTransferRegistered: true, OpenAIBaseURL: "https://ai.reupgoals.pro/openai/v1",
+		OpenAIGatewaySecret: strings.Repeat("g", 32),
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("expected gateway config without OpenAI key to be valid, got %v", err)
+	}
+	if config.OpenAIAuthToken() != config.OpenAIGatewaySecret {
+		t.Fatal("expected the gateway secret to be used as the provider credential")
+	}
+}
+
+func TestValidateRejectsOpenAIKeyOnProductionGateway(t *testing.T) {
+	config := &Config{
+		DBHost: "127.0.0.1", DBUser: "user", DBPassword: "secret", DBName: "reup", DBSSLMode: "disable",
+		JWTSecret: strings.Repeat("x", 32), Environment: "production", CORSAllowedOrigins: []string{"https://reupgoals.pro"},
+		PrivacyMode: "ru_152fz", DataResidencyRegion: "ru-msk", PrivacyContactEmail: "privacy@example.com",
+		CrossBorderTransferRegistered: true, OpenAIBaseURL: "https://ai.reupgoals.pro/openai/v1",
+		OpenAIGatewaySecret: strings.Repeat("g", 32), OpenAIKey: "must-not-remain-in-russia",
+	}
+	err := config.Validate()
+	if err == nil || !strings.Contains(err.Error(), "must not be stored") {
+		t.Fatalf("expected production OpenAI key rejection, got %v", err)
+	}
+}
+
+func TestValidateRejectsInsecureRemoteAIGateway(t *testing.T) {
+	config := &Config{
+		DBHost: "127.0.0.1", DBUser: "user", DBPassword: "secret", DBName: "reup", DBSSLMode: "disable",
+		JWTSecret: strings.Repeat("x", 32), Environment: "staging", CORSAllowedOrigins: []string{"https://staging.reupgoals.pro"},
+		PrivacyMode: "test", DataResidencyRegion: "eu-de", OpenAIBaseURL: "http://ai.example.com/openai/v1",
+		OpenAIGatewaySecret: strings.Repeat("g", 32),
+	}
+	err := config.Validate()
+	if err == nil || !strings.Contains(err.Error(), "must use HTTPS") {
+		t.Fatalf("expected gateway HTTPS error, got %v", err)
+	}
+}
+
 func TestValidateRejectsBillingEnforcementWithoutActivationPath(t *testing.T) {
 	config := &Config{
 		DBHost: "127.0.0.1", DBUser: "user", DBName: "reup", OpenAIKey: "key",

@@ -1,14 +1,49 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { MaxTurnsExceededError } from "@openai/agents";
 import { ZodError } from "zod";
 
 import { configureOpenAIProvider } from "./provider.js";
+import { proxyOpenAIRequest } from "./openaiGateway.js";
 import { executeRun, resumeRun } from "./runtime.js";
 import { executeRunRequestSchema, resumeRunRequestSchema } from "./types.js";
 
 const port = Number(process.env.PORT || 8091);
-const secret = (process.env.AGENT_RUNTIME_SECRET || "").trim();
+const listenHost = (process.env.LISTEN_HOST || "127.0.0.1").trim();
+const runtimeSecret = (process.env.AGENT_RUNTIME_SECRET || "").trim();
+const gatewaySecret = (process.env.AI_GATEWAY_SECRET || "").trim();
+const openAIAPIKey = (process.env.OPENAI_API_KEY || "").trim();
+const openAIUpstreamURL = (process.env.OPENAI_UPSTREAM_URL || "https://api.openai.com").trim();
+const gatewayMaxRequestBytes = Number(process.env.AI_GATEWAY_MAX_REQUEST_BYTES || 128 * 1024 * 1024);
+validateConfiguration();
 configureOpenAIProvider();
+
+function validateConfiguration(): void {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("PORT must be a valid TCP port");
+  }
+  if (!Number.isFinite(gatewayMaxRequestBytes) || gatewayMaxRequestBytes < 1024 * 1024 || gatewayMaxRequestBytes > 512 * 1024 * 1024) {
+    throw new Error("AI_GATEWAY_MAX_REQUEST_BYTES must be between 1 MiB and 512 MiB");
+  }
+  if (process.env.NODE_ENV !== "production") return;
+  if (runtimeSecret.length < 32 || gatewaySecret.length < 32) {
+    throw new Error("AGENT_RUNTIME_SECRET and AI_GATEWAY_SECRET must contain at least 32 characters");
+  }
+  if (runtimeSecret === gatewaySecret) {
+    throw new Error("AGENT_RUNTIME_SECRET and AI_GATEWAY_SECRET must be different");
+  }
+  if (!openAIAPIKey) {
+    throw new Error("OPENAI_API_KEY is required");
+  }
+  const upstream = new URL(openAIUpstreamURL);
+  if (upstream.protocol !== "https:") {
+    throw new Error("OPENAI_UPSTREAM_URL must use HTTPS in production");
+  }
+  const goInternalURL = new URL((process.env.GO_INTERNAL_URL || "").trim());
+  if (goInternalURL.protocol !== "https:") {
+    throw new Error("GO_INTERNAL_URL must point to the Russian API over HTTPS in production");
+  }
+}
 
 function writeJSON(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
@@ -30,18 +65,35 @@ async function readJSON<T>(request: IncomingMessage): Promise<T> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
 }
 
-function authorized(request: IncomingMessage): boolean {
-  if (!secret) return process.env.NODE_ENV !== "production";
-  return request.headers.authorization === `Bearer ${secret}`;
+function runtimeAuthorized(request: IncomingMessage): boolean {
+  if (!runtimeSecret) return process.env.NODE_ENV !== "production";
+  const authorization = request.headers.authorization || "";
+  if (!authorization.startsWith("Bearer ")) return false;
+  const provided = Buffer.from(authorization.slice("Bearer ".length));
+  const expected = Buffer.from(runtimeSecret);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
 const server = createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/healthz") {
-      writeJSON(response, 200, { ok: true });
+      writeJSON(response, 200, {
+        ok: true,
+        runtime: Boolean(runtimeSecret || process.env.NODE_ENV !== "production"),
+        gateway: Boolean(gatewaySecret && openAIAPIKey),
+      });
       return;
     }
-    if (!authorized(request)) {
+    if ((request.url || "").startsWith("/openai/")) {
+      proxyOpenAIRequest(request, response, {
+        secret: gatewaySecret,
+        openAIAPIKey,
+        upstreamBaseURL: openAIUpstreamURL,
+        maxRequestBytes: gatewayMaxRequestBytes,
+      });
+      return;
+    }
+    if (!runtimeAuthorized(request)) {
       writeJSON(response, 401, { error: "unauthorized" });
       return;
     }
@@ -91,6 +143,6 @@ function requestAbortController(request: IncomingMessage, response: ServerRespon
   return controller;
 }
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`REUP.goals agent runtime listening on 127.0.0.1:${port}`);
+server.listen(port, listenHost, () => {
+  console.log(`REUP.goals AI runtime listening on ${listenHost}:${port}`);
 });

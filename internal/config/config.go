@@ -23,6 +23,8 @@ type Config struct {
 	DBConnMaxIdleTime time.Duration
 
 	OpenAIKey                     string
+	OpenAIBaseURL                 string
+	OpenAIGatewaySecret           string
 	OpenAIModel                   string
 	OpenAIAuditorModel            string
 	OpenAIAdvisorModel            string
@@ -131,6 +133,10 @@ func Load() *Config {
 	if openAIProxyURL == "" {
 		openAIProxyURL = "socks5://127.0.0.1:10808"
 	}
+	openAIBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")), "/")
+	if openAIBaseURL == "" {
+		openAIBaseURL = "https://api.openai.com/v1"
+	}
 	agentRuntimeURL := strings.TrimRight(strings.TrimSpace(os.Getenv("AGENT_RUNTIME_URL")), "/")
 	if agentRuntimeURL == "" {
 		agentRuntimeURL = "http://127.0.0.1:8091"
@@ -211,6 +217,8 @@ func Load() *Config {
 		DBConnMaxIdleTime: parseDurationEnv("DB_CONN_MAX_IDLE_TIME", time.Minute),
 
 		OpenAIKey:                     os.Getenv("OPENAI_API_KEY"),
+		OpenAIBaseURL:                 openAIBaseURL,
+		OpenAIGatewaySecret:           strings.TrimSpace(os.Getenv("OPENAI_GATEWAY_SECRET")),
 		OpenAIModel:                   model,
 		OpenAIAuditorModel:            auditorModel,
 		OpenAIAdvisorModel:            advisorModel,
@@ -359,7 +367,7 @@ func (c *Config) Validate() error {
 	missing := make([]string, 0)
 	for key, value := range map[string]string{
 		"DB_HOST": c.DBHost, "DB_USER": c.DBUser, "DB_NAME": c.DBName,
-		"JWT_SECRET": c.JWTSecret, "OPENAI_API_KEY": c.OpenAIKey,
+		"JWT_SECRET": c.JWTSecret,
 	} {
 		if strings.TrimSpace(value) == "" {
 			missing = append(missing, key)
@@ -370,6 +378,33 @@ func (c *Config) Validate() error {
 	}
 	if len(c.JWTSecret) < 32 {
 		return fmt.Errorf("JWT_SECRET must contain at least 32 characters")
+	}
+	openAIBaseURL := strings.TrimSpace(c.OpenAIBaseURL)
+	if openAIBaseURL == "" {
+		openAIBaseURL = "https://api.openai.com/v1"
+	}
+	openAIURL, err := url.Parse(openAIBaseURL)
+	if err != nil || openAIURL.Scheme == "" || openAIURL.Host == "" || openAIURL.RawQuery != "" || openAIURL.Fragment != "" || openAIURL.User != nil {
+		return fmt.Errorf("OPENAI_BASE_URL must be a valid absolute URL without credentials, query, or fragment")
+	}
+	openAIGateway := !isOfficialOpenAIURL(openAIURL)
+	if openAIGateway {
+		if len(c.OpenAIGatewaySecret) < 32 {
+			return fmt.Errorf("OPENAI_GATEWAY_SECRET must contain at least 32 characters when OPENAI_BASE_URL uses a gateway")
+		}
+		if (c.Environment == "production" || c.Environment == "staging") && openAIURL.Scheme != "https" {
+			return fmt.Errorf("OPENAI_BASE_URL must use HTTPS in %s", c.Environment)
+		}
+		if c.Environment == "production" && strings.TrimSpace(c.OpenAIKey) != "" {
+			return fmt.Errorf("OPENAI_API_KEY must not be stored on the production API host when the AI gateway is enabled")
+		}
+	} else {
+		if strings.TrimSpace(c.OpenAIKey) == "" {
+			return fmt.Errorf("OPENAI_API_KEY is required when the official OpenAI API is used directly")
+		}
+		if strings.TrimSpace(c.OpenAIGatewaySecret) != "" {
+			return fmt.Errorf("OPENAI_GATEWAY_SECRET must be empty when the official OpenAI API is used directly")
+		}
 	}
 	if (c.Environment == "production" || c.Environment == "staging") && len(c.CORSAllowedOrigins) == 0 {
 		return fmt.Errorf("CORS_ALLOWED_ORIGINS is required in %s", c.Environment)
@@ -440,11 +475,34 @@ func (c *Config) Validate() error {
 		if err != nil || runtimeURL.Scheme == "" || runtimeURL.Host == "" {
 			return fmt.Errorf("AGENT_RUNTIME_URL must be a valid absolute URL")
 		}
+		if (c.Environment == "production" || c.Environment == "staging") && runtimeURL.Scheme != "https" && !isLoopbackURL(runtimeURL) {
+			return fmt.Errorf("AGENT_RUNTIME_URL must use HTTPS for a remote runtime in %s", c.Environment)
+		}
 		if c.AgentRuntimeMaxTurns < 2 || c.AgentRuntimeMaxTurns > 120 {
 			return fmt.Errorf("AGENT_RUNTIME_MAX_TURNS must be between 2 and 120")
 		}
 	}
 	return nil
+}
+
+func (c *Config) OpenAIAuthToken() string {
+	if strings.TrimSpace(c.OpenAIGatewaySecret) != "" {
+		return strings.TrimSpace(c.OpenAIGatewaySecret)
+	}
+	return strings.TrimSpace(c.OpenAIKey)
+}
+
+func isOfficialOpenAIURL(value *url.URL) bool {
+	return strings.EqualFold(value.Scheme, "https") && strings.EqualFold(value.Hostname(), "api.openai.com")
+}
+
+func isLoopbackURL(value *url.URL) bool {
+	host := strings.TrimSpace(strings.ToLower(value.Hostname()))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func validPrivacyMode(value string) bool {

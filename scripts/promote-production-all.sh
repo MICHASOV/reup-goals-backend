@@ -173,6 +173,9 @@ ssh reup "set -euo pipefail
   fi
   find /var/backups/reup-goals -type f -name 'frontend-*.tar.gz' -mtime +14 -delete"
 
+echo "Promoting AI runtime to Germany..."
+"$backend_root/scripts/promote-production-ai.sh"
+
 echo "Promoting backend to production..."
 "$backend_root/scripts/promote-production-backend.sh"
 
