@@ -114,11 +114,12 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 		return Run{}, errors.New("agent_runtime_disabled")
 	}
 	request.Message = strings.TrimSpace(request.Message)
+	request.Instruction = strings.TrimSpace(request.Instruction)
 	request.RequestID = strings.TrimSpace(request.RequestID)
-	if request.ThreadID <= 0 || request.Message == "" {
+	if request.ThreadID <= 0 || (request.Message == "" && request.Instruction == "") {
 		return Run{}, errors.New("invalid_agent_run")
 	}
-	if len([]rune(request.Message)) > 50000 || len(request.Attachments) > 24 {
+	if len([]rune(request.Message))+len([]rune(request.Instruction)) > 50000 || len(request.Attachments) > 24 {
 		return Run{}, errors.New("invalid_agent_input_size")
 	}
 	if len(request.RequestID) > 120 {
@@ -146,6 +147,20 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 		existing, existingErr := s.store.ByRequestID(
 			ctx, workspace.ID, userID, thread.ID, request.RequestID,
 		)
+		if existingErr == nil {
+			return s.Hydrate(ctx, existing, 0)
+		}
+		if !errors.Is(existingErr, sql.ErrNoRows) {
+			return Run{}, existingErr
+		}
+	}
+	unlockThread, lockErr := s.store.LockThread(ctx, workspace.ID, userID, thread.ID)
+	if lockErr != nil {
+		return Run{}, lockErr
+	}
+	defer unlockThread()
+	if request.RequestID != "" {
+		existing, existingErr := s.store.ByRequestID(ctx, workspace.ID, userID, thread.ID, request.RequestID)
 		if existingErr == nil {
 			return s.Hydrate(ctx, existing, 0)
 		}
@@ -196,15 +211,18 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 			migratedFrom = "legacy_advisor"
 		}
 	}
-	userMessageID, err := s.tactics.CreateScopedChatMessage(
-		ctx, workspace.ID, &userID, "user", request.Message,
-		map[string]any{"agent_runtime": true},
-		thread.ConversationScope(),
-	)
-	if err != nil {
-		return Run{}, err
+	userMessageID := 0
+	if request.Message != "" {
+		userMessageID, err = s.tactics.CreateScopedChatMessage(
+			ctx, workspace.ID, &userID, "user", request.Message,
+			map[string]any{"agent_runtime": true},
+			thread.ConversationScope(),
+		)
+		if err != nil {
+			return Run{}, err
+		}
 	}
-	if scope.Type == "strategy" && s.strategy != nil {
+	if request.Message != "" && scope.Type == "strategy" && s.strategy != nil {
 		if err := s.strategy.RecordAgentUserMessage(ctx, workspace.ID, userID, request.Message, map[string]any{
 			"agent_runtime":      true,
 			"tactics_message_id": userMessageID,
@@ -216,12 +234,14 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	run, err := s.store.Create(
 		ctx, workspace.ID, userID, thread.ID, userMessageID, scope, s.model,
 		s.releaseID, sessionGeneration, migratedFrom, continuityContext,
-		agentInput(request.Message, request.Attachments), request.RequestID,
+		agentInput(agentRequestText(request.Message, request.Instruction), request.Attachments), request.RequestID,
 	)
 	if err != nil {
 		return Run{}, err
 	}
-	_ = s.tactics.TouchAdvisorThread(ctx, workspace.ID, userID, thread.ID, request.Message)
+	if request.Message != "" {
+		_ = s.tactics.TouchAdvisorThread(ctx, workspace.ID, userID, thread.ID, request.Message)
+	}
 	if migratedFrom != "" {
 		_ = s.store.InsertEvent(ctx, run.ID, RuntimeEvent{
 			Type: "session_migrated", Stage: "starting",
@@ -243,6 +263,18 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	}
 	_ = membership
 	return s.Hydrate(ctx, run, 0)
+}
+
+func agentRequestText(message string, instruction string) string {
+	message = strings.TrimSpace(message)
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" {
+		return message
+	}
+	if message == "" {
+		return "[Команда интерфейса]\n" + instruction
+	}
+	return "[Команда интерфейса]\n" + instruction + "\n\n[Сообщение пользователя]\n" + message
 }
 
 func (s *Service) releaseStaleActiveRun(ctx context.Context, workspaceID int, userID int, threadID int) error {

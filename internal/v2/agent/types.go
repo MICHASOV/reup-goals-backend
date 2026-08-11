@@ -96,6 +96,7 @@ type CreateRunRequest struct {
 	ThreadID    int          `json:"thread_id"`
 	RequestID   string       `json:"request_id,omitempty"`
 	Message     string       `json:"message"`
+	Instruction string       `json:"instruction,omitempty"`
 	Scope       Scope        `json:"scope"`
 	Attachments []Attachment `json:"attachments"`
 }

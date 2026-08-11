@@ -48,6 +48,31 @@ func TestRequestLockKeyIsScopedAndStable(t *testing.T) {
 	}
 }
 
+func TestThreadLockKeyIsScopedAndStable(t *testing.T) {
+	base := threadLockKey(1, 2, 3)
+	for _, other := range []string{
+		threadLockKey(9, 2, 3),
+		threadLockKey(1, 9, 3),
+		threadLockKey(1, 2, 9),
+	} {
+		if base == other {
+			t.Fatalf("thread lock key is not fully scoped: %q", other)
+		}
+	}
+}
+
+func TestAgentRequestTextKeepsInterfaceCommandOutOfVisibleMessage(t *testing.T) {
+	if got := agentRequestText("", "Измени цель"); got != "[Команда интерфейса]\nИзмени цель" {
+		t.Fatalf("command-only input = %q", got)
+	}
+	if got := agentRequestText("Уточни метрику", "Измени цель"); got != "[Команда интерфейса]\nИзмени цель\n\n[Сообщение пользователя]\nУточни метрику" {
+		t.Fatalf("combined input = %q", got)
+	}
+	if got := agentRequestText(" Обычное сообщение ", ""); got != "Обычное сообщение" {
+		t.Fatalf("message-only input = %q", got)
+	}
+}
+
 func TestRunTokenRejectsTamperingAndExpiry(t *testing.T) {
 	run := Run{PublicID: "run_test", WorkspaceID: 12, UserID: 34}
 	token, err := signRunToken(strings.Repeat("s", 40), run, time.Minute)

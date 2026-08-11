@@ -24,6 +24,30 @@ func requestLockKey(workspaceID int, userID int, threadID int, requestID string)
 	return fmt.Sprintf("agent-run:%d:%d:%d:%s", workspaceID, userID, threadID, strings.TrimSpace(requestID))
 }
 
+func threadLockKey(workspaceID int, userID int, threadID int) string {
+	return fmt.Sprintf("agent-thread:%d:%d:%d", workspaceID, userID, threadID)
+}
+
+// LockThread prevents two distinct client requests from creating overlapping
+// runs while a previous run is moving into its terminal state.
+func (s *Store) LockThread(ctx context.Context, workspaceID int, userID int, threadID int) (func(), error) {
+	key := threadLockKey(workspaceID, userID, threadID)
+	conn, err := s.dbx.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, key); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(releaseCtx, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, key)
+		_ = conn.Close()
+	}, nil
+}
+
 // LockRequest serializes the idempotency check and run creation across backend instances.
 func (s *Store) LockRequest(
 	ctx context.Context,

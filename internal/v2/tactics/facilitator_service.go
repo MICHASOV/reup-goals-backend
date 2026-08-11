@@ -366,7 +366,7 @@ func (s *FacilitatorService) HandleMessage(ctx context.Context, workspaceID int,
 }
 
 func (s *FacilitatorService) UploadFile(ctx context.Context, workspaceID int, userID int, filename string, contentType string, sizeBytes int64, file io.Reader) (strategicmemory.FileUploadResponse, error) {
-	response, err := s.memoryService.UploadFile(ctx, workspaceID, userID, filename, contentType, sizeBytes, file)
+	response, err := s.memoryService.UploadReferenceFile(ctx, workspaceID, userID, filename, contentType, sizeBytes, file)
 	if err != nil {
 		return response, err
 	}
