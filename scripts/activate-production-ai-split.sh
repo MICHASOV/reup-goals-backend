@@ -63,6 +63,7 @@ set -Eeuo pipefail
 
 primary_env=/etc/reup-goals/backend.env
 legacy_env=/opt/reup-goals-backend/.env
+pool_dropin=/etc/systemd/system/reup-goals.service.d/zz-db-pool.conf
 mkdir -p /etc/reup-goals
 touch "$primary_env"
 chmod 600 "$primary_env"
@@ -87,13 +88,25 @@ for env_file in "$primary_env" "$legacy_env"; do
     # Keep enough PostgreSQL capacity for interactive API traffic. The worker
     # count must remain below the pool cap because every user request shares
     # the same process-level pool.
-    set_env "$env_file" DB_MAX_OPEN_CONNS 10
-    set_env "$env_file" DB_MAX_IDLE_CONNS 3
+    set_env "$env_file" DB_APPLICATION_NAME reup-goals-production
+    set_env "$env_file" DB_MAX_OPEN_CONNS 8
+    set_env "$env_file" DB_MAX_IDLE_CONNS 2
     set_env "$env_file" AI_JOB_WORKERS 2
     set_env "$env_file" AI_AGENT_JOB_WORKERS 4
     chmod 600 "$env_file"
   fi
 done
+
+# Keep this in a lexically last drop-in. Older server overrides must not be
+# able to restore the large historical pool and exhaust the shared database.
+mkdir -p "$(dirname "$pool_dropin")"
+cat > "$pool_dropin" <<'EOF'
+[Service]
+Environment="DB_APPLICATION_NAME=reup-goals-production"
+Environment="DB_MAX_OPEN_CONNS=8"
+Environment="DB_MAX_IDLE_CONNS=2"
+EOF
+chmod 600 "$pool_dropin"
 
 echo "Russian production AI transport configuration saved."
 RUSSIA

@@ -17,6 +17,7 @@ type Config struct {
 	DBPassword        string
 	DBName            string
 	DBSSLMode         string
+	DBApplicationName string
 	DBMaxOpenConns    int
 	DBMaxIdleConns    int
 	DBConnMaxLifetime time.Duration
@@ -203,6 +204,10 @@ func Load() *Config {
 	if dbSSLMode == "" {
 		dbSSLMode = "disable"
 	}
+	dbApplicationName := strings.TrimSpace(os.Getenv("DB_APPLICATION_NAME"))
+	if dbApplicationName == "" {
+		dbApplicationName = "reup-goals-" + environment
+	}
 
 	return &Config{
 		DBHost:            os.Getenv("DB_HOST"),
@@ -211,6 +216,7 @@ func Load() *Config {
 		DBPassword:        os.Getenv("DB_PASSWORD"),
 		DBName:            os.Getenv("DB_NAME"),
 		DBSSLMode:         dbSSLMode,
+		DBApplicationName: dbApplicationName,
 		DBMaxOpenConns:    parseIntEnv("DB_MAX_OPEN_CONNS", 25),
 		DBMaxIdleConns:    parseIntEnv("DB_MAX_IDLE_CONNS", 10),
 		DBConnMaxLifetime: parseDurationEnv("DB_CONN_MAX_LIFETIME", 30*time.Minute),
@@ -528,6 +534,9 @@ func (c *Config) ConnString() string {
 	query := connection.Query()
 	query.Set("sslmode", c.DBSSLMode)
 	query.Set("connect_timeout", "5")
+	if c.DBApplicationName != "" {
+		query.Set("application_name", c.DBApplicationName)
+	}
 	connection.RawQuery = query.Encode()
 	return connection.String()
 }

@@ -33,6 +33,24 @@ func TestConnStringEscapesCredentials(t *testing.T) {
 	if parsed.Query().Get("connect_timeout") != "5" {
 		t.Fatalf("database liveness options are missing: %s", parsed.RawQuery)
 	}
+	if parsed.Query().Get("application_name") != "" {
+		t.Fatalf("unexpected application name: %s", parsed.RawQuery)
+	}
+}
+
+func TestLoadSetsDatabaseApplicationNameFromEnvironment(t *testing.T) {
+	t.Setenv("APP_ENV", "staging")
+	config := Load()
+	if config.DBApplicationName != "reup-goals-staging" {
+		t.Fatalf("unexpected database application name: %q", config.DBApplicationName)
+	}
+	parsed, err := url.Parse(config.ConnString())
+	if err != nil {
+		t.Fatalf("parse connection string: %v", err)
+	}
+	if parsed.Query().Get("application_name") != "reup-goals-staging" {
+		t.Fatalf("application name is missing from connection string: %s", parsed.RawQuery)
+	}
 }
 
 func TestValidateRejectsUnencryptedRemoteDatabase(t *testing.T) {

@@ -104,6 +104,9 @@ jobs:
           DB_PASSWORD=
           DB_NAME=
           DB_SSLMODE=require
+          DB_APPLICATION_NAME=reup-goals-staging
+          DB_MAX_OPEN_CONNS=6
+          DB_MAX_IDLE_CONNS=2
           DB_CONN_MAX_IDLE_TIME=1m
           APP_ENV=staging
           JWT_SECRET=
@@ -332,6 +335,15 @@ jobs:
           [Install]
           WantedBy=multi-user.target
           SERVICE
+
+          mkdir -p /etc/systemd/system/reup-goals-staging.service.d
+          cat >/etc/systemd/system/reup-goals-staging.service.d/zz-db-pool.conf <<'POOL'
+          [Service]
+          Environment="DB_APPLICATION_NAME=reup-goals-staging"
+          Environment="DB_MAX_OPEN_CONNS=6"
+          Environment="DB_MAX_IDLE_CONNS=2"
+          POOL
+          chmod 600 /etc/systemd/system/reup-goals-staging.service.d/zz-db-pool.conf
 
           api_site=/etc/nginx/sites-available/api-staging.reupgoals.pro
           if [ ! -f "$api_site" ]; then
