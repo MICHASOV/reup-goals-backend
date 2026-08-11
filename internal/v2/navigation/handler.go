@@ -70,6 +70,7 @@ type strategy struct {
 	ID            int    `json:"id"`
 	Status        string `json:"status"`
 	Version       int    `json:"version"`
+	Title         string `json:"title"`
 	Summary       string `json:"summary"`
 	CurrentSignal string `json:"current_signal"`
 	TargetSignal  string `json:"target_signal"`
@@ -257,7 +258,8 @@ func deriveOnboardingProgress(
 	departments []department,
 	directedTaskExists bool,
 ) onboardingProgress {
-	goalComplete := currentStrategy != nil && (strings.TrimSpace(currentStrategy.Summary) != "" ||
+	goalComplete := currentStrategy != nil && (hasMeaningfulStrategyTitle(currentStrategy.Title) ||
+		strings.TrimSpace(currentStrategy.Summary) != "" ||
 		strings.TrimSpace(currentStrategy.TargetSignal) != "" ||
 		strings.TrimSpace(currentStrategy.TargetStage) != "")
 	progress := onboardingProgress{
@@ -269,6 +271,17 @@ func deriveOnboardingProgress(
 	progress.Complete = progress.ContextComplete && progress.GoalComplete &&
 		progress.DirectionsComplete && progress.TasksComplete
 	return progress
+}
+
+func hasMeaningfulStrategyTitle(title string) bool {
+	title = strings.ToLower(strings.TrimSpace(title))
+	if title == "" || title == "стратегия компании" {
+		return false
+	}
+	if strings.HasPrefix(title, "стратегия v") {
+		return false
+	}
+	return true
 }
 
 func hasBusinessDirection(departments []department) bool {
@@ -442,7 +455,7 @@ func (h *Handler) UpdateFeatureOnboarding(w http.ResponseWriter, r *http.Request
 func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, bool, *int, string, error) {
 	var item strategy
 	err := h.dbx.QueryRowContext(r.Context(), `
-		SELECT strategy.id, strategy.status, strategy.version, strategy.summary,
+		SELECT strategy.id, strategy.status, strategy.version, strategy.title, strategy.summary,
 			COALESCE((
 				SELECT COALESCE(NULLIF(business_stage, 'unknown'), '')
 				FROM strategic_memory_snapshots
@@ -454,7 +467,7 @@ func (h *Handler) loadStrategy(r *http.Request, workspaceID int) (*strategy, boo
 		WHERE strategy.workspace_id=$1 AND strategy.archived_at IS NULL
 		ORDER BY (strategy.status='active') DESC, strategy.version DESC, strategy.id DESC
 		LIMIT 1
-	`, workspaceID).Scan(&item.ID, &item.Status, &item.Version, &item.Summary, &item.CurrentStage)
+	`, workspaceID).Scan(&item.ID, &item.Status, &item.Version, &item.Title, &item.Summary, &item.CurrentStage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil, "", nil
 	}

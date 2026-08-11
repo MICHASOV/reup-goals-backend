@@ -23,6 +23,20 @@ func TestDeriveOnboardingProgress(t *testing.T) {
 			want:     onboardingProgress{ContextComplete: true},
 		},
 		{
+			name:     "generated strategy title is not a completed goal",
+			context:  true,
+			strategy: &strategy{Status: "draft", Title: "Стратегия v2"},
+			want:     onboardingProgress{ContextComplete: true},
+		},
+		{
+			name:     "meaningful strategy title completes goal",
+			context:  true,
+			strategy: &strategy{Status: "active", Title: "Подтвердить повторяемый платный спрос"},
+			want: onboardingProgress{
+				ContextComplete: true, GoalComplete: true,
+			},
+		},
+		{
 			name:        "default company direction does not complete decomposition",
 			context:     true,
 			strategy:    &strategy{Summary: "Выйти на устойчивую прибыль"},
