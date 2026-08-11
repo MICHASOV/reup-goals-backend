@@ -531,7 +531,12 @@ jobs:
           fi
 
           systemctl restart reup-goals-staging.service
-          systemctl status reup-goals-staging.service --no-pager
+          # Type=simple reports the process as started before migrations and the
+          # first database connection have necessarily completed. A transient
+          # database-slot shortage can therefore make `systemctl status` return
+          # non-zero even though Restart=always recovers a moment later. Let the
+          # health loop below decide whether the release actually failed.
+          systemctl status reup-goals-staging.service --no-pager || true
 
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
