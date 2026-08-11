@@ -219,22 +219,45 @@ jobs:
             sleep 1
           done
 
-          # A temporary HTTP-only virtual host lets Certbot issue the first
-          # certificate without disturbing the existing staging endpoint.
+          # Use a dedicated webroot for the first certificate. This avoids
+          # Certbot rewriting an nginx configuration that also serves staging.
           if [ ! -f /etc/letsencrypt/live/ai.reupgoals.pro/fullchain.pem ]; then
+            acme_root=/var/www/reup-goals-acme
+            mkdir -p "$acme_root/.well-known/acme-challenge"
             cat > "$site" <<'NGINX_HTTP'
           server {
               listen 80;
               listen [::]:80;
               server_name ai.reupgoals.pro;
+
+              location ^~ /.well-known/acme-challenge/ {
+                  root /var/www/reup-goals-acme;
+                  default_type text/plain;
+                  try_files $uri =404;
+              }
+
               location / { return 404; }
           }
           NGINX_HTTP
             ln -sf "$site" "$enabled"
             nginx -t
             systemctl reload nginx
-            certbot certonly --nginx --non-interactive --agree-tos --register-unsafely-without-email \
-              -d ai.reupgoals.pro
+
+            certificate_issued=false
+            for attempt in $(seq 1 12); do
+              if certbot certonly --webroot --webroot-path "$acme_root" \
+                --non-interactive --agree-tos --register-unsafely-without-email \
+                --keep-until-expiring -d ai.reupgoals.pro; then
+                certificate_issued=true
+                break
+              fi
+              echo "Certificate is not available yet; waiting for DNS propagation (attempt ${attempt}/12)." >&2
+              sleep 30
+            done
+            if [ "$certificate_issued" != true ]; then
+              echo "Could not issue the ai.reupgoals.pro certificate after waiting for DNS propagation." >&2
+              exit 1
+            fi
           fi
 
           cat > "$site" <<'NGINX'
