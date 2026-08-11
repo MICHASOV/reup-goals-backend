@@ -411,6 +411,10 @@ jobs:
           if [ "${#runtime_secret}" -lt 32 ]; then
             runtime_secret=$(openssl rand -hex 32)
           fi
+          gateway_secret=$(grep '^AI_GATEWAY_SECRET=' /etc/reup-goals-staging/agent.env 2>/dev/null | tail -1 | cut -d= -f2- || true)
+          if [ "${#gateway_secret}" -lt 32 ] || [ "$gateway_secret" = "$runtime_secret" ]; then
+            gateway_secret=$(openssl rand -hex 32)
+          fi
           set_backend_env() {
             key=$1
             value=$2
@@ -454,8 +458,9 @@ jobs:
 
           {
             printf 'PORT=8091\n'
-            printf 'GO_INTERNAL_URL=http://127.0.0.1:8080\n'
+            printf 'GO_INTERNAL_URL=https://api-staging.reupgoals.pro\n'
             printf 'AGENT_RUNTIME_SECRET=%s\n' "$runtime_secret"
+            printf 'AI_GATEWAY_SECRET=%s\n' "$gateway_secret"
             printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
             printf 'AGENT_COMPACT_THRESHOLD=100000\n'
             printf 'AGENT_REASONING_EFFORT=max\n'
@@ -511,8 +516,8 @@ jobs:
               break
             fi
             if [ "$attempt" -eq 120 ]; then
-              last_agent_log=$(journalctl -u reup-goals-agent-staging.service -n 1 --no-pager | tr '\r\n' ' ' | sed 's/%/%25/g; s/:/%3A/g')
-              echo "::error title=Staging agent failed health check::${last_agent_log}"
+              recent_agent_logs=$(journalctl -u reup-goals-agent-staging.service --since '-3 minutes' -n 20 -o cat --no-pager | tr '\r\n' ' ' | sed 's/%/%25/g')
+              echo "::error title=Staging agent failed health check::${recent_agent_logs}"
               journalctl -u reup-goals-agent-staging.service -n 100 --no-pager
               systemctl stop reup-goals-agent-staging.service || true
               rm -rf /opt/reup-goals-staging/agent
@@ -545,8 +550,8 @@ jobs:
               break
             fi
             if [ "$attempt" -eq 120 ]; then
-              last_backend_log=$(journalctl -u reup-goals-staging.service -n 1 --no-pager | tr '\r\n' ' ' | sed 's/%/%25/g; s/:/%3A/g')
-              echo "::error title=Staging backend failed health check::${last_backend_log}"
+              recent_backend_logs=$(journalctl -u reup-goals-staging.service --since '-3 minutes' -n 20 -o cat --no-pager | tr '\r\n' ' ' | sed 's/%/%25/g')
+              echo "::error title=Staging backend failed health check::${recent_backend_logs}"
               journalctl -u reup-goals-staging.service -n 100 --no-pager
               if [ -x "$previous_binary" ]; then
                 echo "New backend failed health check; restoring previous binary."
