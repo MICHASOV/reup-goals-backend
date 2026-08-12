@@ -420,20 +420,87 @@ func (s *Service) generateOnboardingSummary(
 		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_onboarding_summary", s.ai.ModelName(), "business_onboarding_summary_v1", duration, 0, 0, "failed", err.Error())
 		return generatedOnboardingSummary{}, err
 	}
-	var output onboardingSummaryOutput
-	if err := json.Unmarshal([]byte(result.Text), &output); err != nil {
-		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_onboarding_summary", s.ai.ModelName(), "business_onboarding_summary_v1", duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", err.Error())
-		return generatedOnboardingSummary{}, fmt.Errorf("onboarding summary decode failed: %w", err)
-	}
-	markdown := strings.TrimSpace(output.SummaryMarkdown)
-	if markdown == "" {
-		return generatedOnboardingSummary{}, fmt.Errorf("onboarding summary is empty")
+	markdown, parseErr := parseOnboardingSummary(result.Text)
+	if parseErr != nil {
+		s.store.LogAIRunWithUsage(ctx, workspaceID, "business_onboarding_summary", s.ai.ModelName(), "business_onboarding_summary_v1", duration, result.Usage.InputTokens, result.Usage.OutputTokens, "failed", parseErr.Error())
+		repairInput := "Repair your previous response. Preserve the factual company overview and return one JSON object with exactly one string field named summary_markdown. Do not return an empty value."
+		started = time.Now()
+		repaired, repairErr := s.ai.GenerateJSONNative(aiCtx, onboardingSummaryPrompt, repairInput, ai.ResponseContextOptions{
+			UseConversation:      true,
+			ConversationID:       result.ConversationID,
+			VectorStoreIDs:       vectorStoreIDs,
+			CompactThreshold:     session.CompactThreshold,
+			PromptCacheKey:       session.PromptCacheKey,
+			MaxFileSearchResults: 4,
+			MaxOutputTokens:      3500,
+		})
+		duration = time.Since(started).Milliseconds()
+		if repairErr != nil {
+			s.store.LogAIRunWithUsage(ctx, workspaceID, "business_onboarding_summary_repair", s.ai.ModelName(), "business_onboarding_summary_v1", duration, 0, 0, "failed", repairErr.Error())
+			return generatedOnboardingSummary{}, repairErr
+		}
+		markdown, parseErr = parseOnboardingSummary(repaired.Text)
+		if parseErr != nil {
+			s.store.LogAIRunWithUsage(ctx, workspaceID, "business_onboarding_summary_repair", s.ai.ModelName(), "business_onboarding_summary_v1", duration, repaired.Usage.InputTokens, repaired.Usage.OutputTokens, "failed", parseErr.Error())
+			return generatedOnboardingSummary{}, parseErr
+		}
+		result = repaired
 	}
 	if !strings.HasPrefix(markdown, "# ") {
 		markdown = "# О компании\n\n" + markdown
 	}
 	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_onboarding_summary", s.ai.ModelName(), "business_onboarding_summary_v1", duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
 	return generatedOnboardingSummary{Markdown: markdown, ConversationID: result.ConversationID}, nil
+}
+
+func parseOnboardingSummary(raw string) (string, error) {
+	var output onboardingSummaryOutput
+	if err := json.Unmarshal([]byte(raw), &output); err != nil {
+		return "", fmt.Errorf("onboarding summary decode failed: %w", err)
+	}
+	if markdown := strings.TrimSpace(output.SummaryMarkdown); markdown != "" {
+		return markdown, nil
+	}
+
+	var value any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return "", fmt.Errorf("onboarding summary decode failed: %w", err)
+	}
+	if markdown := findOnboardingSummaryText(value); markdown != "" {
+		return markdown, nil
+	}
+	return "", fmt.Errorf("onboarding summary is empty")
+}
+
+func findOnboardingSummaryText(value any) string {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"summary_markdown", "markdown", "summary", "document", "content"} {
+		if text, ok := object[key].(string); ok && strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+	}
+	for _, key := range []string{"output", "result", "data"} {
+		if nested := findOnboardingSummaryText(object[key]); nested != "" {
+			return nested
+		}
+	}
+	if len(object) == 1 {
+		for _, nested := range object {
+			if text, ok := nested.(string); ok && likelyOnboardingSummary(text) {
+				return strings.TrimSpace(text)
+			}
+			return findOnboardingSummaryText(nested)
+		}
+	}
+	return ""
+}
+
+func likelyOnboardingSummary(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "# ") || len([]rune(value)) >= 80
 }
 
 func parseAuditorTurn(raw string) (auditorTurnOutput, error) {
