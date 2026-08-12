@@ -63,67 +63,54 @@ func (s *Service) State(ctx context.Context, workspaceID int) (StateResponse, er
 	var state StateResponse
 	state.WorkspaceID = workspaceID
 	state.DocumentCatalog = strategicDocumentDefinitions()
-	type loadResult struct {
-		err error
+	loads := []func() error{
+		func() error {
+			var err error
+			state.Snapshot, err = s.store.LatestSnapshot(ctx, workspaceID)
+			return err
+		}, func() error {
+			var err error
+			state.Claims, err = s.store.ListClaims(ctx, workspaceID, 200)
+			return err
+		}, func() error {
+			var err error
+			state.Agenda, err = s.store.ListAgenda(ctx, workspaceID, 80)
+			return err
+		}, func() error {
+			var err error
+			state.CommunicationProfile, err = s.store.CommunicationProfile(ctx, workspaceID)
+			return err
+		}, func() error {
+			var err error
+			state.DialogueFocus, err = s.store.DialogueFocus(ctx, workspaceID)
+			return err
+		}, func() error {
+			var err error
+			state.Documents, err = s.store.ListDocuments(ctx, workspaceID)
+			return err
+		}, func() error {
+			var err error
+			state.QualityReport, err = s.store.LatestQualityReport(ctx, workspaceID)
+			return err
+		}, func() error {
+			var err error
+			state.RecentMessages, err = s.store.RecentMessages(ctx, workspaceID, 20)
+			return err
+		}, func() error {
+			var err error
+			state.Files, err = s.store.ListFiles(ctx, workspaceID)
+			return err
+		}, func() error {
+			var err error
+			state.Pipeline, err = s.store.KnowledgePipelineState(ctx, workspaceID)
+			if err == nil {
+				state.OnboardingSummary, err = s.store.OnboardingSummary(ctx, workspaceID)
+			}
+			return err
+		},
 	}
-	results := make(chan loadResult, 10)
-	go func() {
-		var err error
-		state.Snapshot, err = s.store.LatestSnapshot(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.Claims, err = s.store.ListClaims(ctx, workspaceID, 200)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.Agenda, err = s.store.ListAgenda(ctx, workspaceID, 80)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.CommunicationProfile, err = s.store.CommunicationProfile(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.DialogueFocus, err = s.store.DialogueFocus(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.Documents, err = s.store.ListDocuments(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.QualityReport, err = s.store.LatestQualityReport(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.RecentMessages, err = s.store.RecentMessages(ctx, workspaceID, 20)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.Files, err = s.store.ListFiles(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.Pipeline, err = s.store.KnowledgePipelineState(ctx, workspaceID)
-		if err == nil {
-			state.OnboardingSummary, err = s.store.OnboardingSummary(ctx, workspaceID)
-		}
-		results <- loadResult{err}
-	}()
-	for range 10 {
-		if result := <-results; result.err != nil {
-			return StateResponse{}, result.err
-		}
+	if err := runBoundedLoads(4, loads); err != nil {
+		return StateResponse{}, err
 	}
 	return state, nil
 }
@@ -137,46 +124,61 @@ func (s *Service) WorkspaceState(ctx context.Context, workspaceID int) (StateRes
 		Claims:          []Claim{},
 		Agenda:          []ResearchAgendaItem{},
 	}
-	type loadResult struct {
-		err error
+	loads := []func() error{
+		func() error {
+			var err error
+			state.Documents, err = s.store.ListDocuments(ctx, workspaceID)
+			return err
+		}, func() error {
+			var err error
+			state.QualityReport, err = s.store.LatestQualityReport(ctx, workspaceID)
+			return err
+		}, func() error {
+			var err error
+			state.RecentMessages, err = s.store.RecentMessages(ctx, workspaceID, 20)
+			return err
+		}, func() error {
+			var err error
+			state.Files, err = s.store.ListFiles(ctx, workspaceID)
+			return err
+		}, func() error {
+			var err error
+			state.Pipeline, err = s.store.KnowledgePipelineState(ctx, workspaceID)
+			return err
+		}, func() error {
+			var err error
+			state.OnboardingSummary, err = s.store.OnboardingSummary(ctx, workspaceID)
+			return err
+		},
 	}
-	results := make(chan loadResult, 6)
-	go func() {
-		var err error
-		state.Documents, err = s.store.ListDocuments(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.QualityReport, err = s.store.LatestQualityReport(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.RecentMessages, err = s.store.RecentMessages(ctx, workspaceID, 20)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.Files, err = s.store.ListFiles(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.Pipeline, err = s.store.KnowledgePipelineState(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	go func() {
-		var err error
-		state.OnboardingSummary, err = s.store.OnboardingSummary(ctx, workspaceID)
-		results <- loadResult{err}
-	}()
-	for range 6 {
-		if result := <-results; result.err != nil {
-			return StateResponse{}, result.err
-		}
+	if err := runBoundedLoads(4, loads); err != nil {
+		return StateResponse{}, err
 	}
 	return state, nil
+}
+
+// runBoundedLoads keeps state hydration fast without exhausting the small
+// managed Postgres pool when several users open the workspace at once.
+func runBoundedLoads(limit int, loads []func() error) error {
+	if limit <= 0 {
+		limit = 1
+	}
+	results := make(chan error, len(loads))
+	semaphore := make(chan struct{}, limit)
+	for _, load := range loads {
+		semaphore <- struct{}{}
+		go func(load func() error) {
+			defer func() { <-semaphore }()
+			results <- load()
+		}(load)
+	}
+	var firstErr error
+	for range loads {
+		if err := <-results; err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int, message string) (MessageResponse, error) {
@@ -315,79 +317,78 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		}
 	}
 	s.store.LogAIRunWithUsage(ctx, workspaceID, "business_auditor_openai_native", s.ai.ModelName(), StrategicMemoryPromptVersion, duration, result.Usage.InputTokens, result.Usage.OutputTokens, "success", "")
+	persistCtx, cancelPersistence := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelPersistence()
 	if strings.TrimSpace(result.ConversationID) != "" && result.ConversationID != session.ConversationID {
-		_ = s.store.UpdateOpenAIConversationID(ctx, workspaceID, result.ConversationID)
+		_ = s.store.UpdateOpenAIConversationID(persistCtx, workspaceID, result.ConversationID)
 	}
 
 	if feedbackIncluded {
-		_ = s.store.MarkKnowledgeFeedbackDelivered(ctx, workspaceID, pipeline.CandidateRevision)
+		_ = s.store.MarkKnowledgeFeedbackDelivered(persistCtx, workspaceID, pipeline.CandidateRevision)
 	}
 	contextReady, readinessReason := turn.contextReadinessDecision()
 	assistantMessage := ""
 	if contextReady {
-		if err := s.store.BeginOnboardingSummary(ctx, workspaceID, pipeline.ConversationRevision, sourceID); err != nil {
+		if err := s.store.BeginOnboardingSummary(persistCtx, workspaceID, pipeline.ConversationRevision, sourceID); err != nil {
 			return MessageResponse{}, err
 		}
-		summaryResult, summaryErr := s.generateOnboardingSummary(ctx, workspaceID, userID, result.ConversationID, vectorStoreIDs, session)
+		summaryResult, summaryErr := s.generateOnboardingSummary(persistCtx, workspaceID, userID, result.ConversationID, vectorStoreIDs, session)
 		if summaryErr != nil {
-			_ = s.store.DeleteOnboardingSummary(ctx, workspaceID, pipeline.ConversationRevision, sourceID)
+			_ = s.store.DeleteOnboardingSummary(persistCtx, workspaceID, pipeline.ConversationRevision, sourceID)
 			return MessageResponse{}, summaryErr
 		}
-		if err := s.store.CompleteOnboardingSummary(ctx, workspaceID, pipeline.ConversationRevision, sourceID, summaryResult.Markdown); err != nil {
-			_ = s.store.DeleteOnboardingSummary(ctx, workspaceID, pipeline.ConversationRevision, sourceID)
+		if err := s.store.CompleteOnboardingSummary(persistCtx, workspaceID, pipeline.ConversationRevision, sourceID, summaryResult.Markdown); err != nil {
+			_ = s.store.DeleteOnboardingSummary(persistCtx, workspaceID, pipeline.ConversationRevision, sourceID)
 			return MessageResponse{}, err
 		}
 		if strings.TrimSpace(summaryResult.ConversationID) != "" && summaryResult.ConversationID != result.ConversationID {
-			_ = s.store.UpdateOpenAIConversationID(ctx, workspaceID, summaryResult.ConversationID)
+			_ = s.store.UpdateOpenAIConversationID(persistCtx, workspaceID, summaryResult.ConversationID)
 		}
-		queuedState, queueErr := s.queueKnowledgeCandidate(ctx, workspaceID, pipeline, sourceID, readinessReason)
+		queuedState, queueErr := s.queueKnowledgeCandidate(persistCtx, workspaceID, pipeline, sourceID, readinessReason)
 		if queueErr == nil {
 			pipeline = queuedState
 		}
 	} else {
 		assistantMessage = fallbackAssistantReply(cleanAssistantMessage(turn.Reply))
-		_, _ = s.store.CreateRawSource(ctx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
+		if _, err := s.store.CreateRawSource(persistCtx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
 			"prompt_version":   StrategicMemoryPromptVersion,
 			"mode":             "openai_native",
 			"user_source_id":   sourceID,
 			"response_id":      result.ResponseID,
 			"conversation_id":  result.ConversationID,
 			"vector_store_ids": vectorStoreIDs,
-		})
+		}); err != nil {
+			return MessageResponse{}, fmt.Errorf("save assistant message: %w", err)
+		}
 	}
 
-	finalState, err := s.State(ctx, workspaceID)
+	finalState, err := s.State(persistCtx, workspaceID)
 	if err != nil {
-		return MessageResponse{}, err
-	}
-	claims, err := s.store.ListClaims(ctx, workspaceID, 200)
-	if err != nil {
-		return MessageResponse{}, err
-	}
-	agenda, err := s.store.ListAgenda(ctx, workspaceID, 80)
-	if err != nil {
-		return MessageResponse{}, err
-	}
-	documents, err := s.store.ListDocuments(ctx, workspaceID)
-	if err != nil {
-		return MessageResponse{}, err
+		// The AI result has already been persisted. A temporary hydration failure
+		// must not turn a completed turn into a user-visible failed request.
+		finalState = state
+		finalState.Pipeline = pipeline
 	}
 
+	return messageResponseFromState(workspaceID, assistantMessage, result.ResponseID, finalState), nil
+}
+
+func messageResponseFromState(workspaceID int, assistantMessage string, responseID string, state StateResponse) MessageResponse {
 	return MessageResponse{
 		WorkspaceID:          workspaceID,
 		AssistantMessage:     assistantMessage,
-		ConversationState:    pipelineConversationState(finalState.Pipeline, finalState.OnboardingSummary),
+		ConversationState:    pipelineConversationState(state.Pipeline, state.OnboardingSummary),
 		MemoryUpdates:        MemoryUpdates{},
-		Snapshot:             finalState.Snapshot,
-		Documents:            documents,
-		Agenda:               agenda,
-		Claims:               claims,
-		CommunicationProfile: finalState.CommunicationProfile,
-		DialogueFocus:        finalState.DialogueFocus,
-		OpenAIResponseID:     result.ResponseID,
-		Pipeline:             finalState.Pipeline,
-		OnboardingSummary:    finalState.OnboardingSummary,
-	}, nil
+		Snapshot:             state.Snapshot,
+		Documents:            state.Documents,
+		Agenda:               state.Agenda,
+		Claims:               state.Claims,
+		CommunicationProfile: state.CommunicationProfile,
+		DialogueFocus:        state.DialogueFocus,
+		OpenAIResponseID:     responseID,
+		Pipeline:             state.Pipeline,
+		OnboardingSummary:    state.OnboardingSummary,
+	}
 }
 
 func knowledgeInputLocked(status string) bool {
@@ -581,7 +582,9 @@ func (s *Service) uploadFile(ctx context.Context, workspaceID int, userID int, f
 
 func (s *Service) fallbackMessageResponse(ctx context.Context, workspaceID int, state StateResponse, assistantMessage string) MessageResponse {
 	assistantMessage = cleanAssistantMessage(fallbackAssistantReply(assistantMessage))
-	_, _ = s.store.CreateRawSource(ctx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	_, _ = s.store.CreateRawSource(persistCtx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
 		"prompt_version": StrategicMemoryPromptVersion,
 		"fallback":       true,
 	})
