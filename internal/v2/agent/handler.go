@@ -86,6 +86,23 @@ func (h *Handler) Runs(w http.ResponseWriter, r *http.Request) {
 		api.WriteJSON(w, http.StatusAccepted, map[string]any{"run": run})
 		return
 	}
+	if len(parts) == 2 && parts[1] == "revise" {
+		if r.Method != http.MethodPost {
+			api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			return
+		}
+		var body CreateRunRequest
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		run, err := h.service.ReviseRun(r.Context(), userID, publicID, body)
+		if err != nil {
+			writeServiceError(w, err, "agent_revision_failed")
+			return
+		}
+		api.WriteJSON(w, http.StatusAccepted, map[string]any{"run": run})
+		return
+	}
 	if len(parts) == 2 && parts[1] == "cancel" {
 		if r.Method != http.MethodPost {
 			api.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")

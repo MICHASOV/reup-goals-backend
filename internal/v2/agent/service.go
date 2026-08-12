@@ -265,6 +265,66 @@ func (s *Service) CreateRun(ctx context.Context, userID int, request CreateRunRe
 	return s.Hydrate(ctx, run, 0)
 }
 
+// ReviseRun replaces a pending approval package and starts its revision as one
+// server-side operation. Once accepted, it deliberately survives a browser
+// disconnect so a page refresh cannot leave the user between the two states.
+func (s *Service) ReviseRun(ctx context.Context, userID int, publicID string, request CreateRunRequest) (Run, error) {
+	if !s.Enabled() {
+		return Run{}, errors.New("agent_runtime_disabled")
+	}
+	durableCtx := context.WithoutCancel(ctx)
+	workspace, _, err := s.workspaces.GetOrCreateDefault(durableCtx, userID)
+	if err != nil {
+		return Run{}, err
+	}
+	source, err := s.store.ByPublicIDForUser(durableCtx, publicID, workspace.ID, userID)
+	if err != nil {
+		return Run{}, err
+	}
+	if request.ThreadID == 0 {
+		request.ThreadID = source.ThreadID
+	}
+	if request.ThreadID != source.ThreadID {
+		return Run{}, errors.New("invalid_agent_revision_thread")
+	}
+
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	if request.RequestID != "" {
+		existing, existingErr := s.store.ByRequestID(
+			durableCtx, workspace.ID, userID, source.ThreadID, request.RequestID,
+		)
+		if existingErr == nil {
+			return s.Hydrate(durableCtx, existing, 0)
+		}
+		if !errors.Is(existingErr, sql.ErrNoRows) {
+			return Run{}, existingErr
+		}
+	}
+
+	if source.Status == StatusWaitingApproval {
+		approvals, approvalErr := s.store.Approvals(durableCtx, source.ID)
+		if approvalErr != nil {
+			return Run{}, approvalErr
+		}
+		decisions := make([]Decision, 0, len(approvals))
+		for _, approval := range approvals {
+			if approval.Status == "pending" {
+				decisions = append(decisions, Decision{CallID: approval.CallID, Approved: false})
+			}
+		}
+		if len(decisions) == 0 {
+			return Run{}, errors.New("agent_approval_not_pending")
+		}
+		if _, err = s.Decide(durableCtx, userID, publicID, DecisionRequest{Decisions: decisions}); err != nil {
+			return Run{}, err
+		}
+	} else if source.Status != StatusCompleted && source.Status != StatusCanceled {
+		return Run{}, errors.New("agent_run_not_waiting_for_approval")
+	}
+
+	return s.CreateRun(durableCtx, userID, request)
+}
+
 func agentRequestText(message string, instruction string) string {
 	message = strings.TrimSpace(message)
 	instruction = strings.TrimSpace(instruction)
