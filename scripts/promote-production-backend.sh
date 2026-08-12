@@ -5,7 +5,7 @@ set -Eeuo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 backend_artifact="/tmp/reup_goals_backend"
 release_id="production-$(git -C "$repo_root" rev-parse --short=12 HEAD)"
-production_target="${REUP_PRODUCTION_SSH_TARGET:-reup}"
+production_target="${REUP_PRODUCTION_SSH_TARGET:-root@109.73.198.164}"
 
 cd "$repo_root"
 echo "Building production backend..."

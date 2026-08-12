@@ -10,6 +10,10 @@ release_workspace=""
 release_backend_root=""
 release_frontend_root=""
 frontend_deploy_path="${FRONTEND_DEPLOY_PATH:-/var/www/reupgoals.pro}"
+production_host="${REUP_PRODUCTION_HOST:-109.73.198.164}"
+production_user="${REUP_PRODUCTION_USER:-root}"
+production_target="${REUP_PRODUCTION_SSH_TARGET:-${production_user}@${production_host}}"
+ai_target="${REUP_AI_SSH_TARGET:-root@167.233.230.212}"
 release_id="$(date -u +%Y%m%d-%H%M%S)"
 frontend_backup="/var/backups/reup-goals/frontend-${release_id}.tar.gz"
 frontend_csp_backup="/var/backups/reup-goals/frontend-${release_id}.csp.conf"
@@ -31,6 +35,17 @@ for command_name in "${required_commands[@]}"; do
     exit 1
   fi
 done
+
+check_ssh_target() {
+  local target="$1"
+  local label="$2"
+
+  if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$target" true; then
+    echo "$label is unreachable over SSH: $target" >&2
+    echo "If a VPN is enabled, disconnect it and run the release command again." >&2
+    exit 1
+  fi
+}
 
 if ! git -C "$frontend_source_root" rev-parse --git-dir >/dev/null 2>&1; then
   echo "Frontend repository not found: $frontend_source_root" >&2
@@ -95,7 +110,7 @@ rollback_frontend() {
     return
   fi
   echo "Frontend verification failed. Restoring the previous production build..." >&2
-  ssh reup "set -euo pipefail
+  ssh "$production_target" "set -euo pipefail
     test -f '$frontend_backup'
     rm -rf '$frontend_deploy_path'
     mkdir -p '$frontend_deploy_path'
@@ -120,6 +135,8 @@ trap on_error ERR
 
 assert_release_revision "$backend_source_root" "Backend"
 assert_release_revision "$frontend_source_root" "Frontend"
+check_ssh_target "$production_target" "Russian production server"
+check_ssh_target "$ai_target" "German AI server"
 
 backend_revision="$(git -C "$backend_source_root" rev-parse --short=12 HEAD)"
 frontend_revision="$(git -C "$frontend_source_root" rev-parse --short=12 HEAD)"
@@ -162,7 +179,7 @@ if [[ "$dry_run" == true ]]; then
 fi
 
 echo "Backing up the current production frontend..."
-ssh reup "set -euo pipefail
+ssh "$production_target" "set -euo pipefail
   mkdir -p /var/backups/reup-goals
   test -d '$frontend_deploy_path'
   tar -czf '$frontend_backup' -C '$(dirname "$frontend_deploy_path")' '$(basename "$frontend_deploy_path")'
@@ -174,16 +191,18 @@ ssh reup "set -euo pipefail
   find /var/backups/reup-goals -type f -name 'frontend-*.tar.gz' -mtime +14 -delete"
 
 echo "Promoting AI runtime to Germany..."
-"$backend_root/scripts/promote-production-ai.sh"
+REUP_AI_SSH_TARGET="$ai_target" "$backend_root/scripts/promote-production-ai.sh"
 
 echo "Promoting backend to production..."
-"$backend_root/scripts/promote-production-backend.sh"
+REUP_PRODUCTION_SSH_TARGET="$production_target" "$backend_root/scripts/promote-production-backend.sh"
 
 echo "Promoting frontend to production..."
 frontend_deploy_started=true
 (
   cd "$frontend_root"
   NEXT_PUBLIC_API_BASE_URL=https://api.reupgoals.pro \
+    DEPLOY_HOST="$production_host" \
+    DEPLOY_USER="$production_user" \
     DEPLOY_PATH="$frontend_deploy_path" \
     bash "$frontend_root/scripts/deploy.sh"
 )

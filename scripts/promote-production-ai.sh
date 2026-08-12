@@ -6,7 +6,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runtime_artifact="/tmp/reup_goals_ai_runtime.tar.gz"
 runtime_stage="$(mktemp -d /tmp/reup-goals-ai-runtime.XXXXXX)"
 node_version="${AGENT_NODE_VERSION:-v22.17.0}"
-ai_target="${REUP_AI_SSH_TARGET:-reup-ai}"
+ai_target="${REUP_AI_SSH_TARGET:-root@167.233.230.212}"
 ai_public_url="${REUP_AI_PUBLIC_URL:-https://ai.reupgoals.pro}"
 
 cleanup() { rm -rf "$runtime_stage"; }
