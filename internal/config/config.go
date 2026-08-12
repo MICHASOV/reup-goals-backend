@@ -47,6 +47,7 @@ type Config struct {
 	AgentRuntimeURL               string
 	AgentRuntimeSecret            string
 	AgentRuntimeMaxTurns          int
+	AgentRuntimeTimeout           time.Duration
 	AgentReleaseID                string
 
 	JWTSecret                     string
@@ -241,11 +242,12 @@ func Load() *Config {
 		AIMonthlyBudgetUSD:            parseFloatEnv("AI_MONTHLY_BUDGET_USD", 0),
 		AIJobWorkers:                  parseIntEnv("AI_JOB_WORKERS", 6),
 		AIAgentJobWorkers:             parseIntEnv("AI_AGENT_JOB_WORKERS", 8),
-		JobQueueNamespace:             strings.TrimSpace(os.Getenv("JOB_QUEUE_NAMESPACE")),
+		JobQueueNamespace:             jobQueueNamespace(environment, os.Getenv("JOB_QUEUE_NAMESPACE")),
 		AgentRuntimeEnabled:           parseBoolEnv("AGENT_RUNTIME_ENABLED"),
 		AgentRuntimeURL:               agentRuntimeURL,
 		AgentRuntimeSecret:            strings.TrimSpace(os.Getenv("AGENT_RUNTIME_SECRET")),
 		AgentRuntimeMaxTurns:          parseIntEnv("AGENT_RUNTIME_MAX_TURNS", 120),
+		AgentRuntimeTimeout:           parseDurationEnv("AGENT_RUNTIME_TIMEOUT", 45*time.Minute),
 		AgentReleaseID:                strings.TrimSpace(os.Getenv("AGENT_RELEASE_ID")),
 
 		JWTSecret:                     jwtSecret,
@@ -295,6 +297,18 @@ func Load() *Config {
 		SupportEmail:              supportEmail,
 		DocumentationURL:          strings.TrimSpace(os.Getenv("DOCUMENTATION_URL")),
 		ChangelogURL:              strings.TrimSpace(os.Getenv("CHANGELOG_URL")),
+	}
+}
+
+func jobQueueNamespace(environment string, configured string) string {
+	if value := strings.TrimSpace(configured); value != "" {
+		return value
+	}
+	switch strings.ToLower(strings.TrimSpace(environment)) {
+	case "production", "staging":
+		return strings.ToLower(strings.TrimSpace(environment))
+	default:
+		return "development"
 	}
 }
 

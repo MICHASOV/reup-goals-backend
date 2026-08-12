@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateRejectsUnsafeSecret(t *testing.T) {
@@ -50,6 +51,35 @@ func TestLoadSetsDatabaseApplicationNameFromEnvironment(t *testing.T) {
 	}
 	if parsed.Query().Get("application_name") != "reup-goals-staging" {
 		t.Fatalf("application name is missing from connection string: %s", parsed.RawQuery)
+	}
+}
+
+func TestLoadSeparatesProductionJobQueue(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("JOB_QUEUE_NAMESPACE", "")
+	config := Load()
+	if config.JobQueueNamespace != "production" {
+		t.Fatalf("unexpected production queue namespace: %q", config.JobQueueNamespace)
+	}
+	if config.AgentRuntimeTimeout != 45*time.Minute {
+		t.Fatalf("unexpected agent runtime timeout: %s", config.AgentRuntimeTimeout)
+	}
+}
+
+func TestLoadSeparatesStagingJobQueue(t *testing.T) {
+	t.Setenv("APP_ENV", "staging")
+	t.Setenv("JOB_QUEUE_NAMESPACE", "")
+	config := Load()
+	if config.JobQueueNamespace != "staging" {
+		t.Fatalf("unexpected staging queue namespace: %q", config.JobQueueNamespace)
+	}
+}
+
+func TestLoadPreservesExplicitJobQueue(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("JOB_QUEUE_NAMESPACE", "release-canary")
+	if got := Load().JobQueueNamespace; got != "release-canary" {
+		t.Fatalf("unexpected explicit queue namespace: %q", got)
 	}
 }
 

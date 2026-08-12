@@ -3,6 +3,7 @@ import { request as httpRequest, type RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Transform } from "node:stream";
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
+import { durationMilliseconds } from "./transport.js";
 
 const allowedRoots = [
   "/v1/responses",
@@ -99,7 +100,10 @@ export function proxyOpenAIRequest(
     upstreamResponse.pipe(response);
   });
 
-  upstream.setTimeout(30 * 60 * 1000, () => upstream.destroy(new Error("openai_gateway_timeout")));
+  upstream.setTimeout(
+    durationMilliseconds(process.env.OPENAI_GATEWAY_TIMEOUT, 45 * 60 * 1000),
+    () => upstream.destroy(new Error("openai_gateway_timeout")),
+  );
   upstream.on("error", (error) => {
     console.error(JSON.stringify({
       level: "error",

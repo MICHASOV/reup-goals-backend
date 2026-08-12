@@ -113,6 +113,8 @@ cat > "$release_config" <<EOF
 [Service]
 Environment="AGENT_RUNTIME_ENABLED=true"
 Environment="AGENT_RUNTIME_MAX_TURNS=120"
+Environment="AGENT_RUNTIME_TIMEOUT=45m"
+Environment="JOB_QUEUE_NAMESPACE=production"
 Environment="AGENT_RELEASE_ID=${release_id}"
 Environment="OPENAI_PROXY_URL=direct"
 EOF

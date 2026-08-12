@@ -6,6 +6,7 @@ import { ZodError } from "zod";
 import { configureOpenAIProvider } from "./provider.js";
 import { proxyOpenAIRequest } from "./openaiGateway.js";
 import { executeRun, resumeRun } from "./runtime.js";
+import { isSecureInternalURL } from "./transport.js";
 import { executeRunRequestSchema, resumeRunRequestSchema } from "./types.js";
 
 const port = Number(process.env.PORT || 8091);
@@ -14,6 +15,7 @@ const runtimeSecret = (process.env.AGENT_RUNTIME_SECRET || "").trim();
 const gatewaySecret = (process.env.AI_GATEWAY_SECRET || "").trim();
 const openAIAPIKey = (process.env.OPENAI_API_KEY || "").trim();
 const openAIUpstreamURL = (process.env.OPENAI_UPSTREAM_URL || "https://api.openai.com").trim();
+const goInternalURL = (process.env.GO_INTERNAL_URL || "").trim();
 const gatewayMaxRequestBytes = Number(process.env.AI_GATEWAY_MAX_REQUEST_BYTES || 128 * 1024 * 1024);
 validateConfiguration();
 configureOpenAIProvider();
@@ -39,9 +41,8 @@ function validateConfiguration(): void {
   if (upstream.protocol !== "https:") {
     throw new Error("OPENAI_UPSTREAM_URL must use HTTPS in production");
   }
-  const goInternalURL = new URL((process.env.GO_INTERNAL_URL || "").trim());
-  if (goInternalURL.protocol !== "https:") {
-    throw new Error("GO_INTERNAL_URL must point to the Russian API over HTTPS in production");
+  if (!isSecureInternalURL(goInternalURL)) {
+    throw new Error("GO_INTERNAL_URL must use HTTPS or a loopback HTTP tunnel in production");
   }
 }
 
@@ -82,6 +83,28 @@ const server = createServer(async (request, response) => {
         runtime: Boolean(runtimeSecret || process.env.NODE_ENV !== "production"),
         gateway: Boolean(gatewaySecret && openAIAPIKey),
       });
+      return;
+    }
+    if (request.method === "GET" && request.url === "/readyz") {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3_000);
+      try {
+        const healthURL = new URL("/healthz", goInternalURL);
+        const goResponse = await fetch(healthURL, {
+          method: "GET",
+          signal: controller.signal,
+          headers: { Accept: "application/json" },
+        });
+        if (!goResponse.ok) {
+          writeJSON(response, 503, { ok: false, callback: false });
+          return;
+        }
+        writeJSON(response, 200, { ok: true, callback: true });
+      } catch {
+        writeJSON(response, 503, { ok: false, callback: false });
+      } finally {
+        clearTimeout(timeout);
+      }
       return;
     }
     if ((request.url || "").startsWith("/openai/")) {

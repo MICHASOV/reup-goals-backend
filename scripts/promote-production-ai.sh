@@ -74,7 +74,12 @@ if ! [[ "$runtime_port" =~ ^[0-9]+$ ]] || [ "$runtime_port" -lt 1 ] || [ "$runti
   echo "German AI PORT is invalid." >&2
   exit 1
 fi
-if [ -z "$openai_key" ] || [ "${#runtime_secret}" -lt 32 ] || [ "${#gateway_secret}" -lt 32 ] || [ "$runtime_secret" = "$gateway_secret" ] || [[ "$go_internal_url" != https://* ]]; then
+if [[ "$go_internal_url" == https://* ]] || [[ "$go_internal_url" == http://127.0.0.1:* ]] || [[ "$go_internal_url" == http://localhost:* ]]; then
+  go_internal_url_safe=true
+else
+  go_internal_url_safe=false
+fi
+if [ -z "$openai_key" ] || [ "${#runtime_secret}" -lt 32 ] || [ "${#gateway_secret}" -lt 32 ] || [ "$runtime_secret" = "$gateway_secret" ] || [ "$go_internal_url_safe" != true ]; then
   echo "German AI environment is incomplete or unsafe." >&2
   exit 1
 fi

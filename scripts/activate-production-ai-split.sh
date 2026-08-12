@@ -93,6 +93,9 @@ for env_file in "$primary_env" "$legacy_env"; do
     set_env "$env_file" DB_MAX_IDLE_CONNS 2
     set_env "$env_file" AI_JOB_WORKERS 2
     set_env "$env_file" AI_AGENT_JOB_WORKERS 4
+    set_env "$env_file" APP_ENV production
+    set_env "$env_file" JOB_QUEUE_NAMESPACE production
+    set_env "$env_file" AGENT_RUNTIME_TIMEOUT 45m
     chmod 600 "$env_file"
   fi
 done
@@ -118,6 +121,8 @@ gateway_secret=
 
 echo "Promoting the Russian backend and switching production AI traffic..."
 git -C "$repo_root" worktree add --detach "$release_worktree" HEAD >/dev/null
+REUP_PRODUCTION_SSH_TARGET="$production_target" REUP_AI_SSH_TARGET="$germany_target" \
+  "$release_worktree/scripts/configure-production-ai-return-tunnel.sh"
 REUP_PRODUCTION_SSH_TARGET="$production_target" \
   "$release_worktree/scripts/promote-production-backend.sh"
 

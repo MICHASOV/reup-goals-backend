@@ -7,16 +7,10 @@ concurrency:
   group: production-ai-runtime
   cancel-in-progress: false
 
+# Production AI is released only by the atomic promotion script. It creates
+# the private Russia-to-Germany callback before switching traffic, which a
+# standalone push workflow cannot safely do.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "agent-runtime/**"
-      - "deploy/production/ai-runtime.env.example"
-      - "deploy/production/nginx-ai.conf.example"
-      - "deploy/production/reup-goals-ai.service"
-      - ".github/workflows/deploy-production-ai.yml"
   workflow_dispatch:
 
 jobs:
@@ -112,12 +106,14 @@ jobs:
           }
           set_env PORT 8092
           set_env LISTEN_HOST 127.0.0.1
-          set_env GO_INTERNAL_URL https://api.reupgoals.pro
+          set_env GO_INTERNAL_URL http://127.0.0.1:18080
           set_env AI_GATEWAY_MAX_REQUEST_BYTES 134217728
           set_env OPENAI_UPSTREAM_URL https://api.openai.com
           set_env OPENAI_PROXY_URL direct
           set_env AGENT_COMPACT_THRESHOLD 100000
           set_env AGENT_REASONING_EFFORT max
+          set_env AGENT_PROVIDER_TIMEOUT 45m
+          set_env OPENAI_GATEWAY_TIMEOUT 45m
 
           read_env() { grep -E "^$1=" "$env_file" | tail -1 | cut -d= -f2- || true; }
           openai_key=$(read_env OPENAI_API_KEY)
@@ -134,8 +130,8 @@ jobs:
             echo "AGENT_RUNTIME_SECRET and AI_GATEWAY_SECRET must be different." >&2
             exit 1
           fi
-          if [[ "$go_internal_url" != https://* ]]; then
-            echo "GO_INTERNAL_URL must use HTTPS." >&2
+          if [[ "$go_internal_url" != https://* ]] && [[ "$go_internal_url" != http://127.0.0.1:* ]] && [[ "$go_internal_url" != http://localhost:* ]]; then
+            echo "GO_INTERNAL_URL must use HTTPS or the private loopback tunnel." >&2
             exit 1
           fi
           if ! [[ "$runtime_port" =~ ^[0-9]+$ ]] || [ "$runtime_port" -lt 1 ] || [ "$runtime_port" -gt 65535 ]; then
@@ -219,6 +215,18 @@ jobs:
             sleep 1
           done
 
+          for attempt in $(seq 1 45); do
+            ready=$(curl --silent --max-time 5 "http://127.0.0.1:${runtime_port}/readyz" || true)
+            if [[ "$ready" == *'"callback":true'* ]]; then
+              break
+            fi
+            if [ "$attempt" -eq 45 ]; then
+              echo "AI runtime cannot reach the production API through its private callback." >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
           # Use a dedicated webroot for the first certificate. This avoids
           # Certbot rewriting an nginx configuration that also serves staging.
           if [ ! -f /etc/letsencrypt/live/ai.reupgoals.pro/fullchain.pem ]; then
@@ -297,6 +305,12 @@ jobs:
                   proxy_hide_header Server;
               }
 
+              location = /readyz {
+                  proxy_pass http://127.0.0.1:8092;
+                  proxy_set_header Host $host;
+                  proxy_hide_header Server;
+              }
+
               location ~ ^/(v1/runs/|openai/) {
                   allow 109.73.198.164;
                   deny all;
@@ -331,6 +345,10 @@ jobs:
         run: |
           health=$(curl --fail --show-error --silent --retry 5 --retry-all-errors \
             https://ai.reupgoals.pro/healthz)
+          ready=$(curl --fail --show-error --silent --retry 5 --retry-all-errors \
+            https://ai.reupgoals.pro/readyz)
           printf '%s\n' "$health"
+          printf '%s\n' "$ready"
           [[ "$health" == *'"runtime":true'* ]]
           [[ "$health" == *'"gateway":true'* ]]
+          [[ "$ready" == *'"callback":true'* ]]

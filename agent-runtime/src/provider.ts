@@ -3,6 +3,7 @@ import { OpenAIProvider } from "@openai/agents-openai";
 import fetch from "node-fetch";
 import OpenAI from "openai";
 import { SocksProxyAgent } from "socks-proxy-agent";
+import { durationMilliseconds } from "./transport.js";
 
 let configured = false;
 
@@ -30,9 +31,9 @@ export function configureOpenAIProvider(): void {
     apiKey,
     fetch: proxiedFetch,
     maxRetries: 2,
-    // The provider owns the lifecycle. A business analysis may legitimately
-    // take much longer than a normal web request.
-    timeout: 24 * 60 * 60 * 1000,
+    // Long analyses remain supported, while a broken network path can no
+    // longer keep a background run alive forever.
+    timeout: durationMilliseconds(process.env.AGENT_PROVIDER_TIMEOUT, 45 * 60 * 1000),
   });
   setDefaultModelProvider(new OpenAIProvider({ openAIClient: client as never }));
   // REUP.goals records tool stages and usage in PostgreSQL. SDK tracing would

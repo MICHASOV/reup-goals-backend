@@ -59,6 +59,7 @@ type ServiceConfig struct {
 	ReleaseID string
 	Secret    string
 	MaxTurns  int
+	Timeout   time.Duration
 }
 
 type agentJobPayload struct {
@@ -67,7 +68,7 @@ type agentJobPayload struct {
 
 const (
 	InteractiveJobPriority = 100
-	agentJobMaxAttempts    = 12
+	agentJobMaxAttempts    = 3
 )
 
 func NewService(
@@ -99,8 +100,12 @@ func NewService(
 		service.releaseID = DefaultRelease
 	}
 	if cfg.Enabled && jobManager != nil {
-		jobManager.RegisterWithoutTimeout(JobTypeExecute, service.handleExecuteJob)
-		jobManager.RegisterWithoutTimeout(JobTypeResume, service.handleResumeJob)
+		timeout := cfg.Timeout
+		if timeout <= 0 {
+			timeout = 45 * time.Minute
+		}
+		jobManager.RegisterWithTimeout(JobTypeExecute, timeout, service.handleExecuteJob)
+		jobManager.RegisterWithTimeout(JobTypeResume, timeout, service.handleResumeJob)
 	}
 	return service
 }
@@ -990,6 +995,9 @@ func (s *Service) failBeforeReservation(
 func isPermanentRuntimeError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
 	}
 	message := err.Error()
 	for _, status := range []string{"400", "401", "403", "404", "409", "413", "422"} {

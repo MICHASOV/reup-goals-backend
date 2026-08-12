@@ -18,11 +18,14 @@ type RuntimeClient struct {
 	client  *http.Client
 }
 
-func NewRuntimeClient(baseURL string, secret string) *RuntimeClient {
+func NewRuntimeClient(baseURL string, secret string, timeout time.Duration) *RuntimeClient {
+	if timeout <= 0 {
+		timeout = 45 * time.Minute
+	}
 	return &RuntimeClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		secret:  secret,
-		client: &http.Client{Transport: &http.Transport{
+		client: &http.Client{Timeout: timeout, Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 			TLSHandshakeTimeout:   10 * time.Second,

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -28,6 +29,9 @@ func TestPermanentRuntimeErrors(t *testing.T) {
 	}
 	if isPermanentRuntimeError(nil) {
 		t.Fatal("nil error must not be permanent")
+	}
+	if !isPermanentRuntimeError(context.DeadlineExceeded) {
+		t.Fatal("a timed-out runtime request must not start another long attempt")
 	}
 }
 

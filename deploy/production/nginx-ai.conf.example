@@ -34,6 +34,12 @@ server {
         proxy_hide_header Server;
     }
 
+    location = /readyz {
+        proxy_pass http://127.0.0.1:8092;
+        proxy_set_header Host $host;
+        proxy_hide_header Server;
+    }
+
     # Replace the placeholder with the fixed public egress IP of the Russian API.
     location ~ ^/(v1/runs/|openai/) {
         allow RUSSIAN_API_PUBLIC_IP;

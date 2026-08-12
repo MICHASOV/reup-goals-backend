@@ -38,3 +38,17 @@ func TestNormalizeNamespace(t *testing.T) {
 		}
 	}
 }
+
+func TestRegisterWithTimeoutStoresAgentDeadline(t *testing.T) {
+	manager := NewManagerWithNamespace(nil, "production")
+	handler := func(context.Context, Job) error { return nil }
+
+	manager.RegisterWithTimeout("executive_agent.execute", 45*time.Minute, handler)
+
+	if got := manager.timeouts["executive_agent.execute"]; got != 45*time.Minute {
+		t.Fatalf("unexpected registered timeout: %s", got)
+	}
+	if manager.handlers["executive_agent.execute"] == nil {
+		t.Fatal("agent handler was not registered")
+	}
+}

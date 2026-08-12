@@ -193,6 +193,10 @@ ssh "$production_target" "set -euo pipefail
 echo "Promoting AI runtime to Germany..."
 REUP_AI_SSH_TARGET="$ai_target" "$backend_root/scripts/promote-production-ai.sh"
 
+echo "Verifying the private AI return channel..."
+REUP_PRODUCTION_SSH_TARGET="$production_target" REUP_AI_SSH_TARGET="$ai_target" \
+  "$backend_root/scripts/configure-production-ai-return-tunnel.sh"
+
 echo "Promoting backend to production..."
 REUP_PRODUCTION_SSH_TARGET="$production_target" "$backend_root/scripts/promote-production-backend.sh"
 

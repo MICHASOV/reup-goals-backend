@@ -97,10 +97,14 @@ func normalizeNamespace(value string) string {
 }
 
 func (m *Manager) Register(jobType string, handler Handler) {
+	m.RegisterWithTimeout(jobType, 10*time.Minute, handler)
+}
+
+func (m *Manager) RegisterWithTimeout(jobType string, timeout time.Duration, handler Handler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.handlers[jobType] = handler
-	m.timeouts[jobType] = 10 * time.Minute
+	m.timeouts[jobType] = timeout
 }
 
 // RegisterWithoutTimeout is reserved for providers that own their request
@@ -146,6 +150,9 @@ func (m *Manager) EnqueuePriority(
 	if err != nil {
 		return 0, fmt.Errorf("job payload: %w", err)
 	}
+	if dedupeKey != "" && (jobType == "executive_agent.execute" || jobType == "executive_agent.resume") {
+		return m.enqueueUniqueActiveAgentJob(ctx, workspaceID, jobType, dedupeKey, raw, maxAttempts, notBefore, priority)
+	}
 
 	var id int64
 	err = m.dbx.QueryRowContext(ctx, `
@@ -165,6 +172,64 @@ func (m *Manager) EnqueuePriority(
 		RETURNING id
 		`, m.namespace, workspaceID, jobType, dedupeKey, raw, StatusQueued, priority, maxAttempts, notBefore).Scan(&id)
 	return id, err
+}
+
+func (m *Manager) enqueueUniqueActiveAgentJob(
+	ctx context.Context,
+	workspaceID int,
+	jobType string,
+	dedupeKey string,
+	payload json.RawMessage,
+	maxAttempts int,
+	notBefore time.Time,
+	priority int,
+) (int64, error) {
+	tx, err := m.dbx.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	lockKey := fmt.Sprintf("%s:executive-agent:%d:%s", m.namespace, workspaceID, dedupeKey)
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		return 0, err
+	}
+
+	var id int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM v2_background_jobs
+		WHERE queue_name=$1 AND workspace_id=$2 AND dedupe_key=$3
+			AND job_type IN ('executive_agent.execute', 'executive_agent.resume')
+			AND status IN ('queued', 'running')
+		ORDER BY CASE WHEN status='running' THEN 0 ELSE 1 END, id
+		LIMIT 1
+	`, m.namespace, workspaceID, dedupeKey).Scan(&id)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO v2_background_jobs (
+			queue_name, workspace_id, job_type, dedupe_key, payload_json, status,
+			priority, attempts, max_attempts, not_before, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, NOW())
+		RETURNING id
+	`, m.namespace, workspaceID, jobType, dedupeKey, payload, StatusQueued, priority, maxAttempts, notBefore).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 // EnqueueDebounced coalesces bursts and waits for a short quiet period before
@@ -517,7 +582,11 @@ func (m *Manager) Stats(ctx context.Context, workspaceID int) (QueueStats, error
 		SELECT
 			COUNT(*) FILTER (WHERE status='queued'),
 			COUNT(*) FILTER (WHERE status='running'),
-			COUNT(*) FILTER (WHERE status='failed' AND updated_at > NOW() - INTERVAL '24 hours')
+			COUNT(*) FILTER (
+				WHERE status='failed'
+					AND updated_at > NOW() - INTERVAL '24 hours'
+					AND job_type NOT IN ('executive_agent.execute', 'executive_agent.resume')
+			)
 		FROM v2_background_jobs
 		WHERE workspace_id=$1 AND queue_name=$2
 	`, workspaceID, m.namespace).Scan(&stats.Queued, &stats.Running, &stats.Failed)
