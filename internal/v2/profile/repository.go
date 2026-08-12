@@ -165,6 +165,7 @@ func (s *Store) Subscription(ctx context.Context, workspaceID, ownerUserID int, 
 			DisplayStatus:     "inactive",
 			CheckoutAvailable: checkoutAvailable,
 			MemberLimit:       plan.MemberLimit,
+			AIChatEnabled:     false,
 		}, nil
 	}
 	if err != nil {
@@ -257,6 +258,19 @@ func (s *Store) UpdateWorkspace(ctx context.Context, workspaceID int, displayNam
 	err = s.dbx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM workspace_memberships WHERE workspace_id=$1 AND status='active'
 	`, workspaceID).Scan(&result.MemberCount)
+	return result, err
+}
+
+func (s *Store) ReservedSeatCount(ctx context.Context, workspaceID int) (int, error) {
+	var result int
+	err := s.dbx.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM workspace_memberships
+			 WHERE workspace_id=$1 AND status='active')
+			+
+			(SELECT COUNT(*) FROM workspace_invitations
+			 WHERE workspace_id=$1 AND status='pending' AND expires_at>NOW())
+	`, workspaceID).Scan(&result)
 	return result, err
 }
 

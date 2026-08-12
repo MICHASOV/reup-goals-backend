@@ -72,6 +72,7 @@ type SubscriptionSummary struct {
 	PendingPeriod     string               `json:"pending_billing_period,omitempty"`
 	PendingStartsAt   *time.Time           `json:"pending_starts_at,omitempty"`
 	Access            bool                 `json:"access"`
+	AIChatEnabled     bool                 `json:"ai_chat_enabled"`
 	DisplayStatus     string               `json:"display_status"`
 	CheckoutAvailable bool                 `json:"checkout_available"`
 	MemberLimit       int                  `json:"member_limit"`
@@ -86,6 +87,7 @@ type AIUsageResponse struct {
 	ResetAmount           float64              `json:"reset_amount"`
 	Currency              string               `json:"currency"`
 	CanManageSubscription bool                 `json:"can_manage_subscription"`
+	AIChatEnabled         bool                 `json:"ai_chat_enabled"`
 	AIUsage               billing.QuotaSummary `json:"ai_usage"`
 }
 

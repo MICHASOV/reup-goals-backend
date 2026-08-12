@@ -156,8 +156,14 @@ func main() {
 	paidProduct := func(next http.HandlerFunc) http.HandlerFunc {
 		return v2api.RequireAuth(database, jwtSecret, v2api.RequireProductAccess(database, next))
 	}
+	paidAIChat := func(next http.HandlerFunc) http.HandlerFunc {
+		return v2api.RequireAuth(database, jwtSecret, v2api.RequireAIChatAccess(database, next))
+	}
 	onboardingOrPaid := func(next http.HandlerFunc) http.HandlerFunc {
 		return v2api.RequireAuth(database, jwtSecret, v2api.RequireOnboardingOrProductAccess(database, next))
+	}
+	onboardingOrPaidAI := func(next http.HandlerFunc) http.HandlerFunc {
+		return v2api.RequireAuth(database, jwtSecret, v2api.RequireOnboardingOrAIChatAccess(database, next))
 	}
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -226,10 +232,10 @@ func main() {
 	mux.Handle("/api/v2/ai/usage-policy", v2api.RequireAuth(database, jwtSecret, aiPlatformHandler.UsagePolicy))
 	mux.Handle("/api/v2/operations/overview", v2api.RequireAuth(database, jwtSecret, operationsHandler.Overview))
 	mux.Handle("/api/v2/operations/warnings", v2api.RequireAuth(database, jwtSecret, operationsHandler.Warnings))
-	mux.Handle("/api/v2/strategic-director/messages", onboardingOrPaid(strategicMemoryHandler.StrategicDirector))
-	mux.Handle("/api/v2/strategic-director/state", onboardingOrPaid(strategicMemoryHandler.StrategicDirector))
-	mux.Handle("/api/v2/strategic-director/confirm", onboardingOrPaid(strategicMemoryHandler.StrategicDirector))
-	mux.Handle("/api/v2/strategic-director/files", onboardingOrPaid(strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/strategic-director/messages", onboardingOrPaidAI(strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/strategic-director/state", onboardingOrPaidAI(strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/strategic-director/confirm", onboardingOrPaidAI(strategicMemoryHandler.StrategicDirector))
+	mux.Handle("/api/v2/strategic-director/files", onboardingOrPaidAI(strategicMemoryHandler.StrategicDirector))
 	if cfg.EnableAIBenchmark {
 		mux.Handle("/api/v2/strategic-director/model-benchmark", paidProduct(strategicMemoryHandler.ModelBenchmark))
 	}
@@ -249,26 +255,26 @@ func main() {
 	mux.Handle("/api/v2/strategy/artifacts/", paidProduct(strategyHandler.Artifacts))
 	mux.Handle("/api/v2/strategy/documents/", paidProduct(strategyHandler.SynthesisDocuments))
 	mux.Handle("/api/v2/strategy/", paidProduct(strategyHandler.Strategy))
-	mux.Handle("/api/v2/strategy-facilitator/state", paidProduct(strategyHandler.Facilitator))
-	mux.Handle("/api/v2/strategy-facilitator/messages", paidProduct(strategyHandler.Facilitator))
-	mux.Handle("/api/v2/strategy-facilitator/files", paidProduct(strategyHandler.Facilitator))
-	mux.Handle("/api/v2/strategy-facilitator/synthesis", paidProduct(strategyHandler.Facilitator))
-	mux.Handle("/api/v2/strategy-facilitator/readiness", paidProduct(strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/state", paidAIChat(strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/messages", paidAIChat(strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/files", paidAIChat(strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/synthesis", paidAIChat(strategyHandler.Facilitator))
+	mux.Handle("/api/v2/strategy-facilitator/readiness", paidAIChat(strategyHandler.Facilitator))
 	mux.Handle("/api/v2/course/current", paidProduct(courseHandler.Current))
 	mux.Handle("/api/v2/course/", paidProduct(courseHandler.Course))
 	mux.Handle("/api/v2/tactics/current", paidProduct(tacticsHandler.Current))
-	mux.Handle("/api/v2/tactics-facilitator/state", paidProduct(tacticsHandler.Facilitator))
-	mux.Handle("/api/v2/tactics-facilitator/messages", paidProduct(tacticsHandler.Facilitator))
-	mux.Handle("/api/v2/tactics-facilitator/actions/apply", paidProduct(tacticsHandler.Facilitator))
-	mux.Handle("/api/v2/tactics-facilitator/files", paidProduct(tacticsHandler.Facilitator))
-	mux.Handle("/api/v2/tactics-facilitator/readiness", paidProduct(tacticsHandler.Facilitator))
-	mux.Handle("/api/v2/tactics-advisor/threads", paidProduct(tacticsHandler.Advisor))
-	mux.Handle("/api/v2/tactics-advisor/threads/", paidProduct(tacticsHandler.Advisor))
-	mux.Handle("/api/v2/tactics-advisor/state", paidProduct(tacticsHandler.Advisor))
-	mux.Handle("/api/v2/tactics-advisor/messages", paidProduct(tacticsHandler.Advisor))
-	mux.Handle("/api/v2/tactics-advisor/files", paidProduct(tacticsHandler.Advisor))
-	mux.Handle("/api/v2/advisor/runs", paidProduct(agentHandler.Runs))
-	mux.Handle("/api/v2/advisor/runs/", paidProduct(agentHandler.Runs))
+	mux.Handle("/api/v2/tactics-facilitator/state", paidAIChat(tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/messages", paidAIChat(tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/actions/apply", paidAIChat(tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/files", paidAIChat(tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-facilitator/readiness", paidAIChat(tacticsHandler.Facilitator))
+	mux.Handle("/api/v2/tactics-advisor/threads", paidAIChat(tacticsHandler.Advisor))
+	mux.Handle("/api/v2/tactics-advisor/threads/", paidAIChat(tacticsHandler.Advisor))
+	mux.Handle("/api/v2/tactics-advisor/state", paidAIChat(tacticsHandler.Advisor))
+	mux.Handle("/api/v2/tactics-advisor/messages", paidAIChat(tacticsHandler.Advisor))
+	mux.Handle("/api/v2/tactics-advisor/files", paidAIChat(tacticsHandler.Advisor))
+	mux.Handle("/api/v2/advisor/runs", paidAIChat(agentHandler.Runs))
+	mux.Handle("/api/v2/advisor/runs/", paidAIChat(agentHandler.Runs))
 	if cfg.AgentRuntimeEnabled {
 		mux.HandleFunc("/internal/agent/runs/", agentHandler.InternalEvents)
 		mux.HandleFunc("/internal/agent/tools/", agentHandler.InternalTools)

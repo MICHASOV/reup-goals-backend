@@ -118,7 +118,7 @@ func VerifyEmailHandler(dbx *sql.DB, secret []byte, secureCookie bool, browserAu
 		response := map[string]any{
 			"ok": true, "user_id": userID, "workspace_onboarding_mode": onboardingMode,
 		}
-		if !browserAuthOnly {
+		if shouldExposeToken(r, browserAuthOnly) {
 			response["token"] = token
 		}
 		writeOK(w, response)

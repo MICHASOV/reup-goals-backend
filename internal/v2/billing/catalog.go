@@ -6,6 +6,7 @@ import (
 )
 
 const (
+	PlanStart   = "start"
 	PlanFounder = "founder"
 	PlanTeam    = "team"
 	PlanCompany = "company"
@@ -32,23 +33,30 @@ type Plan struct {
 	ResetAmount       float64 `json:"reset_amount"`
 	StandardResponses int     `json:"standard_responses_month"`
 	EquivalentTokens  int     `json:"equivalent_tokens_month"`
+	AIChatEnabled     bool    `json:"ai_chat_enabled"`
+	PerSeatPricing    bool    `json:"per_seat_pricing"`
 }
 
 var plans = []Plan{
 	{
+		Code: PlanStart, Name: "Start", MonthlyAmount: 290, QuarterlyAmount: 783, AnnualAmount: 2436,
+		Currency: "RUB", MemberLimit: 1, WeeklyTokenLimit: 0, ResetAmount: 0,
+		StandardResponses: 0, EquivalentTokens: 0, AIChatEnabled: false, PerSeatPricing: true,
+	},
+	{
 		Code: PlanFounder, Name: "Founder", MonthlyAmount: 3490, QuarterlyAmount: 9423, AnnualAmount: 29316,
 		Currency: "RUB", MemberLimit: 1, WeeklyTokenLimit: 1_250_000, ResetAmount: 890,
-		StandardResponses: 650, EquivalentTokens: 5_000_000,
+		StandardResponses: 650, EquivalentTokens: 5_000_000, AIChatEnabled: true,
 	},
 	{
 		Code: PlanTeam, Name: "Team", MonthlyAmount: 11990, QuarterlyAmount: 32373, AnnualAmount: 100716,
 		Currency: "RUB", MemberLimit: 5, WeeklyTokenLimit: 3_000_000, ResetAmount: 2990,
-		StandardResponses: 1730, EquivalentTokens: 12_000_000,
+		StandardResponses: 1730, EquivalentTokens: 12_000_000, AIChatEnabled: true,
 	},
 	{
 		Code: PlanCompany, Name: "Company", MonthlyAmount: 29990, QuarterlyAmount: 80973, AnnualAmount: 251916,
 		Currency: "RUB", MemberLimit: 0, WeeklyTokenLimit: 9_000_000, ResetAmount: 7490,
-		StandardResponses: 5200, EquivalentTokens: 36_000_000,
+		StandardResponses: 5200, EquivalentTokens: 36_000_000, AIChatEnabled: true,
 	},
 }
 
@@ -79,4 +87,25 @@ func Price(plan Plan, period string) (float64, error) {
 	default:
 		return 0, errors.New("billing_period_invalid")
 	}
+}
+
+func SubscriptionPrice(plan Plan, period string, quantity int) (float64, error) {
+	amount, err := Price(plan, period)
+	if err != nil {
+		return 0, err
+	}
+	if plan.PerSeatPricing {
+		if quantity < 1 {
+			return 0, errors.New("billing_quantity_invalid")
+		}
+		amount *= float64(quantity)
+	}
+	return amount, nil
+}
+
+func SubscriptionMemberLimit(plan Plan, quantity int) int {
+	if plan.PerSeatPricing {
+		return quantity
+	}
+	return plan.MemberLimit
 }

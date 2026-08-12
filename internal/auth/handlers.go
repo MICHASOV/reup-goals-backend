@@ -232,11 +232,20 @@ func LoginHandler(dbx *sql.DB, secret []byte, secureCookie bool, browserAuthOnly
 
 		w.Header().Set("Content-Type", "application/json")
 		response := map[string]any{"user_id": id, "workspace_onboarding_mode": onboardingMode}
-		if !browserAuthOnly {
+		if shouldExposeToken(r, browserAuthOnly) {
 			response["token"] = token
 		}
 		_ = json.NewEncoder(w).Encode(response)
 	}
+}
+
+const nativeClientHeader = "X-REUP-Native-Client"
+
+func shouldExposeToken(r *http.Request, browserAuthOnly bool) bool {
+	if !browserAuthOnly {
+		return true
+	}
+	return r.Header.Get(nativeClientHeader) == "mobile" && strings.TrimSpace(r.Header.Get("Origin")) == ""
 }
 
 func MeHandler(dbx *sql.DB) http.HandlerFunc {

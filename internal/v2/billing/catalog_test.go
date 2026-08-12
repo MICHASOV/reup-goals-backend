@@ -15,10 +15,12 @@ func TestPlanCatalog(t *testing.T) {
 		reset       float64
 		members     int
 		weeklyLimit int
+		aiChat      bool
 	}{
-		{PlanFounder, 3490, 9423, 29316, 890, 1, 1_250_000},
-		{PlanTeam, 11990, 32373, 100716, 2990, 5, 3_000_000},
-		{PlanCompany, 29990, 80973, 251916, 7490, 0, 9_000_000},
+		{PlanStart, 290, 783, 2436, 0, 1, 0, false},
+		{PlanFounder, 3490, 9423, 29316, 890, 1, 1_250_000, true},
+		{PlanTeam, 11990, 32373, 100716, 2990, 5, 3_000_000, true},
+		{PlanCompany, 29990, 80973, 251916, 7490, 0, 9_000_000, true},
 	}
 	for _, test := range tests {
 		plan, err := PlanByCode(test.code)
@@ -27,9 +29,63 @@ func TestPlanCatalog(t *testing.T) {
 		}
 		if plan.MonthlyAmount != test.monthly || plan.QuarterlyAmount != test.quarterly || plan.AnnualAmount != test.annual ||
 			plan.ResetAmount != test.reset || plan.MemberLimit != test.members ||
-			plan.WeeklyTokenLimit != test.weeklyLimit {
+			plan.WeeklyTokenLimit != test.weeklyLimit || plan.AIChatEnabled != test.aiChat {
 			t.Fatalf("unexpected plan: %+v", plan)
 		}
+	}
+}
+
+func TestStartQuotaSummaryHasNoChatCapacity(t *testing.T) {
+	state := quotaState{
+		planCode: PlanStart, baseLimit: 0, baseUsed: 0, timezone: "Europe/Moscow",
+	}
+	summary := state.summary()
+	if summary.AIAvailable || summary.RemainingTokens != 0 || summary.WeeklyTokenLimit != 0 {
+		t.Fatalf("unexpected Start quota summary: %+v", summary)
+	}
+	if summary.State != "exhausted" {
+		t.Fatalf("expected exhausted zero-capacity quota, got %q", summary.State)
+	}
+}
+
+func TestStartSubscriptionIsPricedPerSeat(t *testing.T) {
+	plan, err := PlanByCode(PlanStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		period string
+		amount float64
+	}{
+		{PeriodMonthly, 2030},
+		{PeriodQuarterly, 5481},
+		{PeriodAnnual, 17052},
+	}
+	for _, test := range tests {
+		amount, err := SubscriptionPrice(plan, test.period, 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if amount != test.amount {
+			t.Fatalf("unexpected Start %s amount: got=%v want=%v", test.period, amount, test.amount)
+		}
+	}
+	if SubscriptionMemberLimit(plan, 7) != 7 {
+		t.Fatalf("unexpected Start member limit: %d", SubscriptionMemberLimit(plan, 7))
+	}
+}
+
+func TestFixedPricePlansIgnoreCheckoutQuantity(t *testing.T) {
+	plan, err := PlanByCode(PlanFounder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, err := SubscriptionPrice(plan, PeriodMonthly, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amount != plan.MonthlyAmount || SubscriptionMemberLimit(plan, 7) != plan.MemberLimit {
+		t.Fatalf("fixed plan quantity changed pricing: amount=%v member_limit=%d", amount, SubscriptionMemberLimit(plan, 7))
 	}
 }
 

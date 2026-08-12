@@ -4049,6 +4049,50 @@ var migrations = []Migration{
 				WHERE role='assistant' AND COALESCE(metadata_json->>'agent_run_id', '') <> '';
 		`,
 	},
+	{
+		ID: "20260811_083_start_plan_without_ai_chat",
+		SQL: `
+			ALTER TABLE billing_plans DROP CONSTRAINT IF EXISTS billing_plans_weekly_ai_limit_check;
+			ALTER TABLE billing_plans ADD CONSTRAINT billing_plans_weekly_ai_limit_check
+				CHECK (weekly_ai_limit >= 0);
+			ALTER TABLE workspace_ai_quotas DROP CONSTRAINT IF EXISTS workspace_ai_quotas_base_limit_check;
+			ALTER TABLE workspace_ai_quotas ADD CONSTRAINT workspace_ai_quotas_base_limit_check
+				CHECK (base_limit >= 0);
+
+			UPDATE billing_plans SET sort_order=sort_order + 10 WHERE code <> 'start' AND sort_order < 40;
+
+			INSERT INTO billing_plans (
+				code, name, monthly_amount, quarterly_amount, annual_amount, currency,
+				member_limit, weekly_ai_limit, reset_amount, standard_responses_month,
+				equivalent_tokens_month, active, sort_order
+			) VALUES (
+				'start', 'Start', 290, 783, 2436, 'RUB', 1, 0, 0, 0, 0, TRUE, 10
+			)
+			ON CONFLICT (code) DO UPDATE SET
+				name=EXCLUDED.name,
+				monthly_amount=EXCLUDED.monthly_amount,
+				quarterly_amount=EXCLUDED.quarterly_amount,
+				annual_amount=EXCLUDED.annual_amount,
+				currency=EXCLUDED.currency,
+				member_limit=EXCLUDED.member_limit,
+				weekly_ai_limit=EXCLUDED.weekly_ai_limit,
+				reset_amount=EXCLUDED.reset_amount,
+				standard_responses_month=EXCLUDED.standard_responses_month,
+				equivalent_tokens_month=EXCLUDED.equivalent_tokens_month,
+				active=TRUE,
+				sort_order=EXCLUDED.sort_order,
+				updated_at=NOW();
+		`,
+	},
+	{
+		ID: "20260811_084_start_plan_per_seat",
+		SQL: `
+			ALTER TABLE workspace_billing_orders
+				DROP CONSTRAINT IF EXISTS workspace_billing_orders_quantity_check;
+			ALTER TABLE workspace_billing_orders
+				ADD CONSTRAINT workspace_billing_orders_quantity_check CHECK (quantity >= 1);
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

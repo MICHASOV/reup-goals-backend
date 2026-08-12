@@ -29,6 +29,7 @@ type response struct {
 	Workspace              workspace           `json:"workspace"`
 	ContextReady           bool                `json:"context_ready"`
 	SubscriptionAccess     bool                `json:"subscription_access"`
+	AIChatAccess           bool                `json:"ai_chat_access"`
 	OnboardingProgress     onboardingProgress  `json:"onboarding_progress"`
 	Strategy               *strategy           `json:"strategy,omitempty"`
 	StrategySessionActive  bool                `json:"strategy_session_active"`
@@ -154,13 +155,15 @@ func (h *Handler) Navigation(w http.ResponseWriter, r *http.Request) {
 		WorkspaceDocuments: []workspaceDocument{},
 		KnowledgeDocuments: []knowledgeDocument{},
 	}
-	result.SubscriptionAccess, err = api.WorkspaceHasProductAccess(
+	subscriptionAccess, err := api.WorkspaceSubscriptionAccess(
 		r.Context(), h.dbx, currentWorkspace.ID, currentWorkspace.OwnerUserID, time.Now().UTC(),
 	)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "subscription_lookup_failed")
 		return
 	}
+	result.SubscriptionAccess = subscriptionAccess.Product
+	result.AIChatAccess = subscriptionAccess.AIChat
 	if currentWorkspace.DisplayName != nil && strings.TrimSpace(*currentWorkspace.DisplayName) != "" {
 		result.Workspace.DisplayName = strings.TrimSpace(*currentWorkspace.DisplayName)
 	}

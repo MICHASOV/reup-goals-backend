@@ -78,7 +78,7 @@ func (s *Service) ConfirmCloudPaymentOrder(ctx context.Context, orderID int64, u
 			}
 			if err := confirmRecurringCloudPayment(
 				ctx, tx, workspaceID, ownerUserID, planCode, period,
-				transactionID, amount, expectedCurrency, cloudSubscriptionID, token,
+				transactionID, amount, expectedCurrency, cloudSubscriptionID, token, quantity,
 			); err != nil {
 				return CloudPaymentConfirmation{}, err
 			}
@@ -96,6 +96,7 @@ func (s *Service) ConfirmCloudPaymentOrder(ctx context.Context, orderID int64, u
 		return CloudPaymentConfirmation{}, err
 	}
 	now := time.Now().UTC()
+	memberLimit := SubscriptionMemberLimit(plan, quantity)
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE workspace_billing_orders
 		SET status='paid', external_id=$2, paid_at=$3,
@@ -142,7 +143,8 @@ func (s *Service) ConfirmCloudPaymentOrder(ctx context.Context, orderID int64, u
 			return CloudPaymentConfirmation{}, err
 		}
 		activeUntil := currentEnd.Valid && currentEnd.Time.After(now) && (currentStatus == "active" || currentStatus == "trial_active" || currentStatus == "cancelled")
-		if activeUntil {
+		replacingActivePerSeatPlan := activeUntil && plan.PerSeatPricing && currentPlan == plan.Code
+		if activeUntil && !replacingActivePerSeatPlan {
 			pendingEnd := currentEnd.Time.AddDate(0, months, 0)
 			_, err = tx.ExecContext(ctx, `
 				UPDATE subscriptions SET pending_plan_code=$2, pending_plan_name=$3,
@@ -151,13 +153,10 @@ func (s *Service) ConfirmCloudPaymentOrder(ctx context.Context, orderID int64, u
 					cloudpayments_subscription_id=COALESCE(NULLIF($9,''),cloudpayments_subscription_id),
 					cloudpayments_token=COALESCE(NULLIF($10,''),cloudpayments_token), updated_at=NOW()
 				WHERE workspace_id=$1 OR (workspace_id IS NULL AND user_id=$11)
-			`, workspaceID, plan.Code, plan.Name, period, amount, plan.MemberLimit,
+			`, workspaceID, plan.Code, plan.Name, period, amount, memberLimit,
 				currentEnd.Time, pendingEnd, cloudSubscriptionID, token, ownerUserID)
 		} else {
 			start := now
-			if activeUntil {
-				start = currentEnd.Time
-			}
 			end := start.AddDate(0, months, 0)
 			_, err = tx.ExecContext(ctx, `
 				INSERT INTO subscriptions (
@@ -176,7 +175,7 @@ func (s *Service) ConfirmCloudPaymentOrder(ctx context.Context, orderID int64, u
 					cloudpayments_subscription_id=COALESCE(EXCLUDED.cloudpayments_subscription_id,subscriptions.cloudpayments_subscription_id),
 					cloudpayments_token=COALESCE(EXCLUDED.cloudpayments_token,subscriptions.cloudpayments_token), updated_at=NOW()
 			`, ownerUserID, workspaceID, plan.Name, plan.Code, period, amount, expectedCurrency,
-				plan.MemberLimit, start, end, now, cloudSubscriptionID, token)
+				memberLimit, start, end, now, cloudSubscriptionID, token)
 		}
 		if err != nil {
 			return CloudPaymentConfirmation{}, err
@@ -197,12 +196,14 @@ func confirmRecurringCloudPayment(
 	planCode, period, transactionID string,
 	amount float64,
 	currency, cloudSubscriptionID, token string,
+	quantity int,
 ) error {
 	plan, err := PlanByCode(planCode)
 	if err != nil {
 		return err
 	}
 	now := time.Now().UTC()
+	memberLimit := SubscriptionMemberLimit(plan, quantity)
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO workspace_billing_payments (
 			workspace_id, provider, external_id, method, amount, currency, status, paid_at
@@ -266,7 +267,7 @@ func confirmRecurringCloudPayment(
 			updated_at=NOW()
 		WHERE id=$1
 	`, subscriptionID, plan.Code, plan.Name, period, amount, currency,
-		plan.MemberLimit, start, end, now, cloudSubscriptionID, token)
+		memberLimit, start, end, now, cloudSubscriptionID, token)
 	if err != nil {
 		return err
 	}

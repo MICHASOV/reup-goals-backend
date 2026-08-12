@@ -209,7 +209,7 @@ func (h *Handler) aiUsage(w http.ResponseWriter, r *http.Request, userID int) {
 	}
 	usage := billing.QuotaSummary{
 		State: "available", RemainingPercent: 100, WeeklyTokenLimit: plan.WeeklyTokenLimit,
-		RemainingTokens: plan.WeeklyTokenLimit, AIAvailable: true, Timezone: "Europe/Moscow",
+		RemainingTokens: plan.WeeklyTokenLimit, AIAvailable: plan.AIChatEnabled, Timezone: "Europe/Moscow",
 	}
 	if h.quotaService != nil {
 		usage, err = h.quotaService.Summary(r.Context(), workspace.ID)
@@ -222,6 +222,7 @@ func (h *Handler) aiUsage(w http.ResponseWriter, r *http.Request, userID int) {
 		PlanCode: plan.Code, PlanName: plan.Name, ResetAmount: plan.ResetAmount,
 		Currency:              plan.Currency,
 		CanManageSubscription: membership.Role == workspaces.MembershipRoleOwner,
+		AIChatEnabled:         plan.AIChatEnabled && subscription.Access,
 		AIUsage:               usage,
 	})
 }
@@ -648,11 +649,15 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 	if request.Quantity == 0 {
 		request.Quantity = 1
 	}
-	if request.Quantity < 1 || request.Quantity > 20 {
+	if request.Quantity < 1 {
 		api.WriteError(w, http.StatusUnprocessableEntity, "billing_quantity_invalid")
 		return
 	}
 	if request.OrderKind == billing.OrderQuotaReset {
+		if request.Quantity > 20 {
+			api.WriteError(w, http.StatusUnprocessableEntity, "billing_quantity_invalid")
+			return
+		}
 		if !overview.Subscription.Access {
 			api.WriteError(w, http.StatusConflict, "active_subscription_required")
 			return
@@ -671,14 +676,31 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
+	if request.OrderKind == billing.OrderQuotaReset && (!plan.AIChatEnabled || plan.ResetAmount <= 0) {
+		api.WriteError(w, http.StatusUnprocessableEntity, "ai_chat_not_included")
+		return
+	}
+	if request.OrderKind == billing.OrderSubscription && plan.PerSeatPricing {
+		reservedSeats, err := h.store.ReservedSeatCount(r.Context(), overview.Workspace.ID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "workspace_seats_load_failed")
+			return
+		}
+		if request.Quantity < reservedSeats {
+			api.WriteError(w, http.StatusUnprocessableEntity, "billing_quantity_below_reserved_seats")
+			return
+		}
+	}
 	request.BillingPeriod = strings.ToLower(strings.TrimSpace(request.BillingPeriod))
-	amount, err := billing.Price(plan, request.BillingPeriod)
+	amount, err := billing.SubscriptionPrice(plan, request.BillingPeriod, request.Quantity)
 	if err != nil {
 		api.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	if request.OrderKind == billing.OrderQuotaReset {
 		amount = plan.ResetAmount * float64(request.Quantity)
+	} else if !plan.PerSeatPricing {
+		request.Quantity = 1
 	}
 	order, err := h.store.CreateCheckoutOrder(r.Context(), overview.Workspace.ID, overview.Account.ID, request, plan, amount)
 	if err != nil {
@@ -694,10 +716,15 @@ func (h *Handler) checkout(w http.ResponseWriter, r *http.Request, overview Over
 	if h.checkoutProvider() == "cloudpayments" {
 		now := time.Now().UTC()
 		startDate := now.AddDate(0, periodMonths, 0)
-		if overview.Subscription.Access && overview.Subscription.PeriodEnd != nil && overview.Subscription.PeriodEnd.After(now) {
+		replacingActivePerSeatPlan := request.OrderKind == billing.OrderSubscription &&
+			plan.PerSeatPricing && overview.Subscription.PlanCode == plan.Code
+		if overview.Subscription.Access && overview.Subscription.PeriodEnd != nil && overview.Subscription.PeriodEnd.After(now) && !replacingActivePerSeatPlan {
 			startDate = overview.Subscription.PeriodEnd.AddDate(0, periodMonths, 0)
 		}
 		description := "REUP.goals · " + plan.Name
+		if plan.PerSeatPricing {
+			description = fmt.Sprintf("REUP.goals · %s · %d мест(а)", plan.Name, request.Quantity)
+		}
 		if request.OrderKind == billing.OrderQuotaReset {
 			description = fmt.Sprintf("REUP.goals · %d сброс(а) AI-лимита", request.Quantity)
 		}
@@ -997,13 +1024,16 @@ func (h *Handler) loadOverview(r *http.Request, userID int) (Overview, error) {
 	}
 	if plan, planErr := billing.PlanByCode(result.Subscription.PlanCode); planErr == nil {
 		result.Subscription.Plan = plan.Name
-		if amount, amountErr := billing.Price(plan, result.Subscription.BillingPeriod); amountErr == nil {
-			result.Subscription.Amount = amount
+		if !plan.PerSeatPricing || !result.Subscription.Access {
+			if amount, amountErr := billing.Price(plan, result.Subscription.BillingPeriod); amountErr == nil {
+				result.Subscription.Amount = amount
+			}
+			result.Subscription.MemberLimit = plan.MemberLimit
 		}
 		result.Subscription.AnnualAmount = plan.AnnualAmount
 		result.Subscription.ResetAmount = plan.ResetAmount
 		result.Subscription.Currency = plan.Currency
-		result.Subscription.MemberLimit = plan.MemberLimit
+		result.Subscription.AIChatEnabled = result.Subscription.Access && plan.AIChatEnabled
 	}
 	result.Subscription.AvailablePlans = billing.Plans()
 	if h.quotaService != nil {
