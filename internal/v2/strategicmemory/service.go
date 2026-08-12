@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -327,38 +328,27 @@ func (s *Service) HandleMessage(ctx context.Context, workspaceID int, userID int
 		_ = s.store.MarkKnowledgeFeedbackDelivered(persistCtx, workspaceID, pipeline.CandidateRevision)
 	}
 	contextReady, readinessReason := turn.contextReadinessDecision()
-	assistantMessage := ""
+	assistantMessage := fallbackAssistantReply(cleanAssistantMessage(turn.Reply))
+	if _, err := s.store.CreateRawSource(persistCtx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
+		"prompt_version":   StrategicMemoryPromptVersion,
+		"mode":             "openai_native",
+		"user_source_id":   sourceID,
+		"response_id":      result.ResponseID,
+		"conversation_id":  result.ConversationID,
+		"vector_store_ids": vectorStoreIDs,
+		"context_ready":    contextReady,
+	}); err != nil {
+		return MessageResponse{}, fmt.Errorf("save assistant message: %w", err)
+	}
 	if contextReady {
-		if err := s.store.BeginOnboardingSummary(persistCtx, workspaceID, pipeline.ConversationRevision, sourceID); err != nil {
-			return MessageResponse{}, err
-		}
-		summaryResult, summaryErr := s.generateOnboardingSummary(persistCtx, workspaceID, userID, result.ConversationID, vectorStoreIDs, session)
-		if summaryErr != nil {
+		if err := s.queueOnboardingSummary(persistCtx, workspaceID, userID, pipeline, sourceID, readinessReason); err != nil {
+			// The user turn and the auditor answer are already durable. If the
+			// background handoff fails, keep the interview usable instead of
+			// turning a successful AI response into a generic client error.
 			_ = s.store.DeleteOnboardingSummary(persistCtx, workspaceID, pipeline.ConversationRevision, sourceID)
-			return MessageResponse{}, summaryErr
-		}
-		if err := s.store.CompleteOnboardingSummary(persistCtx, workspaceID, pipeline.ConversationRevision, sourceID, summaryResult.Markdown); err != nil {
-			_ = s.store.DeleteOnboardingSummary(persistCtx, workspaceID, pipeline.ConversationRevision, sourceID)
-			return MessageResponse{}, err
-		}
-		if strings.TrimSpace(summaryResult.ConversationID) != "" && summaryResult.ConversationID != result.ConversationID {
-			_ = s.store.UpdateOpenAIConversationID(persistCtx, workspaceID, summaryResult.ConversationID)
-		}
-		queuedState, queueErr := s.queueKnowledgeCandidate(persistCtx, workspaceID, pipeline, sourceID, readinessReason)
-		if queueErr == nil {
-			pipeline = queuedState
-		}
-	} else {
-		assistantMessage = fallbackAssistantReply(cleanAssistantMessage(turn.Reply))
-		if _, err := s.store.CreateRawSource(persistCtx, workspaceID, nil, SourceTypeAssistantMessage, assistantMessage, map[string]any{
-			"prompt_version":   StrategicMemoryPromptVersion,
-			"mode":             "openai_native",
-			"user_source_id":   sourceID,
-			"response_id":      result.ResponseID,
-			"conversation_id":  result.ConversationID,
-			"vector_store_ids": vectorStoreIDs,
-		}); err != nil {
-			return MessageResponse{}, fmt.Errorf("save assistant message: %w", err)
+			log.Printf("[WARN] onboarding summary enqueue failed workspace_id=%d revision=%d: %v", workspaceID, pipeline.ConversationRevision, err)
+		} else {
+			assistantMessage = ""
 		}
 	}
 

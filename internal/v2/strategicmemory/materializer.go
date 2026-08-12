@@ -84,6 +84,7 @@ type qualityAuditJobPayload struct {
 }
 
 func (s *Service) registerJobHandlers() {
+	registerOnboardingSummaryJob(s)
 	s.jobs.Register(jobTypeKnowledgeContextRefresh, func(ctx context.Context, job jobs.Job) error {
 		if job.WorkspaceID == nil {
 			return fmt.Errorf("knowledge context refresh job has no workspace")
