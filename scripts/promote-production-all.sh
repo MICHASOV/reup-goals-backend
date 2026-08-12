@@ -10,14 +10,12 @@ release_workspace=""
 release_backend_root=""
 release_frontend_root=""
 frontend_deploy_path="${FRONTEND_DEPLOY_PATH:-/var/www/reupgoals.pro}"
-production_host="${REUP_PRODUCTION_HOST:-109.73.198.164}"
+production_host="${REUP_PRODUCTION_HOST:-167.233.230.212}"
 production_user="${REUP_PRODUCTION_USER:-root}"
 production_target="${REUP_PRODUCTION_SSH_TARGET:-${production_user}@${production_host}}"
-ai_target="${REUP_AI_SSH_TARGET:-root@167.233.230.212}"
+production_key="${REUP_PRODUCTION_KEY:-$HOME/.ssh/reup_goals_staging_deploy}"
 release_id="$(date -u +%Y%m%d-%H%M%S)"
 frontend_backup="/var/backups/reup-goals/frontend-${release_id}.tar.gz"
-frontend_csp_backup="/var/backups/reup-goals/frontend-${release_id}.csp.conf"
-frontend_csp_missing_marker="/var/backups/reup-goals/frontend-${release_id}.no-csp"
 frontend_deploy_started=false
 dry_run=false
 
@@ -30,22 +28,25 @@ fi
 
 required_commands=(curl git go npm rsync scp ssh)
 for command_name in "${required_commands[@]}"; do
-  if ! command -v "$command_name" >/dev/null 2>&1; then
+  command -v "$command_name" >/dev/null 2>&1 || {
     echo "Missing required command: $command_name" >&2
     exit 1
-  fi
+  }
 done
 
-check_ssh_target() {
-  local target="$1"
-  local label="$2"
+SSH_ARGS=(-o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes)
+if [[ -f "$production_key" ]]; then
+  SSH_ARGS+=(-i "$production_key")
+fi
 
-  if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$target" true; then
-    echo "$label is unreachable over SSH: $target" >&2
-    echo "If a VPN is enabled, disconnect it and run the release command again." >&2
-    exit 1
-  fi
-}
+if ! ssh "${SSH_ARGS[@]}" "$production_target" true; then
+  echo "German production server is unreachable over SSH: $production_target" >&2
+  exit 1
+fi
+if ! ssh "${SSH_ARGS[@]}" "$production_target" test -s /etc/reup-goals-production/backend.env; then
+  echo "German production is not initialized. Run scripts/migrate-production-to-germany.sh first." >&2
+  exit 1
+fi
 
 if ! git -C "$frontend_source_root" rev-parse --git-dir >/dev/null 2>&1; then
   echo "Frontend repository not found: $frontend_source_root" >&2
@@ -53,52 +54,33 @@ if ! git -C "$frontend_source_root" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 assert_release_revision() {
-  local repo="$1"
-  local label="$2"
-  local branch
-  local head_revision
-  local remote_revision
-
+  local repo=$1 label=$2 branch head_revision remote_revision
   git -C "$repo" fetch --quiet origin main
   branch="$(git -C "$repo" branch --show-current)"
-  if [[ -n "$branch" && "$branch" != "main" ]]; then
+  if [[ -n "$branch" && "$branch" != main ]]; then
     echo "$label must be on main, current branch: $branch" >&2
     exit 1
   fi
-
   head_revision="$(git -C "$repo" rev-parse HEAD)"
   remote_revision="$(git -C "$repo" rev-parse origin/main)"
   if [[ "$head_revision" != "$remote_revision" ]]; then
     echo "$label HEAD does not match origin/main." >&2
     exit 1
   fi
-
 }
 
 cleanup_release_workspace() {
-  if [[ -n "$release_backend_root" ]]; then
-    git -C "$backend_source_root" worktree remove --force "$release_backend_root" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "$release_frontend_root" ]]; then
-    git -C "$frontend_source_root" worktree remove --force "$release_frontend_root" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "$release_workspace" ]]; then
-    rm -rf "$release_workspace"
-  fi
+  [[ -z "$release_backend_root" ]] || git -C "$backend_source_root" worktree remove --force "$release_backend_root" >/dev/null 2>&1 || true
+  [[ -z "$release_frontend_root" ]] || git -C "$frontend_source_root" worktree remove --force "$release_frontend_root" >/dev/null 2>&1 || true
+  [[ -z "$release_workspace" ]] || rm -rf "$release_workspace"
 }
 trap cleanup_release_workspace EXIT
 
 wait_for_url() {
-  local url="$1"
-  local expected_status="${2:-200}"
-  local attempts="${3:-45}"
-  local status
-
+  local url=$1 expected_status=${2:-200} attempts=${3:-45} status
   for _ in $(seq 1 "$attempts"); do
     status="$(curl --max-time 15 -sS -o /dev/null -w '%{http_code}' "$url" || true)"
-    if [[ "$status" == "$expected_status" ]]; then
-      return 0
-    fi
+    [[ "$status" != "$expected_status" ]] || return 0
     sleep 2
   done
   echo "Production check failed: $url did not return $expected_status" >&2
@@ -106,20 +88,13 @@ wait_for_url() {
 }
 
 rollback_frontend() {
-  if [[ "$frontend_deploy_started" != true ]]; then
-    return
-  fi
-  echo "Frontend verification failed. Restoring the previous production build..." >&2
-  ssh "$production_target" "set -euo pipefail
+  [[ "$frontend_deploy_started" == true ]] || return 0
+  echo "Frontend verification failed. Restoring the previous German production build..." >&2
+  ssh "${SSH_ARGS[@]}" "$production_target" "set -euo pipefail
     test -f '$frontend_backup'
     rm -rf '$frontend_deploy_path'
     mkdir -p '$frontend_deploy_path'
     tar -xzf '$frontend_backup' -C '$(dirname "$frontend_deploy_path")'
-    if [ -f '$frontend_csp_backup' ]; then
-      install -m 644 '$frontend_csp_backup' /etc/nginx/snippets/reupgoals-production-csp.conf
-    elif [ -f '$frontend_csp_missing_marker' ]; then
-      rm -f /etc/nginx/snippets/reupgoals-production-csp.conf
-    fi
     nginx -t
     systemctl reload nginx"
 }
@@ -133,19 +108,16 @@ on_error() {
 }
 trap on_error ERR
 
-assert_release_revision "$backend_source_root" "Backend"
-assert_release_revision "$frontend_source_root" "Frontend"
-check_ssh_target "$production_target" "Russian production server"
-check_ssh_target "$ai_target" "German AI server"
+assert_release_revision "$backend_source_root" Backend
+assert_release_revision "$frontend_source_root" Frontend
 
 backend_revision="$(git -C "$backend_source_root" rev-parse --short=12 HEAD)"
 frontend_revision="$(git -C "$frontend_source_root" rev-parse --short=12 HEAD)"
-
 release_workspace="$(mktemp -d /private/tmp/reup-production-release.XXXXXX)"
 release_backend_root="$release_workspace/reup-goals-backend"
 release_frontend_root="$release_workspace/reup-goals-landing"
-git -C "$backend_source_root" worktree add --detach --quiet "$release_backend_root" "origin/main"
-git -C "$frontend_source_root" worktree add --detach --quiet "$release_frontend_root" "origin/main"
+git -C "$backend_source_root" worktree add --detach --quiet "$release_backend_root" origin/main
+git -C "$frontend_source_root" worktree add --detach --quiet "$release_frontend_root" origin/main
 backend_root="$release_backend_root"
 frontend_root="$release_frontend_root"
 
@@ -155,13 +127,17 @@ echo "  frontend: $frontend_revision"
 echo "Local uncommitted files are excluded from this release."
 
 echo "Checking staging..."
-wait_for_url "https://api-staging.reupgoals.pro/healthz"
-wait_for_url "https://staging.reupgoals.pro/cabinet-v2/"
+wait_for_url https://api-staging.reupgoals.pro/readyz
+wait_for_url https://staging.reupgoals.pro/cabinet-v2/
 
-echo "Running backend tests..."
+echo "Running backend and agent tests..."
 (
   cd "$backend_root"
   GOCACHE=/private/tmp/reup-release-test-cache go test ./...
+  cd agent-runtime
+  npm ci
+  npm run typecheck
+  npm test
 )
 
 echo "Checking frontend..."
@@ -178,49 +154,45 @@ if [[ "$dry_run" == true ]]; then
   exit 0
 fi
 
-echo "Backing up the current production frontend..."
-ssh "$production_target" "set -euo pipefail
+echo "Backing up the current German production frontend..."
+ssh "${SSH_ARGS[@]}" "$production_target" "set -euo pipefail
   mkdir -p /var/backups/reup-goals
-  test -d '$frontend_deploy_path'
-  tar -czf '$frontend_backup' -C '$(dirname "$frontend_deploy_path")' '$(basename "$frontend_deploy_path")'
-  if [ -f /etc/nginx/snippets/reupgoals-production-csp.conf ]; then
-    cp /etc/nginx/snippets/reupgoals-production-csp.conf '$frontend_csp_backup'
+  if [ -d '$frontend_deploy_path' ]; then
+    tar -czf '$frontend_backup' -C '$(dirname "$frontend_deploy_path")' '$(basename "$frontend_deploy_path")'
   else
-    touch '$frontend_csp_missing_marker'
+    mkdir -p '$frontend_deploy_path'
+    tar -czf '$frontend_backup' -C '$(dirname "$frontend_deploy_path")' '$(basename "$frontend_deploy_path")'
   fi
   find /var/backups/reup-goals -type f -name 'frontend-*.tar.gz' -mtime +14 -delete"
 
-echo "Promoting AI runtime to Germany..."
-REUP_AI_SSH_TARGET="$ai_target" "$backend_root/scripts/promote-production-ai.sh"
+echo "Promoting the colocated production API and agent..."
+REUP_PRODUCTION_HOST="$production_host" \
+REUP_PRODUCTION_USER="$production_user" \
+REUP_PRODUCTION_SSH_TARGET="$production_target" \
+REUP_PRODUCTION_KEY="$production_key" \
+  "$backend_root/scripts/promote-production-backend.sh"
 
-echo "Verifying the private AI return channel..."
-REUP_PRODUCTION_SSH_TARGET="$production_target" REUP_AI_SSH_TARGET="$ai_target" \
-  "$backend_root/scripts/configure-production-ai-return-tunnel.sh"
-
-echo "Promoting backend to production..."
-REUP_PRODUCTION_SSH_TARGET="$production_target" "$backend_root/scripts/promote-production-backend.sh"
-
-echo "Promoting frontend to production..."
+echo "Promoting frontend to German production..."
 frontend_deploy_started=true
 (
   cd "$frontend_root"
   NEXT_PUBLIC_API_BASE_URL=https://api.reupgoals.pro \
     DEPLOY_HOST="$production_host" \
     DEPLOY_USER="$production_user" \
+    DEPLOY_KEY="$production_key" \
     DEPLOY_PATH="$frontend_deploy_path" \
     bash "$frontend_root/scripts/deploy.sh"
 )
 
 echo "Running public production checks..."
-wait_for_url "https://api.reupgoals.pro/healthz"
-wait_for_url "https://api.reupgoals.pro/api/v2/privacy/legal-documents"
-wait_for_url "https://reupgoals.pro/login/"
-wait_for_url "https://reupgoals.pro/cabinet-v2/"
+wait_for_url https://api.reupgoals.pro/readyz
+wait_for_url https://api.reupgoals.pro/api/v2/privacy/legal-documents
+wait_for_url https://reupgoals.pro/login/
+wait_for_url https://reupgoals.pro/cabinet-v2/
 
 frontend_deploy_started=false
 trap - ERR
-
 echo
-echo "Production release completed successfully."
+echo "Production release completed successfully in Germany."
 echo "Backend:  $backend_revision"
 echo "Frontend: $frontend_revision"

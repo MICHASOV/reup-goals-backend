@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os/signal"
@@ -80,23 +82,23 @@ func main() {
 		DailyBudgetUSD:    cfg.AIDailyBudgetUSD,
 		MonthlyBudgetUSD:  cfg.AIMonthlyBudgetUSD,
 	}, billingService)
-	openAIAuthToken := cfg.OpenAIAuthToken()
-	aiClient := ai.New(openAIAuthToken, cfg.OpenAIModel, cfg.OpenAIProxyURL).
+	openAIAuthToken := cfg.OpenAIKey
+	aiClient := ai.New(openAIAuthToken, cfg.OpenAIModel).
 		WithBaseURL(cfg.OpenAIBaseURL).
 		WithGovernance(aiGovernance)
-	auditorAIClient := ai.New(openAIAuthToken, cfg.OpenAIAuditorModel, cfg.OpenAIProxyURL).
+	auditorAIClient := ai.New(openAIAuthToken, cfg.OpenAIAuditorModel).
 		WithBaseURL(cfg.OpenAIBaseURL).
 		WithMaxOutputTokens(cfg.OpenAIAuditorMaxOutputTokens).
 		WithGovernance(aiGovernance)
-	advisorAIClient := ai.New(openAIAuthToken, cfg.OpenAIAdvisorModel, cfg.OpenAIProxyURL).
+	advisorAIClient := ai.New(openAIAuthToken, cfg.OpenAIAdvisorModel).
 		WithBaseURL(cfg.OpenAIBaseURL).
 		WithMaxOutputTokens(2600).
 		WithGovernance(aiGovernance)
-	taskEvaluatorAIClient := ai.New(openAIAuthToken, cfg.OpenAITaskModel, cfg.OpenAIProxyURL).
+	taskEvaluatorAIClient := ai.New(openAIAuthToken, cfg.OpenAITaskModel).
 		WithBaseURL(cfg.OpenAIBaseURL).
 		WithMaxOutputTokens(900).
 		WithGovernance(aiGovernance)
-	transcriptionAIClient := ai.New(openAIAuthToken, cfg.OpenAITranscriptionModel, cfg.OpenAIProxyURL).
+	transcriptionAIClient := ai.New(openAIAuthToken, cfg.OpenAITranscriptionModel).
 		WithBaseURL(cfg.OpenAIBaseURL).
 		WithGovernance(aiGovernance)
 	jobManager := jobs.NewManagerWithNamespace(database, cfg.JobQueueNamespace)
@@ -167,6 +169,36 @@ func main() {
 	}
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		if err := database.PingContext(ctx); err != nil {
+			http.Error(w, `{"ok":false,"dependency":"database"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if cfg.AgentRuntimeEnabled {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.AgentRuntimeURL+"/healthz", nil)
+			if err != nil {
+				http.Error(w, `{"ok":false,"dependency":"agent_runtime"}`, http.StatusServiceUnavailable)
+				return
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				http.Error(w, `{"ok":false,"dependency":"agent_runtime"}`, http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				http.Error(w, `{"ok":false,"dependency":"agent_runtime"}`, http.StatusServiceUnavailable)
+				return
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
@@ -345,7 +377,7 @@ func main() {
 	handler = globalLimiter.Wrap(handler)
 	handler = security.Harden(handler)
 	server := &http.Server{
-		Addr:              ":8080",
+		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       cfg.HTTPReadTimeout,
@@ -363,7 +395,7 @@ func main() {
 		}
 	}()
 
-	log.Println("SERVER RUNNING ON :8080")
+	log.Printf("SERVER RUNNING ON :%d", cfg.HTTPPort)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal("HTTP server error: ", err)
 	}

@@ -69,18 +69,37 @@ func TestTrustedOriginRequiredForCookieMutation(t *testing.T) {
 	}
 }
 
-func TestStrategyFileUploadUsesBusinessDocumentLimit(t *testing.T) {
-	handler := limitRequestBodies(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	request := httptest.NewRequest(http.MethodPost, "/api/v2/strategy-facilitator/files", strings.NewReader("file"))
-	request.ContentLength = 30 << 20
-	response := httptest.NewRecorder()
+func TestFileUploadRoutesUseTheirDocumentLimits(t *testing.T) {
+	tests := []struct {
+		path  string
+		size  int64
+		limit int64
+	}{
+		{path: "/api/v2/strategic-director/files", size: 80 << 20, limit: fileRequestLimit},
+		{path: "/api/v2/strategy-facilitator/files", size: 80 << 20, limit: fileRequestLimit},
+		{path: "/api/v2/tactics-facilitator/files", size: 25 << 20, limit: audioRequestLimit},
+		{path: "/api/v2/tactics-advisor/files", size: 25 << 20, limit: audioRequestLimit},
+		{path: "/api/v2/tasks/files", size: 25 << 20, limit: audioRequestLimit},
+		{path: "/api/v2/tasks/completion-files", size: 25 << 20, limit: audioRequestLimit},
+	}
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			if got := requestBodyLimit(test.path); got != test.limit {
+				t.Fatalf("expected limit %d, got %d", test.limit, got)
+			}
+			handler := limitRequestBodies(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader("file"))
+			request.ContentLength = test.size
+			response := httptest.NewRecorder()
 
-	handler.ServeHTTP(response, request)
+			handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("strategy documents below 80 MB must reach the upload handler, got %d", response.Code)
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("document below route limit must reach the upload handler, got %d", response.Code)
+			}
+		})
 	}
 }
 
@@ -96,5 +115,20 @@ func TestStrategyFileUploadRejectsOversizedBusinessDocument(t *testing.T) {
 
 	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized strategy document must be rejected, got %d", response.Code)
+	}
+}
+
+func TestAdvisorFileUploadRejectsOversizedDocument(t *testing.T) {
+	handler := limitRequestBodies(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/api/v2/tactics-advisor/files", strings.NewReader("file"))
+	request.ContentLength = audioRequestLimit + 1
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized advisor document must be rejected, got %d", response.Code)
 	}
 }

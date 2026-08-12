@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/proxy"
 )
 
 // ---------------------------------------------------------
@@ -26,7 +24,6 @@ type OpenAIClient struct {
 	APIKey          string
 	Model           string
 	BaseURL         string
-	ProxyURL        string
 	MaxOutputTokens int
 	governance      Governance
 	runtime         *openAIClientRuntime
@@ -56,17 +53,12 @@ func (c *OpenAIClient) WithGovernance(governance Governance) *OpenAIClient {
 	return c
 }
 
-func New(apiKey, model string, proxyURL ...string) *OpenAIClient {
-	selectedProxyURL := "socks5://127.0.0.1:10808"
-	if len(proxyURL) > 0 && strings.TrimSpace(proxyURL[0]) != "" {
-		selectedProxyURL = strings.TrimSpace(proxyURL[0])
-	}
+func New(apiKey, model string) *OpenAIClient {
 	return &OpenAIClient{
-		APIKey:   apiKey,
-		Model:    model,
-		BaseURL:  defaultOpenAIBaseURL,
-		ProxyURL: selectedProxyURL,
-		runtime:  &openAIClientRuntime{},
+		APIKey:  apiKey,
+		Model:   model,
+		BaseURL: defaultOpenAIBaseURL,
+		runtime: &openAIClientRuntime{},
 	}
 }
 
@@ -105,34 +97,7 @@ func (c *OpenAIClient) newHTTPClient() (*http.Client, error) {
 }
 
 func (c *OpenAIClient) buildHTTPClient() (*http.Client, error) {
-	if isDirectProxy(c.ProxyURL) {
-		return &http.Client{Transport: defaultOpenAITransport()}, nil
-	}
-
-	proxyURL, err := url.Parse(c.ProxyURL)
-	if err != nil {
-		return nil, fmt.Errorf("proxy url parse error: %w", err)
-	}
-	if proxyURL.Scheme != "socks5" {
-		return nil, fmt.Errorf("unsupported proxy scheme: %s", proxyURL.Scheme)
-	}
-
-	dialer, err := proxy.SOCKS5("tcp", proxyURL.Host, nil, proxy.Direct)
-	if err != nil {
-		return nil, fmt.Errorf("socks5 dialer error: %w", err)
-	}
-
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
-		},
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
-
-	return &http.Client{Transport: transport}, nil
+	return &http.Client{Transport: defaultOpenAITransport()}, nil
 }
 
 func defaultOpenAITransport() *http.Transport {
@@ -146,11 +111,6 @@ func defaultOpenAITransport() *http.Transport {
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
-}
-
-func isDirectProxy(value string) bool {
-	normalized := strings.TrimSpace(strings.ToLower(value))
-	return normalized == "" || normalized == "direct" || normalized == "none" || normalized == "off"
 }
 
 // ---------------------------------------------------------

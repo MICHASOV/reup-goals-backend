@@ -4,7 +4,6 @@ import { MaxTurnsExceededError } from "@openai/agents";
 import { ZodError } from "zod";
 
 import { configureOpenAIProvider } from "./provider.js";
-import { proxyOpenAIRequest } from "./openaiGateway.js";
 import { executeRun, resumeRun } from "./runtime.js";
 import { isSecureInternalURL } from "./transport.js";
 import { executeRunRequestSchema, resumeRunRequestSchema } from "./types.js";
@@ -12,11 +11,8 @@ import { executeRunRequestSchema, resumeRunRequestSchema } from "./types.js";
 const port = Number(process.env.PORT || 8091);
 const listenHost = (process.env.LISTEN_HOST || "127.0.0.1").trim();
 const runtimeSecret = (process.env.AGENT_RUNTIME_SECRET || "").trim();
-const gatewaySecret = (process.env.AI_GATEWAY_SECRET || "").trim();
 const openAIAPIKey = (process.env.OPENAI_API_KEY || "").trim();
-const openAIUpstreamURL = (process.env.OPENAI_UPSTREAM_URL || "https://api.openai.com").trim();
 const goInternalURL = (process.env.GO_INTERNAL_URL || "").trim();
-const gatewayMaxRequestBytes = Number(process.env.AI_GATEWAY_MAX_REQUEST_BYTES || 128 * 1024 * 1024);
 validateConfiguration();
 configureOpenAIProvider();
 
@@ -24,22 +20,12 @@ function validateConfiguration(): void {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("PORT must be a valid TCP port");
   }
-  if (!Number.isFinite(gatewayMaxRequestBytes) || gatewayMaxRequestBytes < 1024 * 1024 || gatewayMaxRequestBytes > 512 * 1024 * 1024) {
-    throw new Error("AI_GATEWAY_MAX_REQUEST_BYTES must be between 1 MiB and 512 MiB");
-  }
   if (process.env.NODE_ENV !== "production") return;
-  if (runtimeSecret.length < 32 || gatewaySecret.length < 32) {
-    throw new Error("AGENT_RUNTIME_SECRET and AI_GATEWAY_SECRET must contain at least 32 characters");
-  }
-  if (runtimeSecret === gatewaySecret) {
-    throw new Error("AGENT_RUNTIME_SECRET and AI_GATEWAY_SECRET must be different");
+  if (runtimeSecret.length < 32) {
+    throw new Error("AGENT_RUNTIME_SECRET must contain at least 32 characters");
   }
   if (!openAIAPIKey) {
     throw new Error("OPENAI_API_KEY is required");
-  }
-  const upstream = new URL(openAIUpstreamURL);
-  if (upstream.protocol !== "https:") {
-    throw new Error("OPENAI_UPSTREAM_URL must use HTTPS in production");
   }
   if (!isSecureInternalURL(goInternalURL)) {
     throw new Error("GO_INTERNAL_URL must use HTTPS or a loopback HTTP tunnel in production");
@@ -81,7 +67,7 @@ const server = createServer(async (request, response) => {
       writeJSON(response, 200, {
         ok: true,
         runtime: Boolean(runtimeSecret || process.env.NODE_ENV !== "production"),
-        gateway: Boolean(gatewaySecret && openAIAPIKey),
+        openai: Boolean(openAIAPIKey),
       });
       return;
     }
@@ -105,15 +91,6 @@ const server = createServer(async (request, response) => {
       } finally {
         clearTimeout(timeout);
       }
-      return;
-    }
-    if ((request.url || "").startsWith("/openai/")) {
-      proxyOpenAIRequest(request, response, {
-        secret: gatewaySecret,
-        openAIAPIKey,
-        upstreamBaseURL: openAIUpstreamURL,
-        maxRequestBytes: gatewayMaxRequestBytes,
-      });
       return;
     }
     if (!runtimeAuthorized(request)) {

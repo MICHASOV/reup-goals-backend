@@ -120,7 +120,6 @@ jobs:
           OPENAI_AUDITOR_COMPACT_THRESHOLD=24000
           OPENAI_ADVISOR_COMPACT_THRESHOLD=24000
           ENABLE_AI_BENCHMARK=false
-          OPENAI_PROXY_URL=direct
           AI_RATE_LIMIT_PER_MINUTE=60
           AI_DAILY_BUDGET_USD=0
           AI_MONTHLY_BUDGET_USD=0
@@ -167,11 +166,7 @@ jobs:
           ENV
             chmod 600 /etc/reup-goals-staging/backend.env
           fi
-          if grep -q '^OPENAI_PROXY_URL=' /etc/reup-goals-staging/backend.env; then
-            sed -i 's|^OPENAI_PROXY_URL=.*|OPENAI_PROXY_URL=direct|' /etc/reup-goals-staging/backend.env
-          else
-            printf '\nOPENAI_PROXY_URL=direct\n' >> /etc/reup-goals-staging/backend.env
-          fi
+          sed -i '/^OPENAI_PROXY_URL=/d' /etc/reup-goals-staging/backend.env
           if grep -q '^APP_ENV=' /etc/reup-goals-staging/backend.env; then
             sed -i 's/^APP_ENV=.*/APP_ENV=staging/' /etc/reup-goals-staging/backend.env
           else
@@ -411,10 +406,6 @@ jobs:
           if [ "${#runtime_secret}" -lt 32 ]; then
             runtime_secret=$(openssl rand -hex 32)
           fi
-          gateway_secret=$(grep '^AI_GATEWAY_SECRET=' /etc/reup-goals-staging/agent.env 2>/dev/null | tail -1 | cut -d= -f2- || true)
-          if [ "${#gateway_secret}" -lt 32 ] || [ "$gateway_secret" = "$runtime_secret" ]; then
-            gateway_secret=$(openssl rand -hex 32)
-          fi
           set_backend_env() {
             key=$1
             value=$2
@@ -427,6 +418,7 @@ jobs:
           set_backend_env AGENT_RUNTIME_SECRET "$runtime_secret"
           set_backend_env AGENT_RUNTIME_URL "http://127.0.0.1:8091"
           set_backend_env AGENT_RUNTIME_MAX_TURNS "120"
+          set_backend_env HTTP_READ_TIMEOUT "10m"
           set_backend_env AGENT_RELEASE_ID "staging-${{ hashFiles('agent-runtime/src/**', 'agent-runtime/package-lock.json') }}"
           restore_previous_backend_release() {
             set_backend_env AGENT_RELEASE_ID "$previous_agent_release_id"
@@ -436,10 +428,6 @@ jobs:
           }
 
           openai_api_key=$(grep '^OPENAI_API_KEY=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
-          openai_proxy_url=$(grep '^OPENAI_PROXY_URL=' /etc/reup-goals-staging/backend.env | tail -1 | cut -d= -f2- || true)
-          if [ "$openai_proxy_url" = "direct" ]; then
-            openai_proxy_url=
-          fi
           if [ -z "$openai_api_key" ]; then
             echo "OPENAI_API_KEY is required to start the agent runtime."
             exit 1
@@ -458,15 +446,12 @@ jobs:
 
           {
             printf 'PORT=8091\n'
-            printf 'GO_INTERNAL_URL=https://api-staging.reupgoals.pro\n'
+            printf 'LISTEN_HOST=127.0.0.1\n'
+            printf 'GO_INTERNAL_URL=http://127.0.0.1:8080\n'
             printf 'AGENT_RUNTIME_SECRET=%s\n' "$runtime_secret"
-            printf 'AI_GATEWAY_SECRET=%s\n' "$gateway_secret"
             printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
             printf 'AGENT_COMPACT_THRESHOLD=100000\n'
             printf 'AGENT_REASONING_EFFORT=max\n'
-            if [ -n "$openai_proxy_url" ]; then
-              printf 'OPENAI_PROXY_URL=%s\n' "$openai_proxy_url"
-            fi
           } >/etc/reup-goals-staging/agent.env
           chmod 600 /etc/reup-goals-staging/agent.env
 
@@ -546,7 +531,7 @@ jobs:
           systemctl status reup-goals-staging.service --no-pager || true
 
           for attempt in $(seq 1 120); do
-            if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:8080/readyz >/dev/null; then
               break
             fi
             if [ "$attempt" -eq 120 ]; then
@@ -568,7 +553,7 @@ jobs:
                 fi
                 systemctl restart reup-goals-staging.service
                 for rollback_attempt in $(seq 1 30); do
-                  if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
+                  if curl --fail --silent http://127.0.0.1:8080/readyz >/dev/null; then
                     echo "Previous backend restored successfully."
                     break
                   fi

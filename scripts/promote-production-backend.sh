@@ -3,152 +3,254 @@
 set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-backend_artifact="/tmp/reup_goals_backend"
+production_host="${REUP_PRODUCTION_HOST:-167.233.230.212}"
+production_user="${REUP_PRODUCTION_USER:-root}"
+production_target="${REUP_PRODUCTION_SSH_TARGET:-${production_user}@${production_host}}"
+production_key="${REUP_PRODUCTION_KEY:-$HOME/.ssh/reup_goals_staging_deploy}"
 release_id="production-$(git -C "$repo_root" rev-parse --short=12 HEAD)"
-production_target="${REUP_PRODUCTION_SSH_TARGET:-root@109.73.198.164}"
+backend_artifact="/tmp/reup_goals_backend"
+runtime_artifact="/tmp/reup_goals_agent_runtime.tar.gz"
+runtime_stage="$(mktemp -d /tmp/reup-goals-agent-runtime.XXXXXX)"
+node_version="${AGENT_NODE_VERSION:-v22.17.0}"
+
+SSH_ARGS=(-o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes)
+if [[ -f "$production_key" ]]; then
+  SSH_ARGS+=(-i "$production_key")
+fi
+
+cleanup() { rm -rf "$runtime_stage"; }
+trap cleanup EXIT
 
 cd "$repo_root"
-echo "Building production backend..."
+echo "Building production API..."
 GOCACHE=/private/tmp/reup-release-cache \
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -trimpath -ldflags="-s -w" -o "$backend_artifact" ./cmd/api
 
-echo "Uploading backend..."
-scp "$backend_artifact" "${production_target}:/tmp/"
+echo "Building colocated production agent runtime..."
+(
+  cd "$repo_root/agent-runtime"
+  npm ci
+  npm run typecheck
+  npm test
+  npm run build
+  cp -R dist package.json package-lock.json "$runtime_stage/"
+)
+(
+  cd "$runtime_stage"
+  npm ci --omit=dev --ignore-scripts
+  rm -rf node_modules/fsevents
+)
 
-echo "Installing backend with automatic rollback..."
-ssh "$production_target" bash -s -- "$release_id" <<'REMOTE'
+if [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]]; then
+  cp "$(command -v node)" "$runtime_stage/node"
+else
+  archive="node-${node_version}-linux-x64.tar.xz"
+  curl --fail --show-error --silent --location \
+    "https://nodejs.org/dist/${node_version}/${archive}" -o "$runtime_stage/$archive"
+  curl --fail --show-error --silent --location \
+    "https://nodejs.org/dist/${node_version}/SHASUMS256.txt" -o "$runtime_stage/SHASUMS256.txt"
+  (
+    cd "$runtime_stage"
+    grep " ${archive}\$" SHASUMS256.txt > SHASUMS256.selected
+    shasum -a 256 -c SHASUMS256.selected
+    tar -xJf "$archive"
+  )
+  cp "$runtime_stage/node-${node_version}-linux-x64/bin/node" "$runtime_stage/node"
+  rm -rf "$runtime_stage/node-${node_version}-linux-x64" "$runtime_stage/$archive" "$runtime_stage/SHASUMS256"*
+fi
+chmod 755 "$runtime_stage/node"
+tar -czf "$runtime_artifact" -C "$runtime_stage" .
+
+echo "Uploading production API and agent runtime to Germany..."
+scp "${SSH_ARGS[@]}" "$backend_artifact" "$runtime_artifact" "${production_target}:/tmp/"
+
+echo "Installing the production services with automatic rollback..."
+ssh "${SSH_ARGS[@]}" "$production_target" bash -s -- "$release_id" <<'REMOTE'
 set -Eeuo pipefail
 
 release_id=$1
-timestamp=$(date +%Y%m%d-%H%M%S)
-service=reup-goals.service
-binary=/opt/reup-goals-backend/reup_goals_backend
-rollback_binary="${binary}.rollback-${timestamp}"
-dropin_dir=/etc/systemd/system/reup-goals.service.d
-release_config=${dropin_dir}/ai-split.conf
-release_config_backup="${release_config}.rollback-${timestamp}"
-env_files=(/etc/reup-goals/backend.env /opt/reup-goals-backend/.env)
-env_backups=()
-changed=false
+api_service=reup-goals-production.service
+agent_service=reup-goals-agent-production.service
+api_root=/opt/reup-goals-production/backend
+agent_root=/opt/reup-goals-production/agent
+api_next=${api_root}.next
+agent_next=${agent_root}.next
+api_previous=${api_root}.previous
+agent_previous=${agent_root}.previous
+api_env=/etc/reup-goals-production/backend.env
+agent_env=/etc/reup-goals-production/agent.env
 
-read_config_value() {
-  local key=$1
-  local file value
-  for file in "${env_files[@]}"; do
-    if [ -f "$file" ]; then
-      value=$(grep -E "^${key}=" "$file" | tail -1 | cut -d= -f2- || true)
-      if [ -n "$value" ]; then
-        printf '%s' "$value"
-        return 0
-      fi
-    fi
-  done
+read_env() {
+  grep -E "^$2=" "$1" | tail -1 | cut -d= -f2- || true
 }
 
-restore() {
-  local exit_code=$?
-  trap - ERR
-  echo "Backend deployment failed; restoring the previous production configuration." >&2
-  if [ "$changed" = true ]; then
-    systemctl stop "$service" >/dev/null 2>&1 || true
-    [ -f "$rollback_binary" ] && install -m 755 "$rollback_binary" "$binary"
-    if [ -f "$release_config_backup" ]; then
-      mv -f "$release_config_backup" "$release_config"
-    else
-      rm -f "$release_config"
-    fi
-    local index=0 file backup
-    for file in "${env_files[@]}"; do
-      backup=${env_backups[$index]:-}
-      [ -n "$backup" ] && [ -f "$backup" ] && mv -f "$backup" "$file"
-      index=$((index + 1))
-    done
-    systemctl daemon-reload
-    systemctl start "$service" >/dev/null 2>&1 || true
-  fi
-  journalctl -u "$service" -n 120 --no-pager || true
-  exit "$exit_code"
-}
-trap restore ERR
-
-runtime_url=$(read_config_value AGENT_RUNTIME_URL)
-runtime_secret=$(read_config_value AGENT_RUNTIME_SECRET)
-gateway_base_url=$(read_config_value OPENAI_BASE_URL)
-gateway_secret=$(read_config_value OPENAI_GATEWAY_SECRET)
-
-if [[ "$runtime_url" != https://* ]] || [[ "$gateway_base_url" != https://*/openai/v1 ]]; then
-  echo "Remote AGENT_RUNTIME_URL and OPENAI_BASE_URL must be configured with HTTPS before deployment." >&2
-  exit 1
-fi
-if [ "${#runtime_secret}" -lt 32 ] || [ "${#gateway_secret}" -lt 32 ]; then
-  echo "AGENT_RUNTIME_SECRET and OPENAI_GATEWAY_SECRET must each contain at least 32 characters." >&2
-  exit 1
-fi
-
-runtime_health_payload=$(curl --fail --silent --show-error --max-time 20 "${runtime_url}/healthz" || true)
-gateway_auth=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' \
-  --header "Authorization: Bearer ${gateway_secret}" "${gateway_base_url}/models" || true)
-if [[ "$runtime_health_payload" != *'"runtime":true'* ]] || [[ "$runtime_health_payload" != *'"gateway":true'* ]] || [ "$gateway_auth" != 404 ]; then
-  echo "German AI service is unavailable or its credentials do not match (health=${runtime_health_payload}, gateway=${gateway_auth})." >&2
-  exit 1
-fi
-
-mkdir -p "$dropin_dir"
-cp -a "$binary" "$rollback_binary"
-if [ -f "$release_config" ]; then cp -a "$release_config" "$release_config_backup"; fi
-for file in "${env_files[@]}"; do
-  if [ -f "$file" ]; then
-    backup="${file}.rollback-${timestamp}"
-    cp -a "$file" "$backup"
-    env_backups+=("$backup")
-    sed -i '/^OPENAI_API_KEY=/d' "$file"
-  else
-    env_backups+=("")
+for env_file in "$api_env" "$agent_env"; do
+  if [ ! -s "$env_file" ]; then
+    echo "$env_file is missing. Run scripts/migrate-production-to-germany.sh first." >&2
+    exit 1
   fi
 done
-changed=true
 
-cat > "$release_config" <<EOF
+api_port=$(read_env "$api_env" HTTP_PORT)
+runtime_url=$(read_env "$api_env" AGENT_RUNTIME_URL)
+runtime_secret=$(read_env "$api_env" AGENT_RUNTIME_SECRET)
+api_openai_key=$(read_env "$api_env" OPENAI_API_KEY)
+db_sslmode=$(read_env "$api_env" DB_SSLMODE)
+agent_port=$(read_env "$agent_env" PORT)
+go_internal_url=$(read_env "$agent_env" GO_INTERNAL_URL)
+agent_secret=$(read_env "$agent_env" AGENT_RUNTIME_SECRET)
+agent_openai_key=$(read_env "$agent_env" OPENAI_API_KEY)
+
+if [ "$api_port" != 8082 ] || [ "$agent_port" != 8092 ]; then
+  echo "Production ports must be HTTP_PORT=8082 and PORT=8092." >&2
+  exit 1
+fi
+if [ "$runtime_url" != http://127.0.0.1:8092 ] || [ "$go_internal_url" != http://127.0.0.1:8082 ]; then
+  echo "Production API and agent must communicate over German loopback." >&2
+  exit 1
+fi
+if [ "${#runtime_secret}" -lt 32 ] || [ "$runtime_secret" != "$agent_secret" ]; then
+  echo "Production agent transport secret is missing or inconsistent." >&2
+  exit 1
+fi
+if [ -z "$api_openai_key" ] || [ -z "$agent_openai_key" ]; then
+  echo "The German production services require a direct OpenAI key." >&2
+  exit 1
+fi
+case "$db_sslmode" in require|verify-ca|verify-full) ;; *)
+  echo "Remote PostgreSQL must use TLS (DB_SSLMODE=require, verify-ca, or verify-full)." >&2
+  exit 1
+esac
+
+rollback() {
+  local exit_code=$?
+  trap - ERR
+  echo "Production service update failed; restoring the previous German release." >&2
+  systemctl stop "$agent_service" "$api_service" >/dev/null 2>&1 || true
+  rm -rf "$api_root" "$agent_root"
+  [ -d "$api_previous" ] && mv "$api_previous" "$api_root"
+  [ -d "$agent_previous" ] && mv "$agent_previous" "$agent_root"
+  systemctl daemon-reload
+  [ -d "$api_root" ] && systemctl start "$api_service" >/dev/null 2>&1 || true
+  [ -d "$agent_root" ] && systemctl start "$agent_service" >/dev/null 2>&1 || true
+  journalctl -u "$api_service" -u "$agent_service" -n 160 --no-pager || true
+  exit "$exit_code"
+}
+trap rollback ERR
+
+id -u reupgoals >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin reupgoals
+install -d -m 750 -o reupgoals -g reupgoals /opt/reup-goals-production
+install -d -m 700 /etc/reup-goals-production
+
+rm -rf "$api_next" "$agent_next"
+install -d -m 750 -o reupgoals -g reupgoals "$api_next" "$agent_next"
+install -m 755 -o reupgoals -g reupgoals /tmp/reup_goals_backend "$api_next/reup_goals_backend"
+tar -xzf /tmp/reup_goals_agent_runtime.tar.gz -C "$agent_next"
+chown -R reupgoals:reupgoals "$agent_next"
+test -x "$agent_next/node"
+test -f "$agent_next/dist/server.js"
+
+cat > "/etc/systemd/system/${api_service}" <<'UNIT'
+[Unit]
+Description=REUP.goals Production API (Germany)
+After=network-online.target
+Wants=network-online.target
+
 [Service]
-Environment="AGENT_RUNTIME_ENABLED=true"
-Environment="AGENT_RUNTIME_MAX_TURNS=120"
-Environment="AGENT_RUNTIME_TIMEOUT=45m"
-Environment="JOB_QUEUE_NAMESPACE=production"
-Environment="AGENT_RELEASE_ID=${release_id}"
-Environment="OPENAI_PROXY_URL=direct"
-EOF
-chmod 600 "$release_config"
+Type=simple
+User=reupgoals
+Group=reupgoals
+WorkingDirectory=/opt/reup-goals-production/backend
+EnvironmentFile=/etc/reup-goals-production/backend.env
+ExecStart=/opt/reup-goals-production/backend/reup_goals_backend
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
-install -m 755 /tmp/reup_goals_backend "$binary"
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat > "/etc/systemd/system/${agent_service}" <<'UNIT'
+[Unit]
+Description=REUP.goals Production Agent Runtime (Germany)
+After=network-online.target reup-goals-production.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=reupgoals
+Group=reupgoals
+WorkingDirectory=/opt/reup-goals-production/agent
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/reup-goals-production/agent.env
+ExecStart=/opt/reup-goals-production/agent/node dist/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl stop "$agent_service" "$api_service" >/dev/null 2>&1 || true
+rm -rf "$api_previous" "$agent_previous"
+[ -d "$api_root" ] && mv "$api_root" "$api_previous"
+[ -d "$agent_root" ] && mv "$agent_root" "$agent_previous"
+mv "$api_next" "$api_root"
+mv "$agent_next" "$agent_root"
+
 systemctl daemon-reload
-systemctl reset-failed "$service" || true
-systemctl restart "$service"
+systemctl enable "$api_service" "$agent_service" >/dev/null
+systemctl reset-failed "$api_service" "$agent_service" || true
+systemctl start "$api_service"
+systemctl start "$agent_service"
 
-for attempt in $(seq 1 45); do
-  health=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz || true)
-  privacy=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v2/privacy/legal-documents || true)
-  if [ "$health" = 200 ] && [ "$privacy" = 200 ]; then break; fi
-  if [ "$attempt" -eq 45 ]; then
-    echo "Production backend failed its health check." >&2
+for attempt in $(seq 1 60); do
+  api_health=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8082/readyz || true)
+  agent_health=$(curl -sS http://127.0.0.1:8092/healthz || true)
+  agent_ready=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8092/readyz || true)
+  if [ "$api_health" = 200 ] && [[ "$agent_health" == *'"runtime":true'* ]] && [[ "$agent_health" == *'"openai":true'* ]] && [ "$agent_ready" = 200 ]; then
+    break
+  fi
+  if [ "$attempt" -eq 60 ]; then
+    echo "The German production cell did not become ready." >&2
     exit 1
   fi
   sleep 2
 done
 
 trap - ERR
-rm -f "$rollback_binary" "$release_config_backup"
-for backup in "${env_backups[@]}"; do [ -n "$backup" ] && rm -f "$backup"; done
-
-# The old colocated runtime is removed only after the remote path is healthy.
-systemctl disable --now reup-goals-agent-production.service >/dev/null 2>&1 || true
-systemctl status "$service" --no-pager
-echo "BACKEND DEPLOYED WITH REMOTE AI RUNTIME"
+rm -rf "$api_previous" "$agent_previous"
+systemctl status "$api_service" "$agent_service" --no-pager
+echo "PRODUCTION API AND AGENT DEPLOYED IN GERMANY (${release_id})"
 REMOTE
 
-echo "Checking public production endpoints..."
-curl --fail --show-error --silent https://api.reupgoals.pro/healthz
-echo
-curl --fail --show-error --silent https://api.reupgoals.pro/api/v2/privacy/legal-documents
-echo
-echo "Production backend promotion completed."
+echo "Production API and agent promotion completed."

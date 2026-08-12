@@ -134,13 +134,7 @@ func securityHeaders(next http.Handler) http.Handler {
 
 func limitRequestBodies(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		limit := int64(defaultRequestLimit)
-		switch r.URL.Path {
-		case "/api/v2/strategic-director/files", "/api/v2/strategy-facilitator/files":
-			limit = fileRequestLimit
-		case "/api/v2/audio/transcriptions", "/api/v2/tactics-facilitator/files":
-			limit = audioRequestLimit
-		}
+		limit := requestBodyLimit(r.URL.Path)
 		if r.ContentLength > limit {
 			writePayloadTooLarge(w)
 			return
@@ -150,6 +144,21 @@ func limitRequestBodies(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requestBodyLimit(path string) int64 {
+	switch path {
+	case "/api/v2/strategic-director/files", "/api/v2/strategy-facilitator/files":
+		return fileRequestLimit
+	case "/api/v2/audio/transcriptions",
+		"/api/v2/tactics-facilitator/files",
+		"/api/v2/tactics-advisor/files",
+		"/api/v2/tasks/files",
+		"/api/v2/tasks/completion-files":
+		return audioRequestLimit
+	default:
+		return defaultRequestLimit
+	}
 }
 
 func recoverPanics(next http.Handler) http.Handler {

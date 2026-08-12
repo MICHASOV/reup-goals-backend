@@ -25,7 +25,6 @@ type Config struct {
 
 	OpenAIKey                     string
 	OpenAIBaseURL                 string
-	OpenAIGatewaySecret           string
 	OpenAIModel                   string
 	OpenAIAuditorModel            string
 	OpenAIAdvisorModel            string
@@ -34,7 +33,6 @@ type Config struct {
 	OpenAIAuditorMaxOutputTokens  int
 	OpenAIAuditorCompactThreshold int
 	OpenAIAdvisorCompactThreshold int
-	OpenAIProxyURL                string
 	EnableAIBenchmark             bool
 	AIAdminKey                    string
 	AIRequestsPerMinute           int
@@ -53,6 +51,7 @@ type Config struct {
 	JWTSecret                     string
 	CORSAllowedOrigins            []string
 	Environment                   string
+	HTTPPort                      int
 	HTTPReadTimeout               time.Duration
 	HTTPWriteTimeout              time.Duration
 	HTTPIdleTimeout               time.Duration
@@ -131,10 +130,6 @@ func Load() *Config {
 	auditorMaxOutputTokens := parseIntEnv("OPENAI_AUDITOR_MAX_OUTPUT_TOKENS", 1800)
 	auditorCompactThreshold := parseIntEnv("OPENAI_AUDITOR_COMPACT_THRESHOLD", 24000)
 	advisorCompactThreshold := parseIntEnv("OPENAI_ADVISOR_COMPACT_THRESHOLD", 24000)
-	openAIProxyURL := os.Getenv("OPENAI_PROXY_URL")
-	if openAIProxyURL == "" {
-		openAIProxyURL = "socks5://127.0.0.1:10808"
-	}
 	openAIBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")), "/")
 	if openAIBaseURL == "" {
 		openAIBaseURL = "https://api.openai.com/v1"
@@ -225,7 +220,6 @@ func Load() *Config {
 
 		OpenAIKey:                     os.Getenv("OPENAI_API_KEY"),
 		OpenAIBaseURL:                 openAIBaseURL,
-		OpenAIGatewaySecret:           strings.TrimSpace(os.Getenv("OPENAI_GATEWAY_SECRET")),
 		OpenAIModel:                   model,
 		OpenAIAuditorModel:            auditorModel,
 		OpenAIAdvisorModel:            advisorModel,
@@ -234,7 +228,6 @@ func Load() *Config {
 		OpenAIAuditorMaxOutputTokens:  auditorMaxOutputTokens,
 		OpenAIAuditorCompactThreshold: auditorCompactThreshold,
 		OpenAIAdvisorCompactThreshold: advisorCompactThreshold,
-		OpenAIProxyURL:                openAIProxyURL,
 		EnableAIBenchmark:             parseBoolEnv("ENABLE_AI_BENCHMARK"),
 		AIAdminKey:                    strings.TrimSpace(os.Getenv("AI_ADMIN_KEY")),
 		AIRequestsPerMinute:           parseIntEnv("AI_RATE_LIMIT_PER_MINUTE", 60),
@@ -253,6 +246,7 @@ func Load() *Config {
 		JWTSecret:                     jwtSecret,
 		CORSAllowedOrigins:            parseCSVEnv("CORS_ALLOWED_ORIGINS"),
 		Environment:                   environment,
+		HTTPPort:                      parseIntEnv("HTTP_PORT", 8080),
 		HTTPReadTimeout:               parseDurationEnv("HTTP_READ_TIMEOUT", 90*time.Second),
 		HTTPWriteTimeout:              parseDurationEnv("HTTP_WRITE_TIMEOUT", 0),
 		HTTPIdleTimeout:               parseDurationEnv("HTTP_IDLE_TIMEOUT", 90*time.Second),
@@ -407,24 +401,11 @@ func (c *Config) Validate() error {
 	if err != nil || openAIURL.Scheme == "" || openAIURL.Host == "" || openAIURL.RawQuery != "" || openAIURL.Fragment != "" || openAIURL.User != nil {
 		return fmt.Errorf("OPENAI_BASE_URL must be a valid absolute URL without credentials, query, or fragment")
 	}
-	openAIGateway := !isOfficialOpenAIURL(openAIURL)
-	if openAIGateway {
-		if len(c.OpenAIGatewaySecret) < 32 {
-			return fmt.Errorf("OPENAI_GATEWAY_SECRET must contain at least 32 characters when OPENAI_BASE_URL uses a gateway")
-		}
-		if (c.Environment == "production" || c.Environment == "staging") && openAIURL.Scheme != "https" {
-			return fmt.Errorf("OPENAI_BASE_URL must use HTTPS in %s", c.Environment)
-		}
-		if c.Environment == "production" && strings.TrimSpace(c.OpenAIKey) != "" {
-			return fmt.Errorf("OPENAI_API_KEY must not be stored on the production API host when the AI gateway is enabled")
-		}
-	} else {
-		if strings.TrimSpace(c.OpenAIKey) == "" {
-			return fmt.Errorf("OPENAI_API_KEY is required when the official OpenAI API is used directly")
-		}
-		if strings.TrimSpace(c.OpenAIGatewaySecret) != "" {
-			return fmt.Errorf("OPENAI_GATEWAY_SECRET must be empty when the official OpenAI API is used directly")
-		}
+	if strings.TrimSpace(c.OpenAIKey) == "" {
+		return fmt.Errorf("OPENAI_API_KEY is required")
+	}
+	if (c.Environment == "production" || c.Environment == "staging") && openAIURL.Scheme != "https" {
+		return fmt.Errorf("OPENAI_BASE_URL must use HTTPS in %s", c.Environment)
 	}
 	if (c.Environment == "production" || c.Environment == "staging") && len(c.CORSAllowedOrigins) == 0 {
 		return fmt.Errorf("CORS_ALLOWED_ORIGINS is required in %s", c.Environment)
@@ -503,17 +484,6 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
-}
-
-func (c *Config) OpenAIAuthToken() string {
-	if strings.TrimSpace(c.OpenAIGatewaySecret) != "" {
-		return strings.TrimSpace(c.OpenAIGatewaySecret)
-	}
-	return strings.TrimSpace(c.OpenAIKey)
-}
-
-func isOfficialOpenAIURL(value *url.URL) bool {
-	return strings.EqualFold(value.Scheme, "https") && strings.EqualFold(value.Hostname(), "api.openai.com")
 }
 
 func isLoopbackURL(value *url.URL) bool {

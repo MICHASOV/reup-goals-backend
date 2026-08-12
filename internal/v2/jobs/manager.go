@@ -580,15 +580,27 @@ func (m *Manager) Stats(ctx context.Context, workspaceID int) (QueueStats, error
 	var stats QueueStats
 	err := m.dbx.QueryRowContext(ctx, `
 		SELECT
-			COUNT(*) FILTER (WHERE status='queued'),
-			COUNT(*) FILTER (WHERE status='running'),
+			COUNT(*) FILTER (WHERE current_job.status='queued'),
+			COUNT(*) FILTER (WHERE current_job.status='running'),
 			COUNT(*) FILTER (
-				WHERE status='failed'
-					AND updated_at > NOW() - INTERVAL '24 hours'
-					AND job_type NOT IN ('executive_agent.execute', 'executive_agent.resume')
+				WHERE current_job.status='failed'
+					AND current_job.updated_at > NOW() - INTERVAL '24 hours'
+					AND current_job.job_type NOT IN ('executive_agent.execute', 'executive_agent.resume')
+					AND (
+						current_job.dedupe_key=''
+						OR NOT EXISTS (
+							SELECT 1
+							FROM v2_background_jobs newer_job
+							WHERE newer_job.queue_name=current_job.queue_name
+								AND newer_job.workspace_id=current_job.workspace_id
+								AND newer_job.job_type=current_job.job_type
+								AND newer_job.dedupe_key=current_job.dedupe_key
+								AND newer_job.id > current_job.id
+						)
+					)
 			)
-		FROM v2_background_jobs
-		WHERE workspace_id=$1 AND queue_name=$2
+		FROM v2_background_jobs current_job
+		WHERE current_job.workspace_id=$1 AND current_job.queue_name=$2
 	`, workspaceID, m.namespace).Scan(&stats.Queued, &stats.Running, &stats.Failed)
 	return stats, err
 }
