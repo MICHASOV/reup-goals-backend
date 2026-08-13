@@ -14,7 +14,14 @@ runtime_stage="$(mktemp -d /tmp/reup-goals-agent-runtime.XXXXXX)"
 node_version="${AGENT_NODE_VERSION:-v22.17.0}"
 current_stage="initialize production backend promotion"
 
-SSH_ARGS=(-o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes)
+SSH_ARGS=(
+  -o BatchMode=yes
+  -o ConnectTimeout=15
+  -o ServerAliveInterval=10
+  -o ServerAliveCountMax=12
+  -o TCPKeepAlive=yes
+  -o IdentitiesOnly=yes
+)
 if [[ -f "$production_key" ]]; then
   SSH_ARGS+=(-i "$production_key")
 fi
@@ -95,6 +102,15 @@ agent_previous=${agent_root}.previous
 api_env=/etc/reup-goals-production/backend.env
 agent_env=/etc/reup-goals-production/agent.env
 
+report_failure() {
+  local exit_code=$?
+  if [ "$exit_code" -ne 0 ]; then
+    printf '::error title=German production service failed::Stage: %s (exit %s)\n' \
+      "$remote_stage" "$exit_code" >&2
+  fi
+}
+trap report_failure EXIT
+
 read_env() {
   grep -E "^$2=" "$1" | tail -1 | cut -d= -f2- || true
 }
@@ -140,8 +156,6 @@ esac
 rollback() {
   local exit_code=$?
   trap - ERR
-  printf '::error title=German production service failed::Stage: %s (exit %s)\n' \
-    "$remote_stage" "$exit_code" >&2
   echo "Production service update failed; restoring the previous German release." >&2
   systemctl stop "$agent_service" "$api_service" >/dev/null 2>&1 || true
   rm -rf "$api_root" "$agent_root"
@@ -156,10 +170,12 @@ rollback() {
 trap rollback ERR
 
 remote_stage="create German production service account"
+echo "German candidate: creating the service account..."
 id -u reupgoals >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin reupgoals
 getent group reupgoals >/dev/null 2>&1 || groupadd --system reupgoals
 usermod -g reupgoals reupgoals
 remote_stage="install production service artifacts"
+echo "German candidate: installing release artifacts..."
 install -d -m 750 -o reupgoals -g reupgoals /opt/reup-goals-production
 install -d -m 700 /etc/reup-goals-production
 
@@ -176,6 +192,7 @@ test -x "$agent_next/node"
 test -f "$agent_next/dist/server.js"
 
 remote_stage="write German production API service"
+echo "German candidate: registering service units..."
 cat > "/etc/systemd/system/${api_service}" <<'UNIT'
 [Unit]
 Description=REUP.goals Production API (Germany)
@@ -260,11 +277,14 @@ systemctl daemon-reload
 systemctl enable "$api_service" "$agent_service" >/dev/null
 systemctl reset-failed "$api_service" "$agent_service" || true
 remote_stage="start German production API"
+echo "German candidate: starting the API..."
 systemctl start "$api_service"
 remote_stage="start German production agent runtime"
+echo "German candidate: starting the agent runtime..."
 systemctl start "$agent_service"
 
 remote_stage="wait for German production readiness"
+echo "German candidate: waiting for readiness..."
 for attempt in $(seq 1 60); do
   api_health=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8082/readyz || true)
   agent_health=$(curl -sS http://127.0.0.1:8092/healthz || true)
@@ -275,6 +295,9 @@ for attempt in $(seq 1 60); do
   if [ "$attempt" -eq 60 ]; then
     echo "The German production cell did not become ready." >&2
     exit 1
+  fi
+  if [ $((attempt % 5)) -eq 0 ]; then
+    echo "German candidate: readiness check ${attempt}/60..."
   fi
   sleep 2
 done
