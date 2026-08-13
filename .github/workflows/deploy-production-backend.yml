@@ -9,9 +9,6 @@ concurrency:
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - production-backend-c89c6d4
 
 jobs:
   deploy:
