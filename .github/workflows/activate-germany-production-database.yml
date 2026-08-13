@@ -66,6 +66,100 @@ jobs:
             scripts/activate-germany-production-database.sh \
             "${GERMANY_USER}@${GERMANY_HOST}:/tmp/"
 
+      - name: Configure German production HTTPS
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=6 \
+            -o IdentitiesOnly=yes \
+            "${GERMANY_USER}@${GERMANY_HOST}" bash -s <<'REMOTE'
+          set -Eeuo pipefail
+
+          backend_env=/etc/reup-goals-production/backend.env
+          email=reupgoals@gmail.com
+          test -s "$backend_env"
+          test -s /var/www/reupgoals.pro/index.html
+          test -s /var/www/reupgoals.pro/login/index.html
+
+          set_env() {
+            local file=$1 key=$2 value=$3 escaped
+            escaped=$(printf '%s' "$value" | sed 's/[&|]/\\&/g')
+            if grep -qE "^${key}=" "$file"; then
+              sed -i -E "s|^${key}=.*$|${key}=${escaped}|" "$file"
+            else
+              printf '%s=%s\n' "$key" "$value" >> "$file"
+            fi
+          }
+          set_env "$backend_env" CROSS_BORDER_TRANSFER_REGISTERED true
+
+          command -v certbot >/dev/null 2>&1 || {
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+              certbot python3-certbot-nginx
+          }
+
+          cat > /etc/nginx/sites-available/reupgoals-production <<'NGINX'
+          server {
+              listen 80;
+              listen [::]:80;
+              server_name reupgoals.pro www.reupgoals.pro;
+              server_tokens off;
+              root /var/www/reupgoals.pro;
+              index index.html;
+              location / { try_files $uri $uri/ =404; }
+          }
+          NGINX
+          cat > /etc/nginx/sites-available/reupgoals-api-production <<'NGINX'
+          server {
+              listen 80;
+              listen [::]:80;
+              server_name api.reupgoals.pro;
+              server_tokens off;
+              client_max_body_size 90m;
+              client_body_timeout 3600s;
+              location / {
+                  proxy_pass http://127.0.0.1:8082;
+                  proxy_http_version 1.1;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_connect_timeout 15s;
+                  proxy_send_timeout 3600s;
+                  proxy_read_timeout 3600s;
+                  proxy_request_buffering off;
+                  proxy_buffering off;
+              }
+          }
+          NGINX
+          ln -sfn /etc/nginx/sites-available/reupgoals-production \
+            /etc/nginx/sites-enabled/reupgoals-production
+          ln -sfn /etc/nginx/sites-available/reupgoals-api-production \
+            /etc/nginx/sites-enabled/reupgoals-api-production
+          nginx -t
+          systemctl reload nginx
+
+          certbot --nginx --non-interactive --agree-tos --redirect \
+            --email "$email" -d reupgoals.pro -d www.reupgoals.pro
+          certbot --nginx --non-interactive --agree-tos --redirect \
+            --email "$email" -d api.reupgoals.pro
+          nginx -t
+          systemctl reload nginx
+
+          curl --fail --silent --show-error --max-time 30 \
+            --resolve reupgoals.pro:443:127.0.0.1 \
+            https://reupgoals.pro/login/ >/dev/null
+          curl --fail --silent --show-error --max-time 30 \
+            --resolve api.reupgoals.pro:443:127.0.0.1 \
+            https://api.reupgoals.pro/readyz >/dev/null
+          REMOTE
+
       - name: Freeze writes and activate local PostgreSQL
         env:
           GERMANY_HOST: ${{ secrets.STAGING_HOST }}
