@@ -195,6 +195,27 @@ jobs:
           nginx -t
           systemctl reload nginx
 
+          systemctl restart \
+            reup-goals-production.service \
+            reup-goals-agent-production.service
+          api_ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --max-time 5 \
+              http://127.0.0.1:8082/readyz >/dev/null; then
+              api_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$api_ready" != true ]; then
+            systemctl status reup-goals-production.service \
+              reup-goals-agent-production.service --no-pager >&2 || true
+            journalctl -u reup-goals-production.service \
+              -u reup-goals-agent-production.service \
+              --since '-5 minutes' --no-pager -n 100 >&2 || true
+            exit 1
+          fi
+
           curl --fail --silent --show-error --max-time 30 \
             --resolve reupgoals.pro:443:127.0.0.1 \
             https://reupgoals.pro/login/ >/dev/null
