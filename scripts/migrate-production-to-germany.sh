@@ -346,6 +346,15 @@ chmod 600 "$config_root/letsencrypt-email"
 REMOTE
 
   current_stage="deploy German backend candidate"
+  echo "Preparing a verified local PostgreSQL candidate in Germany..."
+  retry scp "${SSH_ARGS[@]}" \
+    "$repo_root/scripts/prepare-germany-production-database.sh" \
+    "$repo_root/scripts/activate-germany-production-database.sh" \
+    "${production_target}:/tmp/"
+  retry ssh "${SSH_ARGS[@]}" "$production_target" \
+    'chmod 700 /tmp/prepare-germany-production-database.sh /tmp/activate-germany-production-database.sh && /tmp/activate-germany-production-database.sh prepare'
+
+  current_stage="deploy German backend candidate"
   echo "Deploying the candidate API and agent locally on the German host..."
   REUP_PRODUCTION_HOST="$production_host" \
   REUP_PRODUCTION_USER="$production_user" \
@@ -549,8 +558,9 @@ REMOTE
 then
   echo "Legacy traffic is safely draining to Germany."
 else
-  echo "WARNING: the Russian host could not install the DNS drain bridge." >&2
-  echo "German production is healthy, but the old Russian services were left untouched for cached clients." >&2
+  echo "ERROR: the Russian host could not install the DNS drain bridge." >&2
+  echo "Stopping before the final database copy to prevent writes to two databases." >&2
+  exit 1
 fi
 
 current_stage="remove obsolete German AI gateway"
@@ -558,6 +568,38 @@ echo "Removing the obsolete public AI gateway..."
 retry ssh "${SSH_ARGS[@]}" "$production_target" \
   'rm -f /etc/nginx/sites-enabled/ai.reupgoals.pro /etc/nginx/sites-enabled/reup-goals-ai; nginx -t; systemctl reload nginx'
 
+current_stage="final German database synchronization"
+echo "Freezing production writes briefly and switching to German PostgreSQL..."
+ssh "${SSH_ARGS[@]}" "$production_target" bash -s <<'REMOTE'
+set -Eeuo pipefail
+
+api_service=reup-goals-production.service
+agent_service=reup-goals-agent-production.service
+
+restore_remote_services() {
+  local exit_code=$?
+  trap - ERR
+  /tmp/activate-germany-production-database.sh rollback >/dev/null 2>&1 || {
+    systemctl start "$api_service" "$agent_service" >/dev/null 2>&1 || true
+  }
+  exit "$exit_code"
+}
+trap restore_remote_services ERR
+
+systemctl stop "$agent_service" "$api_service"
+/tmp/activate-germany-production-database.sh prepare
+/tmp/activate-germany-production-database.sh activate
+trap - ERR
+/tmp/activate-germany-production-database.sh status
+REMOTE
+
+current_stage="German local database production smoke checks"
+echo "Verifying production after the local database switch..."
+curl --fail --show-error --silent --max-time 30 https://api.reupgoals.pro/readyz >/dev/null
+curl --fail --show-error --silent --max-time 30 https://api.reupgoals.pro/api/v2/privacy/legal-documents >/dev/null
+curl --fail --show-error --silent --max-time 30 https://reupgoals.pro/login/ >/dev/null
+
 echo
-echo "Production now runs in Germany; PostgreSQL remains in Russia over TLS."
+echo "Production API, agent runtime, frontend, and PostgreSQL now run in Germany."
+echo "The Russian database snapshot and service configuration remain available for rollback."
 echo "Staging remains isolated on the German host and uses its existing domains."

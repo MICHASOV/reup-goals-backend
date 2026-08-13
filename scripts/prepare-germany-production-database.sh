@@ -44,18 +44,20 @@ source_sslmode=$(read_env "$source_env" DB_SSLMODE)
 source_port=${source_port:-5432}
 source_sslmode=${source_sslmode:-require}
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq ca-certificates curl postgresql-common >/dev/null
-install -d -m 755 /usr/share/postgresql-common/pgdg
-curl --fail --silent --show-error \
-  https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-  -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
-printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
-  "$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")" \
-  > /etc/apt/sources.list.d/pgdg.list
-apt-get update -qq
-apt-get install -y -qq postgresql-18 postgresql-client-18 >/dev/null
+if [[ ! -x /usr/lib/postgresql/18/bin/pg_dump ]] || ! command -v pg_lsclusters >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -qq ca-certificates curl postgresql-common >/dev/null
+  install -d -m 755 /usr/share/postgresql-common/pgdg
+  curl --fail --silent --show-error \
+    https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+  printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
+    "$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")" \
+    > /etc/apt/sources.list.d/pgdg.list
+  apt-get update -qq
+  apt-get install -y -qq postgresql-18 postgresql-client-18 >/dev/null
+fi
 
 if ! pg_lsclusters --no-header | awk '$1 == "18" && $2 == "main" {found=1} END {exit !found}'; then
   pg_createcluster 18 main --start >/dev/null

@@ -129,6 +129,7 @@ runtime_url=$(read_env "$api_env" AGENT_RUNTIME_URL)
 runtime_secret=$(read_env "$api_env" AGENT_RUNTIME_SECRET)
 api_openai_key=$(read_env "$api_env" OPENAI_API_KEY)
 db_sslmode=$(read_env "$api_env" DB_SSLMODE)
+db_host=$(read_env "$api_env" DB_HOST)
 agent_port=$(read_env "$agent_env" PORT)
 go_internal_url=$(read_env "$agent_env" GO_INTERNAL_URL)
 agent_secret=$(read_env "$agent_env" AGENT_RUNTIME_SECRET)
@@ -150,9 +151,19 @@ if [ -z "$api_openai_key" ] || [ -z "$agent_openai_key" ]; then
   echo "The German production services require a direct OpenAI key." >&2
   exit 1
 fi
-case "$db_sslmode" in require|verify-ca|verify-full) ;; *)
-  echo "Remote PostgreSQL must use TLS (DB_SSLMODE=require, verify-ca, or verify-full)." >&2
-  exit 1
+case "$db_host" in
+  127.0.0.1|localhost|::1)
+    if [ "$db_sslmode" != disable ]; then
+      echo "Local PostgreSQL must use DB_SSLMODE=disable." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    case "$db_sslmode" in require|verify-ca|verify-full) ;; *)
+      echo "Remote PostgreSQL must use TLS (DB_SSLMODE=require, verify-ca, or verify-full)." >&2
+      exit 1
+    esac
+    ;;
 esac
 
 rollback() {
