@@ -40,6 +40,31 @@ jobs:
           ssh-keygen -y -f ~/.ssh/germany_key >/dev/null
           ssh-keyscan -H "$GERMANY_HOST" >> ~/.ssh/known_hosts
 
+      - name: Install local PostgreSQL in Germany
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          ssh -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            "${GERMANY_USER}@${GERMANY_HOST}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          if ! command -v psql >/dev/null 2>&1 || \
+             ! command -v pg_dump >/dev/null 2>&1 || \
+             ! systemctl list-unit-files postgresql.service >/dev/null 2>&1; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-client
+          fi
+
+          systemctl enable --now postgresql
+          test "$(systemctl is-active postgresql)" = active
+          psql --version
+          pg_dump --version
+          REMOTE
+
       - name: Inspect active production database
         env:
           GERMANY_HOST: ${{ secrets.STAGING_HOST }}
