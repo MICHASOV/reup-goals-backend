@@ -18,6 +18,7 @@ temporary_base="${TMPDIR:-/tmp}"
 temporary_root="$(mktemp -d "${temporary_base%/}/reup-germany-cutover.XXXXXX")"
 legacy_env="$temporary_root/backend.env"
 german_ai_env="$temporary_root/ai-production.env"
+inactive_prepare=false
 
 SSH_ARGS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o IdentitiesOnly=yes)
 if [[ -f "$production_key" ]]; then
@@ -144,6 +145,20 @@ if [[ "$migration_phase" != activate ]]; then
     exit 1
   fi
 
+  privacy_mode=$(grep -E '^PRIVACY_MODE=' "$legacy_env" | tail -1 | cut -d= -f2- || true)
+  cross_border_transfer_registered=$(grep -E '^CROSS_BORDER_TRANSFER_REGISTERED=' "$legacy_env" | tail -1 | cut -d= -f2- || true)
+  if [[ -z "$privacy_mode" ]]; then
+    privacy_mode=$(grep -E '^PRIVACY_MODE=' "$german_ai_env" | tail -1 | cut -d= -f2- || true)
+  fi
+  if [[ -z "$cross_border_transfer_registered" ]]; then
+    cross_border_transfer_registered=$(grep -E '^CROSS_BORDER_TRANSFER_REGISTERED=' "$german_ai_env" | tail -1 | cut -d= -f2- || true)
+  fi
+  privacy_mode=${privacy_mode:-ru_152fz}
+  if [[ "$privacy_mode" =~ ^(ru_152fz|dual)$ && "$cross_border_transfer_registered" != true ]]; then
+    inactive_prepare=true
+    echo "Cross-border notification is not registered; preparing Germany without starting services or moving traffic."
+  fi
+
   current_stage="upload protected configuration to Germany"
   echo "Uploading protected configuration inputs to the German host..."
   retry scp "${SSH_ARGS[@]}" "$legacy_env" "$german_ai_env" "${production_target}:/tmp/"
@@ -207,17 +222,6 @@ if [ -z "$openai_key" ]; then
 fi
 privacy_mode=${privacy_mode:-ru_152fz}
 privacy_contact_email=${privacy_contact_email:-privacy@reupgoals.pro}
-if [ "$privacy_mode" = ru_152fz ] || [ "$privacy_mode" = dual ]; then
-  if [ "$cross_border_transfer_registered" != true ]; then
-    systemctl disable --now \
-      reup-goals-production.service \
-      reup-goals-agent-production.service >/dev/null 2>&1 || true
-    echo "Production migration is blocked: CROSS_BORDER_TRANSFER_REGISTERED is not true in the active production configuration." >&2
-    echo "Confirm the required registration and set the production assertion before retrying; the migration will not invent a legal attestation." >&2
-    exit 1
-  fi
-fi
-
 set_env "$backend_env" APP_ENV production
 set_env "$backend_env" HTTP_PORT 8082
 set_env "$backend_env" PRIVACY_MODE "$privacy_mode"
@@ -347,6 +351,7 @@ REMOTE
   REUP_PRODUCTION_USER="$production_user" \
   REUP_PRODUCTION_SSH_TARGET="$production_target" \
   REUP_PRODUCTION_KEY="$production_key" \
+  REUP_PRODUCTION_INSTALL_ONLY="$inactive_prepare" \
     "$repo_root/scripts/promote-production-backend.sh"
 
   if [[ "$skip_frontend" != true ]]; then
@@ -365,6 +370,14 @@ REMOTE
     echo "Frontend deployment is delegated to its production GitHub workflow."
   fi
 
+  if [[ "$inactive_prepare" == true ]]; then
+    echo
+    echo "German production artifacts are installed but inactive."
+    echo "Russian production and DNS remain unchanged."
+    echo "After the cross-border notification is filed, record the assertion and rerun preparation."
+    exit 0
+  fi
+
   echo
   echo "German production candidate is ready. Update these DNS records now:"
   echo "  reupgoals.pro      A  $production_host"
@@ -379,6 +392,14 @@ REMOTE
   fi
 fi
 echo
+if [[ "$migration_phase" == activate ]]; then
+  current_stage="validate production privacy assertion"
+  if ! ssh "${SSH_ARGS[@]}" "$production_target" \
+    "grep -qx 'CROSS_BORDER_TRANSFER_REGISTERED=true' /etc/reup-goals-production/backend.env"; then
+    echo "Activation is blocked until the cross-border notification has actually been filed and recorded." >&2
+    exit 1
+  fi
+fi
 current_stage="wait for production DNS"
 echo "Waiting for production DNS to point to Germany..."
 deadline=$((SECONDS + ${DNS_WAIT_SECONDS:-25200}))

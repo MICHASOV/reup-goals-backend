@@ -111,7 +111,8 @@ jobs:
       - name: Next step
         run: |
           if [ "${{ inputs.phase }}" = prepare ]; then
-            echo "Preparation complete. Run the landing production workflow, update the three production A records, then run this workflow with phase=activate."
+            echo "Preparation complete. If the migration reported an inactive legal hold, do not update DNS. After the notification is filed, record the assertion and rerun prepare."
+            echo "Only an active, healthy preparation may be followed by the landing production workflow, DNS cutover, and phase=activate."
           else
             echo "Production activation in Germany is complete."
           fi

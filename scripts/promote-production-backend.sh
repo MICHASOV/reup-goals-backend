@@ -7,6 +7,7 @@ production_host="${REUP_PRODUCTION_HOST:-167.233.230.212}"
 production_user="${REUP_PRODUCTION_USER:-root}"
 production_target="${REUP_PRODUCTION_SSH_TARGET:-${production_user}@${production_host}}"
 production_key="${REUP_PRODUCTION_KEY:-$HOME/.ssh/reup_goals_staging_deploy}"
+install_only="${REUP_PRODUCTION_INSTALL_ONLY:-false}"
 release_id="production-$(git -C "$repo_root" rev-parse --short=12 HEAD)"
 backend_artifact="/tmp/reup_goals_backend"
 runtime_artifact="/tmp/reup_goals_agent_runtime.tar.gz"
@@ -86,10 +87,11 @@ scp "${SSH_ARGS[@]}" "$backend_artifact" "$runtime_artifact" "${production_targe
 
 current_stage="install German production services"
 echo "Installing the production services with automatic rollback..."
-ssh "${SSH_ARGS[@]}" "$production_target" bash -s -- "$release_id" <<'REMOTE'
+ssh "${SSH_ARGS[@]}" "$production_target" bash -s -- "$release_id" "$install_only" <<'REMOTE'
 set -Eeuo pipefail
 
 release_id=$1
+install_only=$2
 remote_stage="validate production service configuration"
 api_service=reup-goals-production.service
 agent_service=reup-goals-agent-production.service
@@ -274,6 +276,14 @@ mv "$agent_next" "$agent_root"
 
 remote_stage="register German production services"
 systemctl daemon-reload
+if [ "$install_only" = true ]; then
+  systemctl disable --now "$api_service" "$agent_service" >/dev/null 2>&1 || true
+  systemctl reset-failed "$api_service" "$agent_service" >/dev/null 2>&1 || true
+  trap - ERR
+  rm -rf "$api_previous" "$agent_previous"
+  echo "PRODUCTION API AND AGENT INSTALLED INACTIVE IN GERMANY (${release_id})"
+  exit 0
+fi
 systemctl enable "$api_service" "$agent_service" >/dev/null
 systemctl reset-failed "$api_service" "$agent_service" || true
 remote_stage="start German production API"
