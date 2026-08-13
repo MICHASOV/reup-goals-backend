@@ -1,0 +1,80 @@
+name: Deploy production backend
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-production
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: agent-runtime/package-lock.json
+
+      - name: Configure production SSH
+        env:
+          SSH_KEY_B64: ${{ secrets.STAGING_SSH_KEY_B64 }}
+          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          SSH_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          if [ -n "$SSH_KEY_B64" ]; then
+            printf '%s' "$SSH_KEY_B64" | base64 -d > ~/.ssh/production_key
+          else
+            printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/production_key
+          fi
+          chmod 600 ~/.ssh/production_key
+          ssh-keygen -y -f ~/.ssh/production_key >/dev/null
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Test backend
+        run: go test ./...
+
+      - name: Deploy production API and agent runtime
+        env:
+          REUP_PRODUCTION_HOST: ${{ secrets.STAGING_HOST }}
+          REUP_PRODUCTION_USER: ${{ secrets.STAGING_USER }}
+          REUP_PRODUCTION_KEY: /home/runner/.ssh/production_key
+        run: ./scripts/promote-production-backend.sh
+
+      - name: Verify public production authentication boundary
+        run: |
+          set -euo pipefail
+          for target in \
+            https://reupgoals.pro/backend/readyz \
+            https://api.reupgoals.pro/readyz \
+            https://api.reupgoals.pro/api/v2/privacy/legal-documents; do
+            curl --fail --silent --show-error \
+              --connect-timeout 10 --max-time 30 "$target" >/dev/null
+          done
+
+          login_code=$(curl --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            -o /tmp/login-response.json -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"production-smoke-does-not-exist@reupgoals.pro","password":"ProductionSmoke123!"}' \
+            https://reupgoals.pro/backend/auth/login)
+          test "$login_code" = 401
