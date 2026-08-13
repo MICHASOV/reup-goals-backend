@@ -196,6 +196,7 @@ fi
 
 set_env "$backend_env" APP_ENV production
 set_env "$backend_env" HTTP_PORT 8082
+set_env "$backend_env" DATA_RESIDENCY_REGION ru-twc1
 db_sslmode=$(read_env "$backend_env" DB_SSLMODE)
 case "$db_sslmode" in
   require|verify-ca|verify-full) ;;
@@ -203,8 +204,8 @@ case "$db_sslmode" in
 esac
 set_env "$backend_env" DB_SSLMODE "$db_sslmode"
 set_env "$backend_env" DB_APPLICATION_NAME reup-goals-production
-set_env "$backend_env" DB_MAX_OPEN_CONNS 6
-set_env "$backend_env" DB_MAX_IDLE_CONNS 2
+set_env "$backend_env" DB_MAX_OPEN_CONNS 4
+set_env "$backend_env" DB_MAX_IDLE_CONNS 1
 set_env "$backend_env" DB_CONN_MAX_IDLE_TIME 1m
 set_env "$backend_env" JOB_QUEUE_NAMESPACE production
 set_env "$backend_env" CORS_ALLOWED_ORIGINS https://reupgoals.pro,https://www.reupgoals.pro
