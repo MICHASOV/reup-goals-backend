@@ -13,6 +13,7 @@ production_key="${REUP_PRODUCTION_KEY:-$HOME/.ssh/reup_goals_staging_deploy}"
 letsencrypt_email="${LETSENCRYPT_EMAIL:-reupgoals@gmail.com}"
 migration_phase="${REUP_MIGRATION_PHASE:-all}"
 skip_frontend="${REUP_SKIP_FRONTEND:-false}"
+current_stage="initialization"
 temporary_base="${TMPDIR:-/tmp}"
 temporary_root="$(mktemp -d "${temporary_base%/}/reup-germany-cutover.XXXXXX")"
 legacy_env="$temporary_root/backend.env"
@@ -72,6 +73,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+report_failure() {
+  local exit_code=$?
+  printf '::error title=Production migration failed::Stage: %s (exit %s)\n' \
+    "$current_stage" "$exit_code" >&2
+  exit "$exit_code"
+}
+trap report_failure ERR
+
 required_commands=(curl dig scp ssh)
 if [[ "$migration_phase" != activate ]]; then
   required_commands+=(git go npm)
@@ -91,6 +100,7 @@ if [[ "$migration_phase" != activate && "$skip_frontend" != true && ! -d "$front
 fi
 
 if [[ "$migration_phase" != activate ]]; then
+  current_stage="release checks"
   echo "Running local release checks before touching production..."
   (
     cd "$repo_root"
@@ -111,6 +121,7 @@ if [[ "$migration_phase" != activate ]]; then
     )
   fi
 
+  current_stage="read Russian production configuration"
   echo "Reading production configuration without printing secrets..."
   if ! retry_capture "$legacy_env" ssh "${LEGACY_SSH_ARGS[@]}" "$legacy_target" \
     'sudo sh -c '\''for file in /opt/reup-goals-backend/.env /etc/reup-goals/backend.env; do [ -s "$file" ] && cat "$file"; done'\'''; then
@@ -132,9 +143,11 @@ if [[ "$migration_phase" != activate ]]; then
     exit 1
   fi
 
+  current_stage="upload protected configuration to Germany"
   echo "Uploading protected configuration inputs to the German host..."
   retry scp "${SSH_ARGS[@]}" "$legacy_env" "$german_ai_env" "${production_target}:/tmp/"
 
+  current_stage="prepare German production services"
   echo "Preparing an isolated German production cell..."
   ssh "${SSH_ARGS[@]}" "$production_target" bash -s -- "$letsencrypt_email" <<'REMOTE'
 set -Eeuo pipefail
@@ -299,6 +312,7 @@ printf '%s' "$letsencrypt_email" > "$config_root/letsencrypt-email"
 chmod 600 "$config_root/letsencrypt-email"
 REMOTE
 
+  current_stage="deploy German backend candidate"
   echo "Deploying the candidate API and agent locally on the German host..."
   REUP_PRODUCTION_HOST="$production_host" \
   REUP_PRODUCTION_USER="$production_user" \
@@ -307,6 +321,7 @@ REMOTE
     "$repo_root/scripts/promote-production-backend.sh"
 
   if [[ "$skip_frontend" != true ]]; then
+    current_stage="deploy German frontend candidate"
     echo "Building and uploading the production frontend..."
     (
       cd "$frontend_root"
@@ -335,6 +350,7 @@ REMOTE
   fi
 fi
 echo
+current_stage="wait for production DNS"
 echo "Waiting for production DNS to point to Germany..."
 deadline=$((SECONDS + ${DNS_WAIT_SECONDS:-25200}))
 while true; do
@@ -353,6 +369,7 @@ while true; do
   sleep 2
 done
 
+current_stage="activate HTTPS in Germany"
 echo "Activating HTTPS in Germany..."
 ssh "${SSH_ARGS[@]}" "$production_target" bash -s -- "$letsencrypt_email" <<'REMOTE'
 set -Eeuo pipefail
@@ -384,12 +401,14 @@ nginx -t
 systemctl reload nginx
 REMOTE
 
+current_stage="production smoke checks"
 echo "Running production smoke checks..."
 curl --fail --show-error --silent --max-time 30 https://api.reupgoals.pro/readyz >/dev/null
 curl --fail --show-error --silent --max-time 30 https://api.reupgoals.pro/api/v2/privacy/legal-documents >/dev/null
 curl --fail --show-error --silent --max-time 30 https://reupgoals.pro/login/ >/dev/null
 curl --fail --show-error --silent --max-time 30 https://reupgoals.pro/cabinet-v2/ >/dev/null
 
+current_stage="configure Russian DNS drain bridge"
 echo "Draining cached API traffic through a temporary compatibility bridge..."
 if ssh "${LEGACY_SSH_ARGS[@]}" "$legacy_target" sudo bash -s -- "$production_host" <<'REMOTE'
 set -Eeuo pipefail
@@ -484,6 +503,7 @@ else
   echo "German production is healthy, but the old Russian services were left untouched for cached clients." >&2
 fi
 
+current_stage="remove obsolete German AI gateway"
 echo "Removing the obsolete public AI gateway..."
 retry ssh "${SSH_ARGS[@]}" "$production_target" \
   'rm -f /etc/nginx/sites-enabled/ai.reupgoals.pro /etc/nginx/sites-enabled/reup-goals-ai; nginx -t; systemctl reload nginx'
