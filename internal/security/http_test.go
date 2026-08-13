@@ -22,6 +22,33 @@ func TestLimiterRejectsRequestsAboveLimit(t *testing.T) {
 	}
 }
 
+func TestIndependentLimitersDoNotShareAuthBudgets(t *testing.T) {
+	registerLimiter := NewLimiter(1, time.Minute)
+	loginLimiter := NewLimiter(1, time.Minute)
+	registerHandler := registerLimiter.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	loginHandler := loginLimiter.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := httptest.NewRequest(http.MethodPost, "/auth/register", nil)
+	request.RemoteAddr = "203.0.113.10:1234"
+	response := httptest.NewRecorder()
+	registerHandler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected registration request to pass, got %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	request.RemoteAddr = "203.0.113.10:1234"
+	response = httptest.NewRecorder()
+	loginHandler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("registration traffic must not exhaust the login budget, got %d", response.Code)
+	}
+}
+
 func TestHardenLimitsJSONAndSetsHeaders(t *testing.T) {
 	handler := Harden(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	request := httptest.NewRequest(http.MethodPost, "/api/v2/tasks", strings.NewReader(strings.Repeat("x", defaultRequestLimit+1)))
