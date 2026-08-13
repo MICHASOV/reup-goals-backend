@@ -1,0 +1,144 @@
+name: Activate German production database
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-germany-migration
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure German production SSH
+        env:
+          GERMANY_KEY_B64: ${{ secrets.STAGING_SSH_KEY_B64 }}
+          GERMANY_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          if [ -n "$GERMANY_KEY_B64" ]; then
+            printf '%s' "$GERMANY_KEY_B64" | base64 -d > ~/.ssh/germany_key
+          elif [ -n "$GERMANY_KEY" ]; then
+            printf '%s\n' "$GERMANY_KEY" | tr -d '\r' > ~/.ssh/germany_key
+          else
+            echo "German production SSH key is missing." >&2
+            exit 1
+          fi
+          chmod 600 ~/.ssh/germany_key
+          ssh-keygen -y -f ~/.ssh/germany_key >/dev/null
+          ssh-keyscan -H "$GERMANY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Verify German production access
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            "${GERMANY_USER}@${GERMANY_HOST}" 'printf GERMANY_SSH_OK'
+
+      - name: Upload database cutover scripts
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            scripts/prepare-germany-production-database.sh \
+            scripts/activate-germany-production-database.sh \
+            "${GERMANY_USER}@${GERMANY_HOST}:/tmp/"
+
+      - name: Freeze writes and activate local PostgreSQL
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=6 \
+            -o IdentitiesOnly=yes \
+            "${GERMANY_USER}@${GERMANY_HOST}" bash -s <<'REMOTE'
+          set -Eeuo pipefail
+
+          api_service=reup-goals-production.service
+          agent_service=reup-goals-agent-production.service
+          activate_script=/tmp/activate-germany-production-database.sh
+          prepare_script=/tmp/prepare-germany-production-database.sh
+
+          chmod 700 "$activate_script" "$prepare_script"
+          grep -qx 'CROSS_BORDER_TRANSFER_REGISTERED=true' \
+            /etc/reup-goals-production/backend.env
+
+          recover_services() {
+            local exit_code=$?
+            trap - ERR
+            active_host=$(grep -E '^DB_HOST=' /etc/reup-goals-production/backend.env \
+              | tail -1 | cut -d= -f2- || true)
+            if [ "$active_host" = 127.0.0.1 ] || [ "$active_host" = localhost ] || [ "$active_host" = ::1 ]; then
+              "$activate_script" rollback >/dev/null 2>&1 || true
+            else
+              systemctl start "$api_service" "$agent_service" >/dev/null 2>&1 || true
+            fi
+            exit "$exit_code"
+          }
+          trap recover_services ERR
+
+          # The public API already runs on this host. Stopping both services here
+          # freezes application writes while the final source snapshot is copied.
+          systemctl stop "$agent_service" "$api_service"
+          REUP_DATABASE_PREPARE_SCRIPT="$prepare_script" "$activate_script" prepare
+          "$activate_script" activate
+          trap - ERR
+          "$activate_script" status
+          REMOTE
+
+      - name: Verify German production
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            api_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+              https://api.reupgoals.pro/readyz || true)
+            legal_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+              https://api.reupgoals.pro/api/v2/privacy/legal-documents || true)
+            app_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+              https://reupgoals.pro/cabinet-v2/ || true)
+            if [ "$api_code" = 200 ] && [ "$legal_code" = 200 ] && [ "$app_code" = 200 ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Production smoke checks did not recover in time." >&2
+          exit 1
+
+      - name: Report active database without secrets
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          ssh -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            "${GERMANY_USER}@${GERMANY_HOST}" \
+            '/tmp/activate-germany-production-database.sh status'
