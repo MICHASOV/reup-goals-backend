@@ -1,0 +1,133 @@
+name: Germany database migration preflight
+
+permissions:
+  contents: read
+
+concurrency:
+  group: germany-database-preflight
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/germany-database-preflight.yml
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Configure migration SSH
+        env:
+          GERMANY_KEY_B64: ${{ secrets.STAGING_SSH_KEY_B64 }}
+          GERMANY_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          RUSSIA_KEY_B64: ${{ secrets.PRODUCTION_RUSSIA_SSH_KEY_B64 }}
+          RUSSIA_KEY: ${{ secrets.PRODUCTION_RUSSIA_SSH_KEY }}
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          if [ -n "$GERMANY_KEY_B64" ]; then
+            printf '%s' "$GERMANY_KEY_B64" | base64 -d > ~/.ssh/germany_key
+          else
+            printf '%s\n' "$GERMANY_KEY" | tr -d '\r' > ~/.ssh/germany_key
+          fi
+          if [ -n "$RUSSIA_KEY_B64" ]; then
+            printf '%s' "$RUSSIA_KEY_B64" | base64 -d > ~/.ssh/russia_key
+          else
+            printf '%s\n' "$RUSSIA_KEY" | tr -d '\r' > ~/.ssh/russia_key
+          fi
+
+          chmod 600 ~/.ssh/germany_key ~/.ssh/russia_key
+          ssh-keygen -y -f ~/.ssh/germany_key >/dev/null
+          ssh-keygen -y -f ~/.ssh/russia_key >/dev/null
+          ssh-keyscan -H "$GERMANY_HOST" >> ~/.ssh/known_hosts
+          ssh-keyscan -H 109.73.198.164 >> ~/.ssh/known_hosts
+
+      - name: Inspect active production database
+        run: |
+          ssh -i ~/.ssh/russia_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            root@109.73.198.164 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          pid=$(systemctl show reup-goals.service --property MainPID --value)
+          test "${pid:-0}" -gt 1
+          test -r "/proc/${pid}/environ"
+
+          env_file=$(mktemp)
+          trap 'rm -f "$env_file"' EXIT
+          tr '\000' '\n' < "/proc/${pid}/environ" > "$env_file"
+
+          read_env() {
+            grep -E "^$1=" "$env_file" | tail -1 | cut -d= -f2-
+          }
+
+          export PGHOST="$(read_env DB_HOST)"
+          export PGPORT="$(read_env DB_PORT)"
+          export PGUSER="$(read_env DB_USER)"
+          export PGPASSWORD="$(read_env DB_PASSWORD)"
+          export PGDATABASE="$(read_env DB_NAME)"
+          export PGSSLMODE="$(read_env DB_SSLMODE)"
+          export PGCONNECT_TIMEOUT=10
+
+          echo "SOURCE_DB_HOST=${PGHOST}"
+          echo "SOURCE_DB_NAME=${PGDATABASE}"
+          echo "SOURCE_DB_USER=${PGUSER}"
+          psql --version
+          pg_dump --version
+          psql -v ON_ERROR_STOP=1 -P pager=off \
+            -c "SELECT version();" \
+            -c "SELECT pg_size_pretty(pg_database_size(current_database())) AS database_size;" \
+            -c "SELECT COUNT(*) AS table_count FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema');" \
+            -c "SELECT schemaname, pg_size_pretty(SUM(pg_total_relation_size(quote_ident(schemaname) || '.' || quote_ident(tablename)))::bigint) AS total_size FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema') GROUP BY schemaname ORDER BY schemaname;"
+          REMOTE
+
+      - name: Inspect German database capacity
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          ssh -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            "${GERMANY_USER}@${GERMANY_HOST}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          echo "GERMANY_HOST=$(hostname -f 2>/dev/null || hostname)"
+          echo "GERMANY_OS=$(awk -F= '$1 == "PRETTY_NAME" {gsub(/\"/, "", $2); print $2}' /etc/os-release)"
+          echo "GERMANY_MEMORY=$(free -h | awk '/^Mem:/ {print $2 " total, " $7 " available"}')"
+          df -h / /var | awk 'NR == 1 || !seen[$6]++'
+
+          if command -v psql >/dev/null 2>&1; then
+            psql --version
+          else
+            echo "PSQL_CLIENT=missing"
+          fi
+          if command -v pg_dump >/dev/null 2>&1; then
+            pg_dump --version
+          else
+            echo "PG_DUMP=missing"
+          fi
+
+          if systemctl list-unit-files postgresql.service >/dev/null 2>&1; then
+            echo "POSTGRESQL_SERVICE=$(systemctl is-active postgresql.service || true)"
+          else
+            echo "POSTGRESQL_SERVICE=not-installed"
+          fi
+
+          for env_file in /etc/reup-goals-production/backend.env /etc/reup-goals-staging/backend.env; do
+            [ -s "$env_file" ] || continue
+            echo "CONFIG=$(basename "$(dirname "$env_file")")/$(basename "$env_file")"
+            grep -E '^(DB_HOST|DB_PORT|DB_NAME|DB_USER|DB_SSLMODE|DATA_RESIDENCY_REGION)=' "$env_file" | sed -E 's/^(DB_PASSWORD)=.*/\1=***hidden***/'
+          done
+          REMOTE
