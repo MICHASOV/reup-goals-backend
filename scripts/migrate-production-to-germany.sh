@@ -68,18 +68,16 @@ retry_capture() {
 }
 
 cleanup() {
+  local exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    printf '::error title=Production migration failed::Stage: %s (exit %s)\n' \
+      "$current_stage" "$exit_code" >&2
+  fi
   chmod -R u+rwX "$temporary_root" >/dev/null 2>&1 || true
   rm -rf "$temporary_root"
+  return "$exit_code"
 }
 trap cleanup EXIT
-
-report_failure() {
-  local exit_code=$?
-  printf '::error title=Production migration failed::Stage: %s (exit %s)\n' \
-    "$current_stage" "$exit_code" >&2
-  exit "$exit_code"
-}
-trap report_failure ERR
 
 required_commands=(curl dig scp ssh)
 if [[ "$migration_phase" != activate ]]; then

@@ -75,7 +75,28 @@ jobs:
           ssh-keyscan -H "$GERMANY_HOST" >> ~/.ssh/known_hosts
           ssh-keyscan -H 109.73.198.164 >> ~/.ssh/known_hosts
 
-      - name: Run migration phase
+      - name: Verify Russian migration access
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/russia_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            root@109.73.198.164 'printf RUSSIA_SSH_OK'
+
+      - name: Verify German migration access
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            "${GERMANY_USER}@${GERMANY_HOST}" 'printf GERMANY_SSH_OK'
+
+      - name: Run validated migration phase
         env:
           REUP_MIGRATION_PHASE: ${{ inputs.phase }}
           REUP_SKIP_FRONTEND: "true"
