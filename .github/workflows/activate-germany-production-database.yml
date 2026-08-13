@@ -83,9 +83,26 @@ jobs:
 
           backend_env=/etc/reup-goals-production/backend.env
           email=reupgoals@gmail.com
-          test -s "$backend_env"
-          test -s /var/www/reupgoals.pro/index.html
-          test -s /var/www/reupgoals.pro/login/index.html
+          require_file() {
+            if [ ! -s "$1" ]; then
+              printf 'REQUIRED_FILE_MISSING=%s\n' "$1" >&2
+              echo 'AVAILABLE_CONFIGURATION_FILES:' >&2
+              find /etc/reup-goals-production /etc/reup-goals-staging \
+                -maxdepth 2 -type f -printf '%p\n' 2>/dev/null >&2 || true
+              echo 'PRODUCTION_SERVICE_CONFIGURATION:' >&2
+              systemctl show reup-goals-production.service \
+                --property=FragmentPath \
+                --property=DropInPaths \
+                --property=EnvironmentFiles \
+                --no-pager >&2 || true
+              echo 'AVAILABLE_WEB_ROOTS:' >&2
+              find /var/www -maxdepth 3 -type f -name index.html -print >&2 || true
+              exit 1
+            fi
+          }
+          require_file "$backend_env"
+          require_file /var/www/reupgoals.pro/index.html
+          require_file /var/www/reupgoals.pro/login/index.html
 
           set_env() {
             local file=$1 key=$2 value=$3 escaped
