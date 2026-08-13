@@ -101,6 +101,31 @@ jobs:
             fi
           }
           require_file "$backend_env"
+          require_file /var/www/staging.reupgoals.pro/index.html
+          require_file /var/www/staging.reupgoals.pro/login/index.html
+
+          production_web_root=/var/www/reupgoals.pro
+          if [ ! -s "$production_web_root/index.html" ]; then
+            candidate_web_root="/var/www/.reupgoals.pro.$$.candidate"
+            install -d -m 755 "$candidate_web_root"
+            cp -a /var/www/staging.reupgoals.pro/. "$candidate_web_root/"
+
+            # The current German staging build becomes an independent production
+            # snapshot. Replace only embedded public hosts in exported assets.
+            while IFS= read -r -d '' asset; do
+              sed -i \
+                -e 's|https://staging-api\.reupgoals\.pro|https://api.reupgoals.pro|g' \
+                -e 's|https://staging\.reupgoals\.pro|https://reupgoals.pro|g' \
+                "$asset"
+            done < <(grep -IlZR \
+              -e 'https://staging-api\.reupgoals\.pro' \
+              -e 'https://staging\.reupgoals\.pro' \
+              "$candidate_web_root" || true)
+
+            require_file "$candidate_web_root/index.html"
+            require_file "$candidate_web_root/login/index.html"
+            mv "$candidate_web_root" "$production_web_root"
+          fi
           require_file /var/www/reupgoals.pro/index.html
           require_file /var/www/reupgoals.pro/login/index.html
 
