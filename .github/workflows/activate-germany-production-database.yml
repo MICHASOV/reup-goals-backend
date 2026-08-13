@@ -124,7 +124,8 @@ jobs:
 
             require_file "$candidate_web_root/index.html"
             require_file "$candidate_web_root/login/index.html"
-            mv "$candidate_web_root" "$production_web_root"
+            install -d -m 755 "$production_web_root"
+            cp -a "$candidate_web_root/." "$production_web_root/"
           fi
           require_file /var/www/reupgoals.pro/index.html
           require_file /var/www/reupgoals.pro/login/index.html
