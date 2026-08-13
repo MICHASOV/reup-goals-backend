@@ -67,7 +67,8 @@ local_port=$(pg_lsclusters --no-header | awk '$1 == "18" && $2 == "main" {print 
 [[ $(pg_lsclusters --no-header | awk '$1 == "18" && $2 == "main" {print $4; exit}') == online ]] || \
   pg_ctlcluster 18 main start
 
-install -d -m 700 "$config_root" "$backup_root"
+install -d -m 700 "$config_root"
+install -d -m 750 -o root -g postgres "$backup_root"
 if [[ -s "$database_env" ]]; then
   local_password=$(read_env "$database_env" DB_PASSWORD)
 else
@@ -116,7 +117,8 @@ source_extensions=$(psql -Atqc "SELECT string_agg(extname || ':' || extversion, 
   --no-owner \
   --no-acl \
   --file "$dump_file"
-chmod 600 "$dump_file"
+chown root:postgres "$dump_file"
+chmod 640 "$dump_file"
 
 psql -AtF $'\t' <<'SQL' > "$source_manifest"
 SELECT n.nspname || '.' || c.relname,
