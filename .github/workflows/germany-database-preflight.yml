@@ -25,8 +25,6 @@ jobs:
         env:
           GERMANY_KEY_B64: ${{ secrets.STAGING_SSH_KEY_B64 }}
           GERMANY_KEY: ${{ secrets.STAGING_SSH_KEY }}
-          RUSSIA_KEY_B64: ${{ secrets.PRODUCTION_RUSSIA_SSH_KEY_B64 }}
-          RUSSIA_KEY: ${{ secrets.PRODUCTION_RUSSIA_SSH_KEY }}
           GERMANY_HOST: ${{ secrets.STAGING_HOST }}
         run: |
           set -euo pipefail
@@ -38,34 +36,24 @@ jobs:
           else
             printf '%s\n' "$GERMANY_KEY" | tr -d '\r' > ~/.ssh/germany_key
           fi
-          if [ -n "$RUSSIA_KEY_B64" ]; then
-            printf '%s' "$RUSSIA_KEY_B64" | base64 -d > ~/.ssh/russia_key
-          else
-            printf '%s\n' "$RUSSIA_KEY" | tr -d '\r' > ~/.ssh/russia_key
-          fi
-
-          chmod 600 ~/.ssh/germany_key ~/.ssh/russia_key
+          chmod 600 ~/.ssh/germany_key
           ssh-keygen -y -f ~/.ssh/germany_key >/dev/null
-          ssh-keygen -y -f ~/.ssh/russia_key >/dev/null
           ssh-keyscan -H "$GERMANY_HOST" >> ~/.ssh/known_hosts
-          ssh-keyscan -H 109.73.198.164 >> ~/.ssh/known_hosts
 
       - name: Inspect active production database
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
         run: |
-          ssh -i ~/.ssh/russia_key \
+          ssh -i ~/.ssh/germany_key \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
             -o IdentitiesOnly=yes \
-            root@109.73.198.164 'bash -s' <<'REMOTE'
+            "${GERMANY_USER}@${GERMANY_HOST}" 'bash -s' <<'REMOTE'
           set -euo pipefail
 
-          pid=$(systemctl show reup-goals.service --property MainPID --value)
-          test "${pid:-0}" -gt 1
-          test -r "/proc/${pid}/environ"
-
-          env_file=$(mktemp)
-          trap 'rm -f "$env_file"' EXIT
-          tr '\000' '\n' < "/proc/${pid}/environ" > "$env_file"
+          env_file=/etc/reup-goals-production/backend.env
+          test -s "$env_file"
 
           read_env() {
             grep -E "^$1=" "$env_file" | tail -1 | cut -d= -f2-
@@ -79,9 +67,8 @@ jobs:
           export PGSSLMODE="$(read_env DB_SSLMODE)"
           export PGCONNECT_TIMEOUT=10
 
-          echo "SOURCE_DB_HOST=${PGHOST}"
+          echo "SOURCE_DB_REACHABLE_FROM_GERMANY=true"
           echo "SOURCE_DB_NAME=${PGDATABASE}"
-          echo "SOURCE_DB_USER=${PGUSER}"
           psql --version
           pg_dump --version
           psql -v ON_ERROR_STOP=1 -P pager=off \
