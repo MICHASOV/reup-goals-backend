@@ -209,6 +209,9 @@ privacy_mode=${privacy_mode:-ru_152fz}
 privacy_contact_email=${privacy_contact_email:-privacy@reupgoals.pro}
 if [ "$privacy_mode" = ru_152fz ] || [ "$privacy_mode" = dual ]; then
   if [ "$cross_border_transfer_registered" != true ]; then
+    systemctl disable --now \
+      reup-goals-production.service \
+      reup-goals-agent-production.service >/dev/null 2>&1 || true
     echo "Production migration is blocked: CROSS_BORDER_TRANSFER_REGISTERED is not true in the active production configuration." >&2
     echo "Confirm the required registration and set the production assertion before retrying; the migration will not invent a legal attestation." >&2
     exit 1
