@@ -114,13 +114,24 @@ jobs:
             # snapshot. Replace only embedded public hosts in exported assets.
             while IFS= read -r -d '' asset; do
               sed -i \
+                -e 's|https://api-staging\.reupgoals\.pro|https://api.reupgoals.pro|g' \
                 -e 's|https://staging-api\.reupgoals\.pro|https://api.reupgoals.pro|g' \
                 -e 's|https://staging\.reupgoals\.pro|https://reupgoals.pro|g' \
                 "$asset"
             done < <(grep -IlZR \
+              -e 'https://api-staging\.reupgoals\.pro' \
               -e 'https://staging-api\.reupgoals\.pro' \
               -e 'https://staging\.reupgoals\.pro' \
               "$candidate_web_root" || true)
+
+            if grep -IlZR \
+              -e 'https://api-staging\.reupgoals\.pro' \
+              -e 'https://staging-api\.reupgoals\.pro' \
+              -e 'https://staging\.reupgoals\.pro' \
+              "$candidate_web_root" | grep -q .; then
+              echo "Staging hosts remain in the production frontend snapshot" >&2
+              exit 1
+            fi
 
             require_file "$candidate_web_root/index.html"
             require_file "$candidate_web_root/login/index.html"
