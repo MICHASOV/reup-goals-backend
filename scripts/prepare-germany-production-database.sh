@@ -56,6 +56,10 @@ printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc]
   > /etc/apt/sources.list.d/pgdg.list
 apt-get update -qq
 apt-get install -y -qq postgresql-18 postgresql-client-18 >/dev/null
+
+if ! pg_lsclusters --no-header | awk '$1 == "18" && $2 == "main" {found=1} END {exit !found}'; then
+  pg_createcluster 18 main --start >/dev/null
+fi
 systemctl enable --now postgresql >/dev/null
 
 local_port=$(pg_lsclusters --no-header | awk '$1 == "18" && $2 == "main" {print $3; exit}')
