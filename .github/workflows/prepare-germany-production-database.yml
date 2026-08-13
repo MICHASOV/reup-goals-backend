@@ -1,0 +1,83 @@
+name: Prepare German production database
+
+permissions:
+  contents: read
+
+concurrency:
+  group: germany-production-database
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/prepare-germany-production-database.yml
+      - scripts/prepare-germany-production-database.sh
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure German SSH
+        env:
+          GERMANY_KEY_B64: ${{ secrets.STAGING_SSH_KEY_B64 }}
+          GERMANY_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          if [ -n "$GERMANY_KEY_B64" ]; then
+            printf '%s' "$GERMANY_KEY_B64" | base64 -d > ~/.ssh/germany_key
+          else
+            printf '%s\n' "$GERMANY_KEY" | tr -d '\r' > ~/.ssh/germany_key
+          fi
+          chmod 600 ~/.ssh/germany_key
+          ssh-keygen -y -f ~/.ssh/germany_key >/dev/null
+          ssh-keyscan -H "$GERMANY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload migration utility
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            scripts/prepare-germany-production-database.sh \
+            "${GERMANY_USER}@${GERMANY_HOST}:/tmp/prepare-germany-production-database.sh"
+
+      - name: Prepare and verify German database snapshot
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            "${GERMANY_USER}@${GERMANY_HOST}" \
+            'chmod 700 /tmp/prepare-germany-production-database.sh && /tmp/prepare-germany-production-database.sh'
+
+      - name: Confirm active production remains unchanged
+        env:
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+          GERMANY_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/germany_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            "${GERMANY_USER}@${GERMANY_HOST}" \
+            'test -s /etc/reup-goals-production/backend.local-db.env && grep -q "^DB_HOST=127.0.0.1$" /etc/reup-goals-production/backend.local-db.env && grep -q "^DB_HOST=2d16a186c058b615c3aab398.twc1.net$" /etc/reup-goals-production/backend.env'
