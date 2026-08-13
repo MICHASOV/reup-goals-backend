@@ -4093,6 +4093,16 @@ var migrations = []Migration{
 				ADD CONSTRAINT workspace_billing_orders_quantity_check CHECK (quantity >= 1);
 		`,
 	},
+	{
+		ID: "20260813_085_registration_request_replay",
+		SQL: `
+			ALTER TABLE auth_email_codes
+				ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ NULL;
+			CREATE INDEX IF NOT EXISTS idx_legal_acceptances_registration_request
+				ON legal_acceptances (request_id, user_id)
+				WHERE request_id <> '';
+		`,
+	},
 }
 
 func Run(dbx *sql.DB) error {

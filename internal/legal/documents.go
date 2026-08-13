@@ -113,7 +113,7 @@ func StoreAcceptances(ctx context.Context, tx *sql.Tx, userID int, subjectKey st
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
 				CASE WHEN $3=$9 AND $5=FALSE THEN NOW() ELSE NULL END)
 		`, userID, subjectKey, record.DocumentType, record.Version, record.Accepted,
-			record.LegalBasis, registrationEvidenceSource, sanitizeRequestID(requestID), DocumentMarketing)
+			record.LegalBasis, registrationEvidenceSource, SanitizeRequestID(requestID), DocumentMarketing)
 		if err != nil {
 			return err
 		}
@@ -138,7 +138,7 @@ func knownDocument(value string) bool {
 	}
 }
 
-func sanitizeRequestID(value string) string {
+func SanitizeRequestID(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) > 128 {
 		return ""

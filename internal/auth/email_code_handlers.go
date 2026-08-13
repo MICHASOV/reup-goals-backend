@@ -398,15 +398,17 @@ func createAndSendCode(dbx *sql.DB, emailService *EmailService, email string, us
 		return err
 	}
 
-	if _, err := tx.Exec(
+	var codeID int
+	if err := tx.QueryRow(
 		`INSERT INTO auth_email_codes (email, user_id, code_hash, code_type, expires_at, last_sent_at)
-		 VALUES ($1, $2, $3, $4, NOW() + $5::interval, NOW())`,
+		 VALUES ($1, $2, $3, $4, NOW() + $5::interval, NOW())
+		 RETURNING id`,
 		email,
 		nullableUserID(userID),
 		codeHash,
 		codeType,
 		fmt.Sprintf("%d seconds", int(codeTTL.Seconds())),
-	); err != nil {
+	).Scan(&codeID); err != nil {
 		return err
 	}
 
@@ -423,6 +425,9 @@ func createAndSendCode(dbx *sql.DB, emailService *EmailService, email string, us
 		if errors.Is(err, errEmailListUnavailable) {
 			return errEmailListUnavailable
 		}
+		return errEmailSendFailed
+	}
+	if _, err := dbx.Exec(`UPDATE auth_email_codes SET delivered_at=NOW(), updated_at=NOW() WHERE id=$1`, codeID); err != nil {
 		return errEmailSendFailed
 	}
 

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"reup-goals-backend/internal/legal"
 )
@@ -67,6 +68,11 @@ func RegisterHandler(dbx *sql.DB, emailService *EmailService) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
+		requestID := legal.SanitizeRequestID(r.Header.Get("X-Request-ID"))
+		if id, replayed := completedRegistrationReplay(r.Context(), dbx, email, requestID); replayed {
+			writeRegistrationSuccess(w, id)
+			return
+		}
 
 		passwordHash, err := hashPassword(password)
 		if err != nil {
@@ -94,10 +100,15 @@ func RegisterHandler(dbx *sql.DB, emailService *EmailService) http.HandlerFunc {
 		`, email, passwordHash, subjectKey, name, onboardingMode).Scan(&id)
 
 		if err != nil {
+			_ = tx.Rollback()
+			if id, replayed := waitForCompletedRegistrationReplay(r.Context(), dbx, email, requestID); replayed {
+				writeRegistrationSuccess(w, id)
+				return
+			}
 			http.Error(w, "user_already_exists", http.StatusBadRequest)
 			return
 		}
-		if err := legal.StoreAcceptances(r.Context(), tx, id, subjectKey, acceptances, r.Header.Get("X-Request-ID")); err != nil {
+		if err := legal.StoreAcceptances(r.Context(), tx, id, subjectKey, acceptances, requestID); err != nil {
 			http.Error(w, "legal_acceptance_store_failed", http.StatusInternalServerError)
 			return
 		}
@@ -112,12 +123,64 @@ func RegisterHandler(dbx *sql.DB, emailService *EmailService) http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"user_id":               id,
-			"verification_required": true,
-		})
+		writeRegistrationSuccess(w, id)
 	}
+}
+
+func waitForCompletedRegistrationReplay(ctx context.Context, dbx *sql.DB, email, requestID string) (int, bool) {
+	if requestID == "" {
+		return 0, false
+	}
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if id, replayed := completedRegistrationReplay(ctx, dbx, email, requestID); replayed {
+			return id, true
+		}
+		select {
+		case <-ctx.Done():
+			return 0, false
+		case <-deadline.C:
+			return 0, false
+		case <-ticker.C:
+		}
+	}
+}
+
+func completedRegistrationReplay(ctx context.Context, dbx *sql.DB, email, requestID string) (int, bool) {
+	if requestID == "" {
+		return 0, false
+	}
+	var id int
+	err := dbx.QueryRowContext(ctx, `
+		SELECT users.id
+		FROM users
+		WHERE lower(users.email)=lower($1)
+			AND EXISTS (
+				SELECT 1 FROM legal_acceptances
+				WHERE legal_acceptances.user_id=users.id
+					AND legal_acceptances.request_id=$2
+			)
+			AND EXISTS (
+				SELECT 1 FROM auth_email_codes
+				WHERE auth_email_codes.user_id=users.id
+					AND auth_email_codes.code_type=$3
+					AND auth_email_codes.used_at IS NULL
+					AND auth_email_codes.delivered_at IS NOT NULL
+			)
+		LIMIT 1
+	`, email, requestID, codeTypeVerifyEmail).Scan(&id)
+	return id, err == nil
+}
+
+func writeRegistrationSuccess(w http.ResponseWriter, id int) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"user_id":               id,
+		"verification_required": true,
+	})
 }
 
 func validPendingInvitation(ctx context.Context, dbx *sql.DB, email, token string) bool {

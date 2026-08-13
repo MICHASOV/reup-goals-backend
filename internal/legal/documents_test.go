@@ -36,3 +36,12 @@ func TestValidateRegistrationAcceptancesRejectsStaleVersion(t *testing.T) {
 		t.Fatalf("expected stale version error, got %v", err)
 	}
 }
+
+func TestSanitizeRequestID(t *testing.T) {
+	if got := SanitizeRequestID(" web-request_123 "); got != "web-request_123" {
+		t.Fatalf("expected sanitized request ID, got %q", got)
+	}
+	if got := SanitizeRequestID("invalid/request"); got != "" {
+		t.Fatalf("expected invalid request ID to be rejected, got %q", got)
+	}
+}
