@@ -119,23 +119,26 @@ if [[ "$migration_phase" != activate ]]; then
     )
   fi
 
-  current_stage="read Russian production configuration"
+  current_stage="read active Russian API configuration"
   echo "Reading production configuration without printing secrets..."
   if ! retry_capture "$legacy_env" ssh "${LEGACY_SSH_ARGS[@]}" "$legacy_target" \
     'pid=$(systemctl show reup-goals.service --property MainPID --value); test "${pid:-0}" -gt 1 && test -r "/proc/${pid}/environ" && tr "\000" "\n" < "/proc/${pid}/environ"'; then
     echo "Could not connect to the current Russian production API host." >&2
     exit 1
   fi
+  current_stage="read active German AI configuration"
   if ! retry_capture "$german_ai_env" ssh "${SSH_ARGS[@]}" "$production_target" \
     'for file in /etc/reup-goals/ai-production.env /etc/reup-goals-production/agent.env; do [ -s "$file" ] && cat "$file"; done'; then
     echo "Could not connect to the German production host." >&2
     exit 1
   fi
   chmod 600 "$legacy_env" "$german_ai_env"
+  current_stage="validate Russian database configuration"
   if ! grep -q '^DB_HOST=' "$legacy_env"; then
     echo "The active Russian production configuration does not contain DB_HOST." >&2
     exit 1
   fi
+  current_stage="validate German OpenAI configuration"
   if ! grep -q '^OPENAI_API_KEY=' "$german_ai_env"; then
     echo "The active German AI configuration does not contain OPENAI_API_KEY." >&2
     exit 1
