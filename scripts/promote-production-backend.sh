@@ -293,6 +293,19 @@ for attempt in $(seq 1 60); do
     break
   fi
   if [ "$attempt" -eq 60 ]; then
+    api_service_state=$(systemctl is-active "$api_service" 2>/dev/null || true)
+    agent_service_state=$(systemctl is-active "$agent_service" 2>/dev/null || true)
+    api_health_code=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8082/healthz || true)
+    api_ready_body=$(curl -sS http://127.0.0.1:8082/readyz || true)
+    agent_ready_body=$(curl -sS http://127.0.0.1:8092/readyz || true)
+    api_ready_body=${api_ready_body//$'\n'/ }
+    agent_health=${agent_health//$'\n'/ }
+    agent_ready_body=${agent_ready_body//$'\n'/ }
+    printf '::error title=German candidate readiness diagnostics::API service=%s; agent service=%s; API health HTTP=%s; API ready=%s; agent health=%s; agent ready HTTP=%s; agent ready=%s\n' \
+      "${api_service_state:-unknown}" "${agent_service_state:-unknown}" \
+      "${api_health_code:-network_error}" "${api_ready_body:-unavailable}" \
+      "${agent_health:-unavailable}" "${agent_ready:-network_error}" \
+      "${agent_ready_body:-unavailable}" >&2
     echo "The German production cell did not become ready." >&2
     exit 1
   fi
