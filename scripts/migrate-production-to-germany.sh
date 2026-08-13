@@ -180,6 +180,18 @@ install -d -m 700 "$config_root"
 install -m 600 "$legacy_env" "$backend_env"
 install -m 600 "$legacy_ai_env" "$agent_env"
 openai_key=$(read_env "$legacy_ai_env" OPENAI_API_KEY)
+privacy_mode=$(read_env "$legacy_env" PRIVACY_MODE)
+privacy_contact_email=$(read_env "$legacy_env" PRIVACY_CONTACT_EMAIL)
+cross_border_transfer_registered=$(read_env "$legacy_env" CROSS_BORDER_TRANSFER_REGISTERED)
+if [ -z "$privacy_mode" ]; then
+  privacy_mode=$(read_env "$legacy_ai_env" PRIVACY_MODE)
+fi
+if [ -z "$privacy_contact_email" ]; then
+  privacy_contact_email=$(read_env "$legacy_ai_env" PRIVACY_CONTACT_EMAIL)
+fi
+if [ -z "$cross_border_transfer_registered" ]; then
+  cross_border_transfer_registered=$(read_env "$legacy_ai_env" CROSS_BORDER_TRANSFER_REGISTERED)
+fi
 openai_model=$(read_env "$legacy_env" OPENAI_ADVISOR_MODEL)
 if [ -z "$openai_model" ]; then
   openai_model=$(read_env "$legacy_env" OPENAI_MODEL)
@@ -193,9 +205,21 @@ if [ -z "$openai_key" ]; then
   echo "OPENAI_API_KEY is missing on the German host." >&2
   exit 1
 fi
+privacy_mode=${privacy_mode:-ru_152fz}
+privacy_contact_email=${privacy_contact_email:-privacy@reupgoals.pro}
+if [ "$privacy_mode" = ru_152fz ] || [ "$privacy_mode" = dual ]; then
+  if [ "$cross_border_transfer_registered" != true ]; then
+    echo "Production migration is blocked: CROSS_BORDER_TRANSFER_REGISTERED is not true in the active production configuration." >&2
+    echo "Confirm the required registration and set the production assertion before retrying; the migration will not invent a legal attestation." >&2
+    exit 1
+  fi
+fi
 
 set_env "$backend_env" APP_ENV production
 set_env "$backend_env" HTTP_PORT 8082
+set_env "$backend_env" PRIVACY_MODE "$privacy_mode"
+set_env "$backend_env" PRIVACY_CONTACT_EMAIL "$privacy_contact_email"
+set_env "$backend_env" CROSS_BORDER_TRANSFER_REGISTERED "$cross_border_transfer_registered"
 set_env "$backend_env" DATA_RESIDENCY_REGION ru-twc1
 db_sslmode=$(read_env "$backend_env" DB_SSLMODE)
 case "$db_sslmode" in
