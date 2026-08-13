@@ -122,7 +122,7 @@ if [[ "$migration_phase" != activate ]]; then
   current_stage="read Russian production configuration"
   echo "Reading production configuration without printing secrets..."
   if ! retry_capture "$legacy_env" ssh "${LEGACY_SSH_ARGS[@]}" "$legacy_target" \
-    'sudo sh -c '\''for file in /opt/reup-goals-backend/.env /etc/reup-goals/backend.env; do [ -s "$file" ] && cat "$file"; done'\'''; then
+    'pid=$(systemctl show reup-goals.service --property MainPID --value); test "${pid:-0}" -gt 1 && test -r "/proc/${pid}/environ" && tr "\000" "\n" < "/proc/${pid}/environ"'; then
     echo "Could not connect to the current Russian production API host." >&2
     exit 1
   fi
