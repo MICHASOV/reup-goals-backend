@@ -276,8 +276,6 @@ UMask=0077
 WantedBy=multi-user.target
 UNIT
 
-remote_stage="stop previous German production services"
-systemctl stop "$agent_service" "$api_service" >/dev/null 2>&1 || true
 remote_stage="switch German production release directories"
 rm -rf "$api_previous" "$agent_previous"
 [ -d "$api_root" ] && mv "$api_root" "$api_previous"
@@ -297,12 +295,37 @@ if [ "$install_only" = true ]; then
 fi
 systemctl enable "$api_service" "$agent_service" >/dev/null
 systemctl reset-failed "$api_service" "$agent_service" || true
-remote_stage="start German production API"
-echo "German candidate: starting the API..."
-systemctl start "$api_service"
-remote_stage="start German production agent runtime"
-echo "German candidate: starting the agent runtime..."
-systemctl start "$agent_service"
+
+# Keep the current API serving traffic while the new artifacts are installed.
+# Restart the agent first, then restart the API only after the new agent is ready.
+if systemctl is-active --quiet "$api_service" && systemctl is-active --quiet "$agent_service"; then
+  remote_stage="restart German production agent runtime"
+  echo "German candidate: restarting the agent while the API remains available..."
+  systemctl restart "$agent_service"
+  for attempt in $(seq 1 60); do
+    agent_health=$(curl -sS http://127.0.0.1:8092/healthz || true)
+    agent_ready=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8092/readyz || true)
+    if [[ "$agent_health" == *'"runtime":true'* ]] && [[ "$agent_health" == *'"openai":true'* ]] && [ "$agent_ready" = 200 ]; then
+      break
+    fi
+    if [ "$attempt" -eq 60 ]; then
+      echo "The new production agent did not become ready before the API restart." >&2
+      exit 1
+    fi
+    sleep 1
+  done
+
+  remote_stage="restart German production API"
+  echo "German candidate: restarting the API after the agent is ready..."
+  systemctl restart "$api_service"
+else
+  remote_stage="start German production API"
+  echo "German candidate: starting the API..."
+  systemctl start "$api_service"
+  remote_stage="start German production agent runtime"
+  echo "German candidate: starting the agent runtime..."
+  systemctl start "$agent_service"
+fi
 
 remote_stage="wait for German production readiness"
 echo "German candidate: waiting for readiness..."

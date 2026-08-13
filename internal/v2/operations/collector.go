@@ -156,7 +156,11 @@ func (c *Collector) persist(ctx context.Context, record requestRecord) error {
 	if record.Method != http.MethodGet && record.Method != http.MethodHead && record.Method != http.MethodOptions && record.StatusCode < 400 {
 		_, err = c.dbx.ExecContext(ctx, `
 			INSERT INTO v2_product_events (workspace_id, user_id, event_name, source, properties_json)
-			SELECT membership.workspace_id, $1, $2, 'api', jsonb_build_object('method', $3, 'path', $4, 'status', $5)
+			SELECT membership.workspace_id, $1, $2, 'api', jsonb_build_object(
+				'method', $3::text,
+				'path', $4::text,
+				'status', $5::integer
+			)
 			FROM (SELECT 1) seed
 			LEFT JOIN LATERAL (
 				SELECT workspace_id FROM workspace_memberships
