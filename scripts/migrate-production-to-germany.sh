@@ -38,16 +38,16 @@ retry_capture() {
   shift
   candidate="${destination}.candidate"
   rm -f "$candidate"
-  for attempt in $(seq 1 6); do
+  for attempt in $(seq 1 3); do
     if "$@" > "$candidate"; then
       mv -f "$candidate" "$destination"
       return 0
     fi
     rm -f "$candidate"
-    if [[ "$attempt" -eq 6 ]]; then
+    if [[ "$attempt" -eq 3 ]]; then
       return 1
     fi
-    sleep $((attempt * 2))
+    sleep $((attempt * 5))
   done
 }
 
