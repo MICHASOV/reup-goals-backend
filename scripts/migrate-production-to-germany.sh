@@ -87,13 +87,23 @@ echo "Running local release checks before touching production..."
 )
 
 echo "Reading production configuration without printing secrets..."
-retry_capture "$legacy_env" ssh "${LEGACY_SSH_ARGS[@]}" "$legacy_target" \
-  'sudo cat /etc/reup-goals/backend.env 2>/dev/null || cat /etc/reup-goals/backend.env'
-retry_capture "$german_ai_env" ssh "${SSH_ARGS[@]}" "$production_target" \
-  'if [ -s /etc/reup-goals-production/agent.env ]; then cat /etc/reup-goals-production/agent.env; else cat /etc/reup-goals/ai-production.env; fi'
+if ! retry_capture "$legacy_env" ssh "${LEGACY_SSH_ARGS[@]}" "$legacy_target" \
+  'sudo sh -c '\''for file in /opt/reup-goals-backend/.env /etc/reup-goals/backend.env; do [ -s "$file" ] && cat "$file"; done'\'''; then
+  echo "Could not connect to the current Russian production API host." >&2
+  exit 1
+fi
+if ! retry_capture "$german_ai_env" ssh "${SSH_ARGS[@]}" "$production_target" \
+  'for file in /etc/reup-goals/ai-production.env /etc/reup-goals-production/agent.env; do [ -s "$file" ] && cat "$file"; done'; then
+  echo "Could not connect to the German production host." >&2
+  exit 1
+fi
 chmod 600 "$legacy_env" "$german_ai_env"
-if ! grep -q '^DB_HOST=' "$legacy_env" || ! grep -q '^OPENAI_API_KEY=' "$german_ai_env"; then
-  echo "Could not read the existing database or OpenAI configuration." >&2
+if ! grep -q '^DB_HOST=' "$legacy_env"; then
+  echo "The active Russian production configuration does not contain DB_HOST." >&2
+  exit 1
+fi
+if ! grep -q '^OPENAI_API_KEY=' "$german_ai_env"; then
+  echo "The active German AI configuration does not contain OPENAI_API_KEY." >&2
   exit 1
 fi
 
