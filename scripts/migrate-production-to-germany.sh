@@ -5,12 +5,16 @@ set -Eeuo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 frontend_root="${FRONTEND_REPO:-$(cd "$repo_root/.." && pwd)/reup-goals-landing}"
 legacy_target="${REUP_LEGACY_PRODUCTION_SSH_TARGET:-reup}"
+legacy_key="${REUP_LEGACY_PRODUCTION_KEY:-}"
 production_host="${REUP_PRODUCTION_HOST:-167.233.230.212}"
 production_user="${REUP_PRODUCTION_USER:-root}"
 production_target="${REUP_PRODUCTION_SSH_TARGET:-${production_user}@${production_host}}"
 production_key="${REUP_PRODUCTION_KEY:-$HOME/.ssh/reup_goals_staging_deploy}"
 letsencrypt_email="${LETSENCRYPT_EMAIL:-reupgoals@gmail.com}"
-temporary_root="$(mktemp -d /private/tmp/reup-germany-cutover.XXXXXX)"
+migration_phase="${REUP_MIGRATION_PHASE:-all}"
+skip_frontend="${REUP_SKIP_FRONTEND:-false}"
+temporary_base="${TMPDIR:-/tmp}"
+temporary_root="$(mktemp -d "${temporary_base%/}/reup-germany-cutover.XXXXXX")"
 legacy_env="$temporary_root/backend.env"
 german_ai_env="$temporary_root/ai-production.env"
 
@@ -19,6 +23,17 @@ if [[ -f "$production_key" ]]; then
   SSH_ARGS+=(-i "$production_key")
 fi
 LEGACY_SSH_ARGS=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
+if [[ -n "$legacy_key" && -f "$legacy_key" ]]; then
+  LEGACY_SSH_ARGS+=(-o IdentitiesOnly=yes -i "$legacy_key")
+fi
+
+case "$migration_phase" in
+  all|prepare|activate) ;;
+  *)
+    echo "REUP_MIGRATION_PHASE must be all, prepare, or activate." >&2
+    exit 1
+    ;;
+esac
 
 retry() {
   local attempt
@@ -57,61 +72,71 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command_name in curl dig git go npm rsync scp ssh; do
+required_commands=(curl dig scp ssh)
+if [[ "$migration_phase" != activate ]]; then
+  required_commands+=(git go npm)
+  if [[ "$skip_frontend" != true ]]; then
+    required_commands+=(rsync)
+  fi
+fi
+for command_name in "${required_commands[@]}"; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Missing required command: $command_name" >&2
     exit 1
   }
 done
-test -d "$frontend_root" || {
+if [[ "$migration_phase" != activate && "$skip_frontend" != true && ! -d "$frontend_root" ]]; then
   echo "Frontend repository not found: $frontend_root" >&2
   exit 1
-}
-
-echo "Running local release checks before touching production..."
-(
-  cd "$repo_root"
-  GOCACHE=/private/tmp/reup-germany-cutover-go-cache go test ./...
-  cd agent-runtime
-  npm ci
-  npm run typecheck
-  npm test
-  npm run build
-)
-(
-  cd "$frontend_root"
-  npm ci
-  npm run typecheck
-  npm run lint
-  NEXT_PUBLIC_API_BASE_URL=https://api.reupgoals.pro npm run build
-)
-
-echo "Reading production configuration without printing secrets..."
-if ! retry_capture "$legacy_env" ssh "${LEGACY_SSH_ARGS[@]}" "$legacy_target" \
-  'sudo sh -c '\''for file in /opt/reup-goals-backend/.env /etc/reup-goals/backend.env; do [ -s "$file" ] && cat "$file"; done'\'''; then
-  echo "Could not connect to the current Russian production API host." >&2
-  exit 1
-fi
-if ! retry_capture "$german_ai_env" ssh "${SSH_ARGS[@]}" "$production_target" \
-  'for file in /etc/reup-goals/ai-production.env /etc/reup-goals-production/agent.env; do [ -s "$file" ] && cat "$file"; done'; then
-  echo "Could not connect to the German production host." >&2
-  exit 1
-fi
-chmod 600 "$legacy_env" "$german_ai_env"
-if ! grep -q '^DB_HOST=' "$legacy_env"; then
-  echo "The active Russian production configuration does not contain DB_HOST." >&2
-  exit 1
-fi
-if ! grep -q '^OPENAI_API_KEY=' "$german_ai_env"; then
-  echo "The active German AI configuration does not contain OPENAI_API_KEY." >&2
-  exit 1
 fi
 
-echo "Uploading protected configuration inputs to the German host..."
-retry scp "${SSH_ARGS[@]}" "$legacy_env" "$german_ai_env" "${production_target}:/tmp/"
+if [[ "$migration_phase" != activate ]]; then
+  echo "Running local release checks before touching production..."
+  (
+    cd "$repo_root"
+    GOCACHE="${temporary_base%/}/reup-germany-cutover-go-cache" go test ./...
+    cd agent-runtime
+    npm ci
+    npm run typecheck
+    npm test
+    npm run build
+  )
+  if [[ "$skip_frontend" != true ]]; then
+    (
+      cd "$frontend_root"
+      npm ci
+      npm run typecheck
+      npm run lint
+      NEXT_PUBLIC_API_BASE_URL=https://api.reupgoals.pro npm run build
+    )
+  fi
 
-echo "Preparing an isolated German production cell..."
-ssh "${SSH_ARGS[@]}" "$production_target" bash -s -- "$letsencrypt_email" <<'REMOTE'
+  echo "Reading production configuration without printing secrets..."
+  if ! retry_capture "$legacy_env" ssh "${LEGACY_SSH_ARGS[@]}" "$legacy_target" \
+    'sudo sh -c '\''for file in /opt/reup-goals-backend/.env /etc/reup-goals/backend.env; do [ -s "$file" ] && cat "$file"; done'\'''; then
+    echo "Could not connect to the current Russian production API host." >&2
+    exit 1
+  fi
+  if ! retry_capture "$german_ai_env" ssh "${SSH_ARGS[@]}" "$production_target" \
+    'for file in /etc/reup-goals/ai-production.env /etc/reup-goals-production/agent.env; do [ -s "$file" ] && cat "$file"; done'; then
+    echo "Could not connect to the German production host." >&2
+    exit 1
+  fi
+  chmod 600 "$legacy_env" "$german_ai_env"
+  if ! grep -q '^DB_HOST=' "$legacy_env"; then
+    echo "The active Russian production configuration does not contain DB_HOST." >&2
+    exit 1
+  fi
+  if ! grep -q '^OPENAI_API_KEY=' "$german_ai_env"; then
+    echo "The active German AI configuration does not contain OPENAI_API_KEY." >&2
+    exit 1
+  fi
+
+  echo "Uploading protected configuration inputs to the German host..."
+  retry scp "${SSH_ARGS[@]}" "$legacy_env" "$german_ai_env" "${production_target}:/tmp/"
+
+  echo "Preparing an isolated German production cell..."
+  ssh "${SSH_ARGS[@]}" "$production_target" bash -s -- "$letsencrypt_email" <<'REMOTE'
 set -Eeuo pipefail
 
 letsencrypt_email=$1
@@ -274,30 +299,41 @@ printf '%s' "$letsencrypt_email" > "$config_root/letsencrypt-email"
 chmod 600 "$config_root/letsencrypt-email"
 REMOTE
 
-echo "Deploying the candidate API and agent locally on the German host..."
-REUP_PRODUCTION_HOST="$production_host" \
-REUP_PRODUCTION_USER="$production_user" \
-REUP_PRODUCTION_SSH_TARGET="$production_target" \
-REUP_PRODUCTION_KEY="$production_key" \
-  "$repo_root/scripts/promote-production-backend.sh"
+  echo "Deploying the candidate API and agent locally on the German host..."
+  REUP_PRODUCTION_HOST="$production_host" \
+  REUP_PRODUCTION_USER="$production_user" \
+  REUP_PRODUCTION_SSH_TARGET="$production_target" \
+  REUP_PRODUCTION_KEY="$production_key" \
+    "$repo_root/scripts/promote-production-backend.sh"
 
-echo "Building and uploading the production frontend..."
-(
-  cd "$frontend_root"
-  NEXT_PUBLIC_API_BASE_URL=https://api.reupgoals.pro \
-    DEPLOY_HOST="$production_host" \
-    DEPLOY_USER="$production_user" \
-    DEPLOY_KEY="$production_key" \
-    DEPLOY_PATH=/var/www/reupgoals.pro \
-    bash scripts/deploy.sh
-)
+  if [[ "$skip_frontend" != true ]]; then
+    echo "Building and uploading the production frontend..."
+    (
+      cd "$frontend_root"
+      NEXT_PUBLIC_API_BASE_URL=https://api.reupgoals.pro \
+        DEPLOY_HOST="$production_host" \
+        DEPLOY_USER="$production_user" \
+        DEPLOY_KEY="$production_key" \
+        DEPLOY_PATH=/var/www/reupgoals.pro \
+        bash scripts/deploy.sh
+    )
+  else
+    echo "Frontend deployment is delegated to its production GitHub workflow."
+  fi
 
-echo
-echo "German production candidate is ready. Update these DNS records now:"
-echo "  reupgoals.pro      A  $production_host"
-echo "  www.reupgoals.pro  A  $production_host"
-echo "  api.reupgoals.pro  A  $production_host"
-echo "Do not change staging.reupgoals.pro or api-staging.reupgoals.pro."
+  echo
+  echo "German production candidate is ready. Update these DNS records now:"
+  echo "  reupgoals.pro      A  $production_host"
+  echo "  www.reupgoals.pro  A  $production_host"
+  echo "  api.reupgoals.pro  A  $production_host"
+  echo "Do not change staging.reupgoals.pro or api-staging.reupgoals.pro."
+
+  if [[ "$migration_phase" == prepare ]]; then
+    echo
+    echo "Preparation phase completed. Deploy the production frontend, update DNS, then run the activation phase."
+    exit 0
+  fi
+fi
 echo
 echo "Waiting for production DNS to point to Germany..."
 deadline=$((SECONDS + ${DNS_WAIT_SECONDS:-25200}))
@@ -322,6 +358,15 @@ ssh "${SSH_ARGS[@]}" "$production_target" bash -s -- "$letsencrypt_email" <<'REM
 set -Eeuo pipefail
 
 email=$1
+
+test -s /var/www/reupgoals.pro/index.html || {
+  echo "Production frontend is missing: /var/www/reupgoals.pro/index.html" >&2
+  exit 1
+}
+test -s /var/www/reupgoals.pro/login/index.html || {
+  echo "Production login page is missing: /var/www/reupgoals.pro/login/index.html" >&2
+  exit 1
+}
 
 for attempt in $(seq 1 60); do
   api=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8082/readyz || true)

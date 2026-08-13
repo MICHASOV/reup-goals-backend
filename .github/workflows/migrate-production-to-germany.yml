@@ -1,0 +1,103 @@
+name: Migrate production to Germany
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-germany-migration
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Migration phase
+        required: true
+        type: choice
+        default: prepare
+        options:
+          - prepare
+          - activate
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        if: inputs.phase == 'prepare'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Node
+        if: inputs.phase == 'prepare'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: agent-runtime/package-lock.json
+
+      - name: Configure migration SSH
+        env:
+          GERMANY_KEY_B64: ${{ secrets.STAGING_SSH_KEY_B64 }}
+          GERMANY_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          RUSSIA_KEY_B64: ${{ secrets.PRODUCTION_RUSSIA_SSH_KEY_B64 }}
+          RUSSIA_KEY: ${{ secrets.PRODUCTION_RUSSIA_SSH_KEY }}
+          GERMANY_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          if [ -n "$GERMANY_KEY_B64" ]; then
+            printf '%s' "$GERMANY_KEY_B64" | base64 -d > ~/.ssh/germany_key
+          else
+            printf '%s\n' "$GERMANY_KEY" | tr -d '\r' > ~/.ssh/germany_key
+          fi
+          if [ -n "$RUSSIA_KEY_B64" ]; then
+            printf '%s' "$RUSSIA_KEY_B64" | base64 -d > ~/.ssh/russia_key
+          elif [ -n "$RUSSIA_KEY" ]; then
+            printf '%s\n' "$RUSSIA_KEY" | tr -d '\r' > ~/.ssh/russia_key
+          else
+            echo "Add PRODUCTION_RUSSIA_SSH_KEY_B64 or PRODUCTION_RUSSIA_SSH_KEY to repository secrets." >&2
+            exit 1
+          fi
+
+          chmod 600 ~/.ssh/germany_key ~/.ssh/russia_key
+          ssh-keygen -y -f ~/.ssh/germany_key >/dev/null
+          ssh-keygen -y -f ~/.ssh/russia_key >/dev/null
+          ssh-keyscan -H "$GERMANY_HOST" >> ~/.ssh/known_hosts
+          ssh-keyscan -H 109.73.198.164 >> ~/.ssh/known_hosts
+
+      - name: Run migration phase
+        env:
+          REUP_MIGRATION_PHASE: ${{ inputs.phase }}
+          REUP_SKIP_FRONTEND: "true"
+          REUP_LEGACY_PRODUCTION_SSH_TARGET: root@109.73.198.164
+          REUP_LEGACY_PRODUCTION_KEY: /home/runner/.ssh/russia_key
+          REUP_PRODUCTION_HOST: ${{ secrets.STAGING_HOST }}
+          REUP_PRODUCTION_USER: ${{ secrets.STAGING_USER }}
+          REUP_PRODUCTION_KEY: /home/runner/.ssh/germany_key
+          DNS_WAIT_SECONDS: "900"
+        run: ./scripts/migrate-production-to-germany.sh
+
+      - name: Next step
+        run: |
+          if [ "${{ inputs.phase }}" = prepare ]; then
+            echo "Preparation complete. Run the landing production workflow, update the three production A records, then run this workflow with phase=activate."
+          else
+            echo "Production activation in Germany is complete."
+          fi
+
+      - name: Revoke one-time Russian migration key
+        if: success() && inputs.phase == 'activate'
+        run: |
+          ssh -i ~/.ssh/russia_key root@109.73.198.164 \
+            "sed -i '/reup-goals-github-production-migration$/d' /root/.ssh/authorized_keys" || \
+            echo "Migration is complete, but the one-time key must be removed manually."

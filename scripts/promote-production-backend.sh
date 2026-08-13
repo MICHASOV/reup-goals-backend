@@ -23,7 +23,7 @@ trap cleanup EXIT
 
 cd "$repo_root"
 echo "Building production API..."
-GOCACHE=/private/tmp/reup-release-cache \
+GOCACHE="${TMPDIR:-/tmp}/reup-release-cache" \
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -trimpath -ldflags="-s -w" -o "$backend_artifact" ./cmd/api
 
