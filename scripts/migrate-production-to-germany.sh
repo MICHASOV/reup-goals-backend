@@ -128,7 +128,7 @@ if [[ "$migration_phase" != activate ]]; then
   fi
   current_stage="read active German AI configuration"
   if ! retry_capture "$german_ai_env" ssh "${SSH_ARGS[@]}" "$production_target" \
-    'for file in /etc/reup-goals/ai-production.env /etc/reup-goals-production/agent.env; do [ -s "$file" ] && cat "$file"; done'; then
+    'for file in /etc/reup-goals/ai-production.env /etc/reup-goals-production/agent.env /etc/reup-goals-staging/agent.env; do if [ -s "$file" ]; then cat "$file"; exit 0; fi; done; exit 1'; then
     echo "Could not connect to the German production host." >&2
     exit 1
   fi
