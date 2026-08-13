@@ -9,6 +9,9 @@ concurrency:
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - production-backend-auth-limits
 
 jobs:
   deploy:
