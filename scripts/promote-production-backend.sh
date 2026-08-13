@@ -155,19 +155,27 @@ rollback() {
 }
 trap rollback ERR
 
+remote_stage="create German production service account"
 id -u reupgoals >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin reupgoals
+getent group reupgoals >/dev/null 2>&1 || groupadd --system reupgoals
+usermod -g reupgoals reupgoals
 remote_stage="install production service artifacts"
 install -d -m 750 -o reupgoals -g reupgoals /opt/reup-goals-production
 install -d -m 700 /etc/reup-goals-production
 
+remote_stage="prepare German production release directories"
 rm -rf "$api_next" "$agent_next"
 install -d -m 750 -o reupgoals -g reupgoals "$api_next" "$agent_next"
+remote_stage="install German production API artifact"
 install -m 755 -o reupgoals -g reupgoals /tmp/reup_goals_backend "$api_next/reup_goals_backend"
+remote_stage="extract German production agent artifact"
 tar -xzf /tmp/reup_goals_agent_runtime.tar.gz -C "$agent_next"
 chown -R reupgoals:reupgoals "$agent_next"
+remote_stage="validate German production artifacts"
 test -x "$agent_next/node"
 test -f "$agent_next/dist/server.js"
 
+remote_stage="write German production API service"
 cat > "/etc/systemd/system/${api_service}" <<'UNIT'
 [Unit]
 Description=REUP.goals Production API (Germany)
@@ -201,6 +209,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 WantedBy=multi-user.target
 UNIT
 
+remote_stage="write German production agent service"
 cat > "/etc/systemd/system/${agent_service}" <<'UNIT'
 [Unit]
 Description=REUP.goals Production Agent Runtime (Germany)
@@ -237,13 +246,16 @@ UMask=0077
 WantedBy=multi-user.target
 UNIT
 
+remote_stage="stop previous German production services"
 systemctl stop "$agent_service" "$api_service" >/dev/null 2>&1 || true
+remote_stage="switch German production release directories"
 rm -rf "$api_previous" "$agent_previous"
 [ -d "$api_root" ] && mv "$api_root" "$api_previous"
 [ -d "$agent_root" ] && mv "$agent_root" "$agent_previous"
 mv "$api_next" "$api_root"
 mv "$agent_next" "$agent_root"
 
+remote_stage="register German production services"
 systemctl daemon-reload
 systemctl enable "$api_service" "$agent_service" >/dev/null
 systemctl reset-failed "$api_service" "$agent_service" || true
