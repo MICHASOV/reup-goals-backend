@@ -12,21 +12,32 @@ backend_artifact="/tmp/reup_goals_backend"
 runtime_artifact="/tmp/reup_goals_agent_runtime.tar.gz"
 runtime_stage="$(mktemp -d /tmp/reup-goals-agent-runtime.XXXXXX)"
 node_version="${AGENT_NODE_VERSION:-v22.17.0}"
+current_stage="initialize production backend promotion"
 
 SSH_ARGS=(-o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes)
 if [[ -f "$production_key" ]]; then
   SSH_ARGS+=(-i "$production_key")
 fi
 
-cleanup() { rm -rf "$runtime_stage"; }
+cleanup() {
+  local exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    printf '::error title=German production candidate failed::Stage: %s (exit %s)\n' \
+      "$current_stage" "$exit_code" >&2
+  fi
+  rm -rf "$runtime_stage"
+  return "$exit_code"
+}
 trap cleanup EXIT
 
 cd "$repo_root"
+current_stage="build German production API"
 echo "Building production API..."
 GOCACHE="${TMPDIR:-/tmp}/reup-release-cache" \
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -trimpath -ldflags="-s -w" -o "$backend_artifact" ./cmd/api
 
+current_stage="build German production agent runtime"
 echo "Building colocated production agent runtime..."
 (
   cd "$repo_root/agent-runtime"
@@ -62,14 +73,17 @@ fi
 chmod 755 "$runtime_stage/node"
 tar -czf "$runtime_artifact" -C "$runtime_stage" .
 
+current_stage="upload German production artifacts"
 echo "Uploading production API and agent runtime to Germany..."
 scp "${SSH_ARGS[@]}" "$backend_artifact" "$runtime_artifact" "${production_target}:/tmp/"
 
+current_stage="install German production services"
 echo "Installing the production services with automatic rollback..."
 ssh "${SSH_ARGS[@]}" "$production_target" bash -s -- "$release_id" <<'REMOTE'
 set -Eeuo pipefail
 
 release_id=$1
+remote_stage="validate production service configuration"
 api_service=reup-goals-production.service
 agent_service=reup-goals-agent-production.service
 api_root=/opt/reup-goals-production/backend
@@ -126,6 +140,8 @@ esac
 rollback() {
   local exit_code=$?
   trap - ERR
+  printf '::error title=German production service failed::Stage: %s (exit %s)\n' \
+    "$remote_stage" "$exit_code" >&2
   echo "Production service update failed; restoring the previous German release." >&2
   systemctl stop "$agent_service" "$api_service" >/dev/null 2>&1 || true
   rm -rf "$api_root" "$agent_root"
@@ -140,6 +156,7 @@ rollback() {
 trap rollback ERR
 
 id -u reupgoals >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin reupgoals
+remote_stage="install production service artifacts"
 install -d -m 750 -o reupgoals -g reupgoals /opt/reup-goals-production
 install -d -m 700 /etc/reup-goals-production
 
@@ -230,9 +247,12 @@ mv "$agent_next" "$agent_root"
 systemctl daemon-reload
 systemctl enable "$api_service" "$agent_service" >/dev/null
 systemctl reset-failed "$api_service" "$agent_service" || true
+remote_stage="start German production API"
 systemctl start "$api_service"
+remote_stage="start German production agent runtime"
 systemctl start "$agent_service"
 
+remote_stage="wait for German production readiness"
 for attempt in $(seq 1 60); do
   api_health=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8082/readyz || true)
   agent_health=$(curl -sS http://127.0.0.1:8092/healthz || true)
