@@ -178,8 +178,12 @@ set_env "$candidate_env" DB_PASSWORD "$local_password"
 set_env "$candidate_env" DB_NAME "$local_database"
 set_env "$candidate_env" DB_SSLMODE disable
 set_env "$candidate_env" DB_APPLICATION_NAME reup-goals-production-germany
+set_env "$candidate_env" PRIVACY_MODE gdpr
 set_env "$candidate_env" DATA_RESIDENCY_REGION eu-de
 set_env "$candidate_env" CROSS_BORDER_TRANSFER_REGISTERED true
+if [[ -z "$(read_env "$candidate_env" GDPR_TRANSFER_MECHANISM)" ]]; then
+  set_env "$candidate_env" GDPR_TRANSFER_MECHANISM standard-contractual-clauses
+fi
 set_env "$candidate_env" DB_MAX_OPEN_CONNS 20
 set_env "$candidate_env" DB_MAX_IDLE_CONNS 5
 set_env "$candidate_env" DB_CONN_MAX_IDLE_TIME 5m
